@@ -586,7 +586,7 @@ are composited during image rendering; the source image remains intact.
 | `shaders/flare.wgsl` | GPU flare shader. |
 | `shaders/shader.wgsl` | Main GPU image-processing shader. |
 
-## Updating the RAW engine and rawler metadata reader
+## Updating the RAW decoder and rawler metadata reader
 
 From the project root, updating rawler in the source code only requires:
 
