@@ -276,9 +276,6 @@ edit sessions coordinate round trips with other editors.
 
 ## Application overview
 
-This is a customized SlowRAW build focused on local photo management and
-non-destructive RAW editing.
-
 - SQLite indexes the local photo library.
 - Original photos remain on the filesystem; edits are stored separately.
 - RAW development and image processing run locally.
@@ -587,8 +584,6 @@ are composited during image rendering; the source image remains intact.
 | `shaders/shader.wgsl` | Main GPU image-processing shader. |
 
 ## Updating the RAW decoder and rawler metadata reader
-
-From the project root, updating rawler in the source code only requires:
 
 ```powershell
 npm run update:rawler
