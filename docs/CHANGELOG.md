@@ -42,7 +42,7 @@
 - **2026-09-28 — Catalog and import:** Restored EXIF fallback when loading and saving sidecars, made `I` restore the Info panel's previous state, separated already-existing files from import failures, and added video import/catalog entries that open in the system player.
 - **2026-09-26 — UI cleanup:** Removed the bulk “Clear All Tags” action and bottom-right panel toggle buttons; moved the panel-visibility menu lower and kept filmstrip visibility there.
 - **2026-09-26 — Maintenance:** Added `npm run clean` for frontend and both Rust build-output directories, plus optional `npm run clean:deep` for installed npm dependencies.
-- **2026-09-26 — Documentation:** Added a maintainer [code map](docs/README.md) covering the frontend, Rust modules, scripts, and where to edit common features.
+- **2026-09-26 — Documentation:** Added a maintainer [code map](docs/CODEMAP.md) covering the frontend, Rust modules, scripts, and where to edit common features.
 - **2026-09-24 — Import and layout:** Added copy, move, and index-at-existing-location import choices; moved maximum zoom into Settings, set its new default to 100%, and made the top, bottom, left, and right panels hideable.
 - **2026-09-24 — Portable data and navigation:** Kept portable settings and other program data alongside the portable EXE; refined import access and moved catalog page controls beside Catalog in the top bar.
 - **2026-09-16 — Large libraries:** Made the catalog the primary library workflow with bounded 500-image pages, SQLite-side filtering/sorting, incremental loading, and thumbnail-cache pruning.
