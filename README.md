@@ -31,6 +31,12 @@ The catalog is an index of the user's files, not a replacement for them. Source 
 
 The goal of this version is not to continually add more functionality. The core feature set is intentionally focused, with development concentrated on stability, performance, RAW compatibility, catalog behavior, and the everyday photographic workflow.
 
+## Warning
+
+Due to the lack of any pre sharpening and noise reduction, images might appear softer and nosier than other raw developers. But all the detail is still there in the image! But to get comparable results you might have to apply more sharpening and noise reduction then you are used to.
+
+This is intentional to get as close to the raw image as possible, giving the user better control to use better external tools if they wish to do so.
+
 ## Origin & Attribution
 
 This project is based on RapidRAW v1.6.3 by CyberTimon (Timon Käch):
