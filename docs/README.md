@@ -343,7 +343,7 @@ are composited during image rendering; the source image remains intact.
 | Keyboard shortcuts and Info-panel restoration | `src/hooks/useKeyboardShortcuts.ts` | `src/store/useUIStore.ts`, `src/components/panel/PanelVisibilityMenu.tsx` |
 | Zoom and panel visibility | `src/components/panel/SettingsPanel.tsx`, `src/components/panel/PanelVisibilityMenu.tsx` | `src/utils/zoom.ts`, `src/store/useUIStore.ts`, `src-tauri/src/app_settings.rs` |
 | Portable data and ZIP | `scripts/build-portable.ps1` | `src-tauri/src/portable_paths.rs`, `src-tauri/tauri.conf.json` |
-| UI text | `src/i18n/locales/en.json` | `src/i18n/index.ts`, `i18next.config.ts`; this tree includes English only |
+| UI text | `src/i18n/locales/en.json` | `src/i18n/index.ts`, `i18next.config.ts` |
 
 ## Root and build files
 
