@@ -83,23 +83,7 @@ The result is intended to stay simple.
 
 RAW development uses [dnglab / rawler](https://github.com/dnglab/dnglab/tree/main/rawler) linked into SlowRAW. RAW files work immediately after installation; no separate engine, toolchain download, or temporary image file is required at runtime. Linear RAW Processing is available in Settings.
 
-Standard RGB Bayer images use RCD demosaicing from [librtprocess](https://github.com/CarVac/librtprocess). Sharpening is applied manually in Details; Sharpness and Blur each range from 0 to 100 and reset the other control when changed.
-
-To update the separately pinned RCD library before rebuilding:
-
-```powershell
-npm run update:rcd
-```
-
-The first clean source build requires Git, a C++ compiler and network access to fetch the library. Distributed builds include the compiled library.
-
-Before compiling, update Rawler and kamadak-exif together from the project root:
-
-```powershell
-npm run update:metadata
-```
-
-This updates the source dependencies within the Cargo.toml requirements and records them in Cargo.lock. Compile SlowRAW normally afterward. See [docs/README.md](docs/README.md#updating-raw-and-exif-dependencies-together) for integration details and checks.
+Standard RGB Bayer images use RCD demosaicing from [librtprocess](https://github.com/CarVac/librtprocess).
 
 ### Separately Updateable Lens Profiles
 
@@ -289,13 +273,3 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 See the [LICENSE](LICENSE) file for the complete license text.
 
 This repository is based on RapidRAW by CyberTimon and contains substantial modifications.
-
-### Update RAW and EXIF support before compiling
-
-```powershell
-npm run update:metadata
-```
-
-This updates Rawler and kamadak-exif in `src-tauri/Cargo.lock` within the declared
-dependency requirements. Compile normally afterward. PNG export supports
-8/16-bit color.
