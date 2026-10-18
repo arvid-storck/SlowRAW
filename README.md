@@ -1,11 +1,3 @@
-[![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge\&logo=rust\&logoColor=white)](https://www.rust-lang.org/)
-[![wgpu](https://img.shields.io/badge/wgpu-%23282C34.svg?style=for-the-badge\&logo=webgpu\&logoColor=white)](https://wgpu.rs/)
-[![React](https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge\&logo=react\&logoColor=%2361DAFB)](https://react.dev/)
-[![Tauri](https://img.shields.io/badge/Tauri-24C8DB?style=for-the-badge\&logo=tauri\&logoColor=white)](https://tauri.app/)
-[![AGPL-3.0](https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge)](https://opensource.org/licenses/AGPL-3.0)
-
-</div>
-
 ## Why it exists
 
 I tried to find an DAM + raw editor what was not too complex, was free or one time purchase, had a catalog, without generative AI.
