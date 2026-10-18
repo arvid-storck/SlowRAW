@@ -176,7 +176,6 @@ const ColorWheel = ({
       <div
         className="relative cursor-pointer h-5 w-full overflow-hidden"
         onClick={handleReset}
-        onDoubleClick={handleReset}
         onMouseEnter={() => setIsLabelHovered(true)}
         onMouseLeave={() => setIsLabelHovered(false)}
       >
@@ -222,7 +221,6 @@ const ColorWheel = ({
         {wheelSize > 0 && (
           <div
             className="absolute inset-0 cursor-pointer"
-            onDoubleClick={handleReset}
             onMouseDownCapture={handleDragStart}
             onTouchStartCapture={handleDragStart}
           >

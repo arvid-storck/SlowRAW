@@ -481,7 +481,6 @@ export default function BottomBar({
                     onMouseUp={handleMouseUp}
                     onTouchStart={handleMouseDown}
                     onTouchEnd={handleMouseUp}
-                    onDoubleClick={handleResetZoom}
                     className={`absolute top-1/2 left-0 w-full h-1.5 mt-[-1.5px] appearance-none bg-transparent cursor-pointer p-0 slider-input z-10 ${
                       isZoomActive ? 'slider-thumb-active' : ''
                     }`}

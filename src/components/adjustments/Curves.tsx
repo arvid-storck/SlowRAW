@@ -10,6 +10,7 @@ import {
   DEFAULT_PARAMETRIC_CURVE_SETTINGS,
   ParametricCurveSettings,
   getDefaultCurves,
+  monotonicCurve,
 } from '../../utils/adjustments';
 import { Theme, OPTION_SEPARATOR } from '../ui/AppProperties';
 import { useContextMenu } from '../../context/ContextMenuContext';
@@ -95,7 +96,7 @@ function buildParametricPoints(settings: ParametricCurveSettings): Array<Coord> 
     points[lastIndex].y = Math.max(0, Math.min(255, points[lastIndex].y + whiteYOffset));
   }
 
-  return points;
+  return monotonicCurve(points);
 }
 
 function getCurvePath(points: Array<Coord>) {
@@ -423,7 +424,11 @@ export default function CurveGraph({
         accumulatedPointRef.current.x = Math.max(minX, Math.min(maxX, accumulatedPointRef.current.x));
 
         let x = accumulatedPointRef.current.x;
-        const y = accumulatedPointRef.current.y;
+        const y = Math.max(
+          index > 0 ? currentPoints[index - 1].y : 0,
+          Math.min(index < currentPoints.length - 1 ? currentPoints[index + 1].y : 255, accumulatedPointRef.current.y),
+        );
+        accumulatedPointRef.current.y = y;
 
         if (!isFineAdjust) {
           const SNAP_THRESHOLD = 5;
@@ -491,7 +496,7 @@ export default function CurveGraph({
 
   const activePoints: Array<Coord> = isParametricMode
     ? buildParametricPoints(activeParametricSettings)
-    : (localPoints ?? adjustments?.curves?.[activeChannel]);
+    : monotonicCurve(localPoints ?? adjustments?.curves?.[activeChannel] ?? DEFAULT_POINT_CURVES[activeChannel]);
 
   const { color, data: histogramData } = channelConfig[activeChannel];
 
@@ -560,11 +565,14 @@ export default function CurveGraph({
 
     onDragStateChange?.(true);
 
-    const newPoints = [...activePoints, { x, y }].sort((a: Coord, b: Coord) => a.x - b.x);
-    const newPointIndex = newPoints.findIndex((p: Coord) => p.x === x && p.y === y);
+    const before = activePoints.filter((p) => p.x < x).at(-1)?.y ?? 0;
+    const after = activePoints.find((p) => p.x > x)?.y ?? 255;
+    const point = { x, y: Math.max(before, Math.min(after, y)) };
+    const newPoints = [...activePoints, point].sort((a: Coord, b: Coord) => a.x - b.x);
+    const newPointIndex = newPoints.findIndex((p: Coord) => p.x === x);
 
     lastPointerRef.current = { x: clientX, y: clientY };
-    accumulatedPointRef.current = { x, y };
+    accumulatedPointRef.current = { ...point };
 
     setLocalPoints(newPoints);
     localPointsRef.current = newPoints;
@@ -576,7 +584,13 @@ export default function CurveGraph({
     draggingIndexRef.current = newPointIndex;
   };
 
-  const handleDoubleClick = () => {
+  const handleResetCurve = () => {
+    setDraggingPointIndex(null);
+    setDraggingSplitKey(null);
+    localPointsRef.current = null;
+    localParametricSettingsRef.current = null;
+    setLocalParametricSettings(null);
+    onDragStateChange?.(false);
     if (isParametricMode) {
       const defaultSettings = { ...DEFAULT_PARAMETRIC_CURVE_SETTINGS };
       setAdjustments((prev: any) => {
@@ -701,7 +715,7 @@ export default function CurveGraph({
 
     const handlePaste = () => {
       if (!curveClipboard) return;
-      const newPoints = curveClipboard.map((p) => ({ ...p }));
+      const newPoints = monotonicCurve(curveClipboard);
       setLocalPoints(newPoints);
       localPointsRef.current = newPoints;
       setAdjustments((prev: any) => ({ ...prev, curves: { ...prev.curves, [activeChannel]: newPoints } }));
@@ -834,6 +848,15 @@ export default function CurveGraph({
           </button>
         </div>
 
+        <button
+          type="button"
+          onClick={handleResetCurve}
+          title={t('ui.slider.reset')}
+          aria-label={t('ui.slider.reset')}
+          className="p-1.5 rounded-md text-text-secondary hover:text-text-primary hover:bg-surface"
+        >
+          <RotateCcw size={16} />
+        </button>
         <div className="flex items-center gap-1 shrink-0">
           {Object.keys(channelConfig).map((channel: any) => {
             const selected = activeChannel === channel;
@@ -867,7 +890,6 @@ export default function CurveGraph({
           data-tooltip={t('uiText.Curves.hold_shift_or_alt_while_dragging_for_fine_adjustment')}
           onMouseDown={handleContainerStart}
           onTouchStart={handleContainerStart}
-          onDoubleClick={handleDoubleClick}
           onContextMenu={handleContextMenu}
         >
           <svg ref={svgRef} viewBox="0 0 255 255" className="w-full h-full overflow-visible">
@@ -923,7 +945,7 @@ export default function CurveGraph({
               )
               .map((channel) => (
                 <path
-                  d={getCurvePath(adjustments.curves[channel])}
+                  d={getCurvePath(monotonicCurve(adjustments.curves[channel]))}
                   fill="none"
                   key={channel}
                   pointerEvents="none"
@@ -1023,11 +1045,6 @@ export default function CurveGraph({
                           accumulatedSplitRef.current = activeParametricSettings[key];
                           localParametricSettingsRef.current = { ...activeParametricSettings };
                           setDraggingSplitKey(key);
-                        }}
-                        onDoubleClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          updateParametricValue(key, DEFAULT_PARAMETRIC_CURVE_SETTINGS[key]);
                         }}
                         style={{ left: `${value}%` }}
                         type="button"

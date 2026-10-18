@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,7 +14,7 @@ use crate::exif_processing::{get_primary_sidecar_path, load_sidecar, read_exif_d
 use crate::file_management::read_file_mapped;
 use crate::formats::{is_raw_file, is_supported_media_file, is_supported_video_file};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,6 +124,54 @@ fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
 static CHECKED_DATABASES: std::sync::LazyLock<std::sync::Mutex<HashSet<PathBuf>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
 
+fn migrate_catalog_schema(conn: &Connection) -> rusqlite::Result<()> {
+    let version: Option<String> = conn
+        .query_row(
+            "SELECT value FROM catalog_meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if version.as_deref() == Some("2") {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    let columns: Vec<String> = tx
+        .prepare("PRAGMA table_info(catalog_images)")?
+        .query_map([], |row| row.get(1))?
+        .collect::<rusqlite::Result<_>>()?;
+    if columns.iter().any(|name| name == "thumbnail_status") {
+        tx.execute_batch("ALTER TABLE catalog_images DROP COLUMN thumbnail_status;")?;
+    }
+    tx.execute_batch(
+        "UPDATE catalog_images SET is_raw=CASE WHEN is_raw=0 THEN 0 ELSE 1 END,
+         is_edited=CASE WHEN is_edited=0 THEN 0 ELSE 1 END
+         WHERE is_raw NOT IN (0,1) OR is_edited NOT IN (0,1) OR is_raw IS NULL OR is_edited IS NULL;
+         CREATE TRIGGER IF NOT EXISTS catalog_boolean_insert BEFORE INSERT ON catalog_images
+         WHEN NEW.is_raw IS NULL OR NEW.is_raw NOT IN (0,1) OR NEW.is_edited IS NULL OR NEW.is_edited NOT IN (0,1)
+         BEGIN SELECT RAISE(ABORT,'Catalog flags must be 0 or 1'); END;
+         CREATE TRIGGER IF NOT EXISTS catalog_boolean_update BEFORE UPDATE OF is_raw,is_edited ON catalog_images
+         WHEN NEW.is_raw IS NULL OR NEW.is_raw NOT IN (0,1) OR NEW.is_edited IS NULL OR NEW.is_edited NOT IN (0,1)
+         BEGIN SELECT RAISE(ABORT,'Catalog flags must be 0 or 1'); END;"
+    )?;
+    {
+        let mut query = tx.prepare("SELECT path,exif_json FROM catalog_images")?;
+        let mut rows = query.query([])?;
+        let mut update = tx.prepare("UPDATE catalog_images SET exif_json=?1 WHERE path=?2")?;
+        while let Some(row) = rows.next()? {
+            let path: String = row.get(0)?;
+            let old: String = row.get(1)?;
+            if let Ok(exif) = serde_json::from_str::<BTreeMap<String, serde_json::Value>>(&old) {
+                let sorted = serde_json::to_string(&exif).unwrap();
+                if sorted != old {
+                    update.execute(params![sorted, path])?;
+                }
+            }
+        }
+    }
+    tx.commit()
+}
+
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
     let path = db_path(app)?;
     let mut checked = CHECKED_DATABASES.lock().map_err(|e| e.to_string())?;
@@ -154,9 +202,8 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
                 flag TEXT,
                 tags_json TEXT NOT NULL DEFAULT '[]',
                 exif_json TEXT NOT NULL DEFAULT '{}',
-                is_raw INTEGER NOT NULL DEFAULT 0,
-                is_edited INTEGER NOT NULL DEFAULT 0,
-                thumbnail_status INTEGER NOT NULL DEFAULT 0,
+                is_raw INTEGER NOT NULL DEFAULT 0 CHECK(is_raw IN (0,1)),
+                is_edited INTEGER NOT NULL DEFAULT 0 CHECK(is_edited IN (0,1)),
                 indexed_at INTEGER NOT NULL,
                 FOREIGN KEY(folder_path) REFERENCES catalog_folders(path) ON DELETE CASCADE
              );
@@ -171,6 +218,7 @@ fn open_db(app: &AppHandle) -> Result<Connection, String> {
              CREATE INDEX IF NOT EXISTS idx_catalog_images_extension ON catalog_images(extension);
              CREATE INDEX IF NOT EXISTS idx_catalog_images_name ON catalog_images(filename COLLATE NOCASE, path);"
         )?;
+        migrate_catalog_schema(&conn)?;
         conn.execute(
             "INSERT INTO catalog_meta(key,value) VALUES('schema_version',?1)
              ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -362,7 +410,7 @@ fn index_folder(
             "INSERT INTO catalog_images(path,folder_path,filename,extension,modified,sidecar_modified,date_taken,camera,lens,focal_length,rating,color,flag,tags_json,exif_json,is_raw,is_edited,indexed_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
              ON CONFLICT(path) DO UPDATE SET folder_path=excluded.folder_path,filename=excluded.filename,extension=excluded.extension,modified=excluded.modified,sidecar_modified=excluded.sidecar_modified,date_taken=excluded.date_taken,camera=excluded.camera,lens=excluded.lens,focal_length=excluded.focal_length,rating=excluded.rating,color=excluded.color,flag=excluded.flag,tags_json=excluded.tags_json,exif_json=excluded.exif_json,is_raw=excluded.is_raw,is_edited=excluded.is_edited,indexed_at=excluded.indexed_at",
-            params![path_text, folder_text, filename, extension, modified, sidecar_modified, date_taken, camera, lens, focal, sidecar_data.rating, color, flag, serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into()), serde_json::to_string(&exif).unwrap_or_else(|_| "{}".into()), is_raw_file(path), sidecar.exists(), unix_seconds(SystemTime::now())],
+            params![path_text, folder_text, filename, extension, modified, sidecar_modified, date_taken, camera, lens, focal, sidecar_data.rating, color, flag, serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into()), serde_json::to_string(&exif.iter().collect::<BTreeMap<_, _>>()).unwrap_or_else(|_| "{}".into()), is_raw_file(path), sidecar.exists(), unix_seconds(SystemTime::now())],
         ).map_err(|e| e.to_string())?;
         indexed += 1;
     }
@@ -1037,5 +1085,48 @@ mod tests {
         );
         assert_eq!(normalized_capture_date("ååååå"), None);
         assert_eq!(normalized_capture_date("not-a-date"), None);
+    }
+
+    #[test]
+    fn schema_migration_preserves_rows_sorts_exif_and_constrains_flags() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE catalog_meta(key TEXT PRIMARY KEY,value TEXT);
+            INSERT INTO catalog_meta VALUES('schema_version','1');
+            CREATE TABLE catalog_images(path TEXT PRIMARY KEY,exif_json TEXT,is_raw INTEGER,is_edited INTEGER,thumbnail_status INTEGER);
+            INSERT INTO catalog_images VALUES('photo','{\"Z\":\"last\",\"A\":\"first\"}',0,1,0);").unwrap();
+        migrate_catalog_schema(&conn).unwrap();
+        let exif: String = conn
+            .query_row(
+                "SELECT exif_json FROM catalog_images WHERE path='photo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exif, r#"{"A":"first","Z":"last"}"#);
+        assert!(
+            conn.prepare("SELECT thumbnail_status FROM catalog_images")
+                .is_err()
+        );
+        for value in ["2", "-1", "0.5", "NULL", "'invalid'"] {
+            for column in ["is_raw", "is_edited"] {
+                assert!(
+                    conn.execute_batch(&format!("UPDATE catalog_images SET {column}={value}"))
+                        .is_err()
+                );
+            }
+        }
+        assert!(
+            conn.execute_batch("INSERT INTO catalog_images VALUES('bad','{}',2,0)")
+                .is_err()
+        );
+        conn.execute_batch("UPDATE catalog_images SET is_raw=1,is_edited=0")
+            .unwrap();
+        migrate_catalog_schema(&conn).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM catalog_images", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 }

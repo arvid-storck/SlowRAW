@@ -89,7 +89,6 @@ const ToneMapperSwitch = ({
         <div
           className="grid cursor-pointer"
           onClick={handleReset}
-          onDoubleClick={handleReset}
           onMouseEnter={() => setIsLabelHovered(true)}
           onMouseLeave={() => setIsLabelHovered(false)}
         >

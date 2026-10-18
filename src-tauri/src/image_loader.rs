@@ -5,7 +5,7 @@ use crate::exif_processing;
 use crate::file_management::{parse_virtual_path, read_file_mapped};
 use crate::formats::is_raw_file;
 use crate::image_processing::ImageMetadata;
-use crate::image_processing::{apply_orientation, remove_raw_artifacts_and_enhance};
+use crate::image_processing::{apply_orientation, reduce_raw_color_noise};
 use crate::mask_generation::{MaskDefinition, SubMask, generate_mask_bitmap};
 use crate::white_balance::WhiteBalance;
 use anyhow::{Context, Result, anyhow};
@@ -88,14 +88,13 @@ pub fn load_base_image_from_bytes(
     } else {
         0.0
     };
-    let color_nr_setting = settings.raw_preprocessing_color_nr.unwrap_or(0.5);
+    let color_nr_setting = settings.raw_preprocessing_color_nr.unwrap_or(0.0);
     let color_nr_amount = if color_nr_setting <= 0.0 {
         0.0
     } else {
         let x = color_nr_setting.clamp(0.01, 1.0);
         (12.0 / x - 10.0).max(0.1)
     };
-    let sharpening_amount = settings.raw_preprocessing_sharpening.unwrap_or(0.35);
     let apply_to_non_raws = settings.apply_preprocessing_to_non_raws.unwrap_or(false);
 
     crate::exif_processing::persist_exif_if_missing(
@@ -114,9 +113,9 @@ pub fn load_base_image_from_bytes(
         )
         .with_context(|| format!("RAW development failed for '{}'", path_for_ext_check))?;
         crate::highlight_recovery::apply_highlight_recovery(&mut image, highlight_compression);
-        if !use_fast_raw_dev && (color_nr_amount > 0.0 || sharpening_amount > 0.0) {
+        if !use_fast_raw_dev && color_nr_amount > 0.0 {
             let start = Instant::now();
-            remove_raw_artifacts_and_enhance(&mut image, color_nr_amount, sharpening_amount);
+            reduce_raw_color_noise(&mut image, color_nr_amount);
             log::info!(
                 "RAW enhancement for '{}' took {:?}",
                 path_for_ext_check,
@@ -127,12 +126,9 @@ pub fn load_base_image_from_bytes(
     } else {
         let mut image = load_image_with_orientation(bytes, cancel_token)?;
 
-        if apply_to_non_raws
-            && !use_fast_raw_dev
-            && (color_nr_amount > 0.0 || sharpening_amount > 0.0)
-        {
+        if apply_to_non_raws && !use_fast_raw_dev && color_nr_amount > 0.0 {
             let start = Instant::now();
-            remove_raw_artifacts_and_enhance(&mut image, color_nr_amount, sharpening_amount);
+            reduce_raw_color_noise(&mut image, color_nr_amount);
             let duration = start.elapsed();
             log::info!(
                 "Enhancing non-RAW '{}' took {:?}",

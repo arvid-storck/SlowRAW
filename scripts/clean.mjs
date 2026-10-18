@@ -10,7 +10,7 @@ if (packageJson.name !== 'slowraw' || !existsSync(join(projectRoot, 'src-tauri',
 }
 
 const dryRun = process.argv.includes('--dry-run');
-const generatedDirectories = ['dist', 'dist-ssr', join('src-tauri', 'target')];
+const generatedDirectories = ['dist', 'dist-ssr', join('src-tauri', 'target'), join('src-tauri', 'rcd', 'target')];
 const generatedFiles = [];
 if (process.argv.includes('--dependencies')) {
   generatedDirectories.push('node_modules');

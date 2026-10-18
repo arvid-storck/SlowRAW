@@ -237,6 +237,7 @@ const EditorToolbar = memo(
           clarity: 'Clarity',
           structure: 'Structure',
           sharpness: 'Sharpness',
+          blur: t('adjustments.details.blur'),
           saturation: 'Saturation',
           whiteBalance: 'White Balance',
           vibrance: 'Vibrance',

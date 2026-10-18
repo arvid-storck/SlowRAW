@@ -1622,13 +1622,78 @@ fn parse_color_grade_settings(js_cg: &serde_json::Value) -> ColorGradeSettings {
     }
 }
 
+fn detail_strength(adjustments: &serde_json::Value, visible: bool) -> f32 {
+    if !visible {
+        return 0.0;
+    }
+    let blur = adjustments["blur"]
+        .as_f64()
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    let sharpness = adjustments["sharpness"]
+        .as_f64()
+        .unwrap_or(0.0)
+        .clamp(0.0, 100.0);
+    (if blur > 0.0 { -blur } else { sharpness }) as f32 / SCALES.sharpness
+}
+
+#[cfg(test)]
+mod neutral_detail_tests {
+    use super::*;
+
+    #[test]
+    fn sharpness_and_blur_are_bounded_and_exclusive() {
+        use serde_json::json;
+        assert_eq!(detail_strength(&json!({"sharpness":0,"blur":0}), true), 0.0);
+        assert_eq!(
+            detail_strength(&json!({"sharpness":100,"blur":50}), true),
+            -1.0
+        );
+        assert_eq!(detail_strength(&json!({"sharpness":999}), true), 2.0);
+        assert_eq!(detail_strength(&json!({"blur":999}), true), -2.0);
+        assert_eq!(detail_strength(&json!({"sharpness":50}), false), 0.0);
+    }
+
+    #[test]
+    fn native_curves_cannot_descend() {
+        let points = convert_points_to_aligned(vec![
+            serde_json::json!({"x":0,"y":0}),
+            serde_json::json!({"x":80,"y":180}),
+            serde_json::json!({"x":160,"y":50}),
+            serde_json::json!({"x":255,"y":150}),
+        ]);
+        assert!(points[..4].windows(2).all(|p| p[1].y >= p[0].y));
+        assert_eq!(points[3].y, 150.0);
+    }
+}
+
 fn convert_points_to_aligned(frontend_points: Vec<serde_json::Value>) -> [Point; 16] {
+    let mut frontend_points = frontend_points;
+    frontend_points.sort_by(|a, b| {
+        a["x"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .total_cmp(&b["x"].as_f64().unwrap_or(0.0))
+    });
+    let ceiling = frontend_points
+        .last()
+        .and_then(|p| p["y"].as_f64())
+        .unwrap_or(255.0)
+        .max(
+            frontend_points
+                .first()
+                .and_then(|p| p["y"].as_f64())
+                .unwrap_or(0.0),
+        )
+        .clamp(0.0, 255.0);
+    let mut previous_y = 0.0_f64;
     let mut aligned_points = [Point::default(); 16];
     for (i, point) in frontend_points.iter().enumerate().take(16) {
         if let (Some(x), Some(y)) = (point["x"].as_f64(), point["y"].as_f64()) {
+            previous_y = y.clamp(0.0, ceiling).max(previous_y);
             aligned_points[i] = Point {
                 x: x as f32,
-                y: y as f32,
+                y: previous_y as f32,
                 _pad1: 0.0,
                 _pad2: 0.0,
             };
@@ -2074,7 +2139,7 @@ fn get_global_adjustments_from_json(
         _pad_color1: 0.0,
         _pad_color2: 0.0,
 
-        sharpness: get_val("details", "sharpness", SCALES.sharpness, None),
+        sharpness: detail_strength(js_adjustments, is_visible("details")),
         luma_noise_reduction: get_val(
             "details",
             "lumaNoiseReduction",
@@ -2283,7 +2348,7 @@ fn get_mask_adjustments_from_json(
         saturation: get_val("color", "saturation", SCALES.saturation),
         vibrance: get_val("color", "vibrance", SCALES.vibrance),
 
-        sharpness: get_val("details", "sharpness", SCALES.sharpness),
+        sharpness: detail_strength(adj, is_visible("details")),
         luma_noise_reduction: get_val("details", "lumaNoiseReduction", SCALES.luma_noise_reduction),
         color_noise_reduction: get_val(
             "details",
@@ -2428,11 +2493,7 @@ fn yc_to_rgb(y: f32, cb: f32, cr: f32) -> (f32, f32, f32) {
     (r, g, b)
 }
 
-pub fn remove_raw_artifacts_and_enhance(
-    image: &mut DynamicImage,
-    color_nr_inv_sigma: f32,
-    sharpening_amount: f32,
-) {
+pub fn reduce_raw_color_noise(image: &mut DynamicImage, color_nr_inv_sigma: f32) {
     let mut buffer = image.to_rgb32f();
     let w = buffer.width() as usize;
     let h = buffer.height() as usize;
@@ -2535,103 +2596,7 @@ pub fn remove_raw_artifacts_and_enhance(
             });
     }
 
-    if sharpening_amount > 0.0 {
-        apply_gentle_detail_enhance(&mut buffer, &ycbcr_buffer, sharpening_amount);
-    }
-
     *image = DynamicImage::ImageRgb32F(buffer);
-}
-
-fn apply_gentle_detail_enhance(
-    buffer: &mut image::ImageBuffer<image::Rgb<f32>, Vec<f32>>,
-    ycbcr_source: &[f32],
-    amount: f32,
-) {
-    let w = buffer.width() as usize;
-    let h = buffer.height() as usize;
-
-    let mut temp_blur = vec![0.0; w * h];
-    let radius = 2i32;
-
-    temp_blur
-        .par_chunks_mut(w)
-        .enumerate()
-        .for_each(|(y, row)| {
-            let row_offset = y * w;
-            for (x, row_val) in row.iter_mut().enumerate() {
-                let mut sum = 0.0;
-                let mut count = 0;
-                for kx in -radius..=radius {
-                    let sx = (x as i32 + kx).clamp(0, (w as i32) - 1) as usize;
-                    sum += ycbcr_source[(row_offset + sx) * 3];
-                    count += 1;
-                }
-                *row_val = sum / count as f32;
-            }
-        });
-
-    let output = buffer.as_mut();
-
-    output
-        .par_chunks_mut(w * 3)
-        .enumerate()
-        .for_each(|(y, rgb_row)| {
-            for x in 0..w {
-                let mut blur_sum = 0.0;
-                let mut count = 0;
-                for ky in -radius..=radius {
-                    let sy = (y as i32 + ky).clamp(0, (h as i32) - 1) as usize;
-                    blur_sum += temp_blur[sy * w + x];
-                    count += 1;
-                }
-                let blurred_val = blur_sum / count as f32;
-
-                let original_luma = ycbcr_source[(y * w + x) * 3];
-
-                let detail = original_luma - blurred_val;
-
-                let edge_strength = detail.abs();
-                let adaptive_amount = if edge_strength > 0.1 {
-                    amount * 0.3
-                } else {
-                    amount
-                };
-                let boost = detail * adaptive_amount;
-
-                let r_idx = x * 3;
-                let g_idx = r_idx + 1;
-                let b_idx = r_idx + 2;
-
-                let r = rgb_row[r_idx];
-                let g = rgb_row[g_idx];
-                let b = rgb_row[b_idx];
-
-                let new_r = r + boost;
-                let new_g = g + boost;
-                let new_b = b + boost;
-
-                let max_val = new_r.max(new_g).max(new_b);
-                let min_val = new_r.min(new_g).min(new_b);
-
-                let scale = if max_val > 1.0 || min_val < 0.0 {
-                    if max_val > 1.0 && min_val < 0.0 {
-                        0.0
-                    } else if max_val > 1.0 {
-                        (1.0 - r.max(g).max(b)) / boost.max(0.001)
-                    } else {
-                        r.min(g).min(b) / (-boost).max(0.001)
-                    }
-                } else {
-                    1.0
-                };
-
-                let safe_boost = boost * scale.clamp(0.0, 1.0);
-
-                rgb_row[r_idx] = (r + safe_boost).max(0.0);
-                rgb_row[g_idx] = (g + safe_boost).max(0.0);
-                rgb_row[b_idx] = (b + safe_boost).max(0.0);
-            }
-        });
 }
 
 #[derive(Serialize, Clone)]

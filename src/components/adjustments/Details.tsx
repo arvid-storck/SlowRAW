@@ -28,7 +28,12 @@ export default function DetailsPanel({
 
   const handleAdjustmentChange = (key: string, value: string) => {
     const numericValue = parseInt(value, 10);
-    setAdjustments((prev: Partial<Adjustments>) => ({ ...prev, [key]: numericValue }));
+    setAdjustments((prev: Partial<Adjustments>) => ({
+      ...prev,
+      [key]: numericValue,
+      ...(key === DetailsAdjustment.Sharpness ? { blur: 0 } : {}),
+      ...(key === DetailsAdjustment.Blur ? { sharpness: 0 } : {}),
+    }));
   };
 
   const hiddenTools = getHiddenAdjustmentTools(appSettings?.adjustmentLayout);
@@ -45,10 +50,19 @@ export default function DetailsPanel({
           <Slider
             label={t('adjustments.details.sharpness')}
             max={100}
-            min={-100}
+            min={0}
             onChange={(e: any) => handleAdjustmentChange(DetailsAdjustment.Sharpness, e.target.value)}
             step={1}
             value={adjustments.sharpness}
+            onDragStateChange={onDragStateChange}
+          />
+          <Slider
+            label={t('adjustments.details.blur')}
+            min={0}
+            max={100}
+            step={1}
+            value={adjustments.blur ?? 0}
+            onChange={(e) => handleAdjustmentChange(DetailsAdjustment.Blur, String(e.target.value))}
             onDragStateChange={onDragStateChange}
           />
           {!isForMask && (

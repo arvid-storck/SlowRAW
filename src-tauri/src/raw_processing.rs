@@ -6,7 +6,7 @@ use rawler::imgop::xyz::Illuminant;
 use rawler::{
     decoders::{Orientation, RawDecodeParams},
     imgop::develop::{Intermediate, ProcessingStep, RawDevelop},
-    rawimage::{RawImage, RawPhotometricInterpretation},
+    rawimage::{RawImage, RawImageData, RawPhotometricInterpretation},
     rawsource::RawSource,
 };
 use std::sync::{
@@ -68,6 +68,96 @@ fn is_linear_raw_format(raw_image: &RawImage) -> bool {
         raw_image.photometric,
         RawPhotometricInterpretation::LinearRaw
     )
+}
+
+// Keep Rawler's decoding, scaling, camera calibration and crop handling. Only
+// replace demosaicing for ordinary RGB Bayer sensors; other sensor layouts keep
+// Rawler's sensor-specific developer.
+fn demosaic_bayer(raw: &mut RawImage) -> Result<bool> {
+    let RawPhotometricInterpretation::Cfa(config) = &raw.photometric else {
+        return Ok(false);
+    };
+    if raw.cpp != 1
+        || config.cfa.width != 2
+        || config.cfa.height != 2
+        || !config.cfa.is_rgb()
+        || raw.fuji_rotation_width.is_some()
+        || raw.width < 32
+        || raw.height < 32
+    {
+        return Ok(false);
+    }
+    let pattern = std::array::from_fn(|i| config.cfa.color_at(i / 2, i % 2) as u32);
+    raw.apply_scaling()?;
+    let RawImageData::Float(mut pixels) =
+        std::mem::replace(&mut raw.data, RawImageData::Float(Vec::new()))
+    else {
+        return Err(anyhow!(
+            "Rawler did not produce floating-point sensor samples"
+        ));
+    };
+    let rgb = slowraw_rcd::demosaic(&mut pixels, raw.width, raw.height, pattern)
+        .map_err(anyhow::Error::msg)?;
+    raw.data = RawImageData::Float(rgb);
+    raw.cpp = 3;
+    raw.photometric = RawPhotometricInterpretation::LinearRaw;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rawler::{
+        CFA,
+        cfa::PlaneColor,
+        decoders::Camera,
+        imgop::{Dim2, Point, Rect},
+        rawimage::CFAConfig,
+    };
+
+    #[test]
+    fn rcd_uses_sensor_coordinates_and_rawler_applies_the_crop_once() {
+        let cfa = CFA::new("RGGB");
+        let colors = PlaneColor::new("RGB");
+        let camera = Camera {
+            cfa: cfa.clone(),
+            plane_color: colors.clone(),
+            blacklevel: Some(vec![512]),
+            whitelevel: Some(vec![4095]),
+            ..Default::default()
+        };
+        let values = [0.25, 0.5, 0.75];
+        let pixels = (0..64 * 64)
+            .map(|i| 512.0 + 3583.0 * values[cfa.color_at(i / 64, i % 64)])
+            .collect();
+        let mut raw = RawImage::new_with_data(
+            camera,
+            RawImageData::Float(pixels),
+            64,
+            64,
+            1,
+            [1.0; 4],
+            RawPhotometricInterpretation::Cfa(CFAConfig::new(&cfa, &colors)),
+            None,
+            None,
+            false,
+        );
+        raw.crop_area = Some(Rect::new(Point::new(3, 5), Dim2::new(58, 54)));
+        assert!(demosaic_bayer(&mut raw).unwrap());
+        assert!(!demosaic_bayer(&mut raw).unwrap());
+        let developed = RawDevelop::new_with(&[ProcessingStep::CropDefault])
+            .develop_intermediate(&raw)
+            .unwrap();
+        let Intermediate::ThreeColor(rgb) = developed else {
+            panic!("Expected RGB");
+        };
+        assert_eq!((rgb.dim().w, rgb.dim().h), (58, 54));
+        for pixel in rgb.data {
+            for c in 0..3 {
+                assert!((pixel[c] - values[c]).abs() < 0.0001);
+            }
+        }
+    }
 }
 
 #[inline]
@@ -137,6 +227,13 @@ fn develop_internal(
     }
 
     let mut developer = RawDevelop::default();
+
+    check_cancel()?;
+    if demosaic_bayer(&mut raw_image)? {
+        developer
+            .steps
+            .retain(|&step| step != ProcessingStep::Rescale && step != ProcessingStep::Demosaic);
+    }
 
     if is_linear_format {
         developer.steps.retain(|&step| {

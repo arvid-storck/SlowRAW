@@ -96,6 +96,7 @@
     },
     "details": {
       "blueYellow": "Blue/Yellow",
+      "blur": "Blur",
       "centre": "Centré",
       "chromaticAberration": "Chromatic Aberration",
       "clarity": "Clarity",
@@ -695,8 +696,6 @@
         "title": "Camera Details"
       },
       "clickToEdit": "Click to edit",
-      "copied": "Copied",
-      "copy": "Copy",
       "emptyClickToAdd": "Empty (Click to add)",
       "extendedExif": {
         "title": "Extended EXIF"
@@ -1652,7 +1651,7 @@
       "nativeDpi": "Render at native DPI",
       "preprocessing": {
         "applyPreprocessing": "Apply Preprocessing to Non-RAWs",
-        "applyPreprocessingDesc": "If enabled, the base color noise reduction and pre-sharpening above will also be applied to standard formats.",
+        "applyPreprocessingDesc": "Apply the optional color noise reduction above to standard image formats.",
         "colorNr": "Base Color Noise Reduction",
         "colorNrDesc": "Applies a cross-bilateral filter early in the pipeline to remove chroma noise. Higher value = Stronger NR.",
         "defaultNonRawTonemapper": "Default Non-RAW Tonemapper",
@@ -1671,8 +1670,6 @@
         },
         "linearRaw": "Linear RAW Processing",
         "linearRawDesc": "Fixes color casts or pink tint in some DNG files. Controls how already processed LinearRAW data is interpreted.",
-        "sharpening": "Base Pre-Sharpening",
-        "sharpeningDesc": "Applies gentle detail enhancement early in the pipeline. Higher value = More sharpening.",
         "title": "Image Preprocessing",
         "tonemapperOptions": {
           "agx": "AgX",

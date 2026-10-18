@@ -46,6 +46,131 @@ Startup migrates saved `adjustmentVisibility` preferences into
 the current layout when `adjustmentLayout` is absent.
 Shift/Alt slows curve dragging to one fifth; inactive channels show colored curves
 and parametric reference markers.
+The reset button restores the active curve channel. Point dragging is bounded by
+neighboring Y values; parametric curves and native curve uploads use monotonically
+non-decreasing points. Shared slider labels are keyboard-accessible reset controls.
+
+### RAW development and neutral detail controls
+
+Rawler decodes and normalizes sensor samples. Standard RGB Bayer images use the
+statically linked upstream librtprocess RCD implementation through the
+`src-tauri/rcd` Rust adapter. Other sensor layouts and Fuji rotated sensors use
+Rawler's sensor-specific development. RCD runs before Rawler's camera color
+calibration and final crop; floating-point scaling preserves highlight headroom.
+The adapter builds upstream RCD and border interpolation from a pinned Git commit,
+cached under `src-tauri/target/rcd-source`. The first clean build needs Git and network
+access. The library is linked into the executable for desktop distribution.
+
+Sharpness and Blur are exclusive 0–100 controls in Details, including mask
+adjustments. They share the native signed detail-filter parameter: positive values
+sharpen, negative values blur, and zero returns the input color. Dedicated blur
+passes for this filter are generated only when an active detail amount requires them.
+The base image loader offers optional color noise reduction, defaulting to zero.
+Clarity and Structure are separate adjustments, also defaulting to zero.
+
+Run `cargo test --manifest-path src-tauri/Cargo.toml --workspace --lib` for native
+and RCD checks, and `node scripts/test-neutral-processing.mjs` for curve/control checks.
+
+### From RAW sensor data to an image on screen
+
+The normal editor loading path is:
+
+```text
+RAW file bytes
+  -> Rawler: decode sensor samples and camera metadata
+  -> black-level subtraction and floating-point normalization
+  -> RCD demosaicing for supported Bayer sensors
+  -> Rawler: camera white balance, color calibration and sensor crop
+  -> linear RGB (32-bit float per channel), then EXIF orientation
+  -> configured Highlight Recovery and optional color noise reduction
+  -> in-memory base-image cache
+  -> preview rendering: geometry, adjustments, tone mapping and sRGB encoding
+  -> in-memory JPEG preview -> frontend image canvas
+```
+
+#### 1. Reading and decoding the sensor data
+
+`image_loader.rs` reads the source through `read_file_mapped`, falling back to a
+normal file read when memory mapping fails. Loading runs on a blocking worker;
+generation checks discard obsolete loads when the user switches images.
+
+`raw_processing.rs::develop_internal` gives these bytes to Rawler's format-specific
+decoder. The result contains sensor samples, the color-filter-array pattern,
+black/white levels, camera color matrices, white-balance coefficients and crop
+information. EXIF supplies display orientation. For an ordinary Bayer sensor,
+each sensor position measures one color component, rather than a complete RGB
+pixel. Decoding unpacks these measurements; demosaicing reconstructs the missing
+components in the next stage.
+
+#### 2. Normalization and demosaicing
+
+Rawler's `apply_scaling` subtracts sensor black levels and scales samples into
+floating-point values. SlowRAW temporarily raises the normalization white level
+and compensates after development using the original black/white range. This
+keeps highlight values available above nominal white during development.
+
+`demosaic_bayer` selects RCD for single-component, ordinary 2x2 RGB Bayer mosaics
+at least 32x32 pixels, excluding Fuji rotated-sensor layouts. The `src-tauri/rcd`
+adapter calls upstream librtprocess to estimate the missing RGB components from
+neighboring sensor samples. It handles the sensor's actual CFA pattern and scales
+its scratch buffer to the library's numeric range before restoring the input units.
+Rawler's own rescale/demosaic steps are then skipped because they have already run.
+Other sensor layouts use Rawler's sensor-specific development; already-demosaiced
+Linear RAW data follows the Linear RAW branch.
+
+librtprocess is an external source dependency statically linked into SlowRAW.
+The adapter passes pixel buffers within the same process. See
+[Updating the RCD library](#updating-the-rcd-library) for its pinned source revision
+and update command.
+
+#### 3. Camera color becomes working RGB
+
+The normal calibrated path uses Rawler's camera white-balance coefficients and
+camera color matrix to convert sensor-dependent colors to linear working RGB.
+These are global color operations: demosaicing has supplied three channels, but
+the matrix is still needed to interpret what the camera's red, green and blue
+measurements mean. `multi_exposure.rs` handles the special Canon multi-exposure
+white-balance case.
+
+Rawler handles the sensor-specific rotation/crop where applicable and the default
+image crop. SlowRAW restores the original sensor-range scale, bounds negative
+values and limits highlight headroom. The normal editor requests a high limit
+of 1000; fast loading uses a limit of 1. The result is an `ImageRgb32F` buffer,
+with three `f32` channels per pixel, rotated/flipped according to EXIF orientation.
+
+Rawler's sRGB gamma step is omitted here, so the normal base image remains linear.
+The Linear RAW Processing setting controls optional inverse-gamma handling and
+whether calibration runs for files already identified as Linear RAW.
+
+#### 4. Base-image processing and caching
+
+Back in `image_loader.rs`, `highlight_recovery.rs` applies the configured Highlight
+Recovery setting. Optional RAW color noise reduction runs for non-fast loading
+when its amount is above zero; its default is zero. The resulting base image and
+EXIF are cached in memory, and `LoadedImage` retains a shared image reference plus
+the camera's reference white balance. Here, "original image" in application state
+means this developed base image, not the untouched sensor mosaic.
+
+RCD reconstructs color detail; the base loader adds no separate sharpening pass.
+Sharpness and Blur default to zero, which bypasses their detail filter. Clarity
+and Structure are independent controls and also default to zero. Demosaicing and
+later preview resampling still affect the appearance of fine detail, even when
+additional sharpening is disabled.
+
+#### 5. Linear RGB becomes a visible preview
+
+`useImageProcessing.ts` requests a preview sized for the current viewport and zoom.
+The native image/GPU pipeline applies the current geometry and edits to the
+developed base image. Tone mapping and the display sRGB transfer function turn
+linear light values into display-ready values. This display conversion is
+separate from RAW decoding and demosaicing.
+
+The backend returns the rendered preview as JPEG bytes in memory. The frontend
+creates a Blob URL and displays it through `ImageCanvas.tsx`; zoomed updates can
+use a rendered region-of-interest patch. This JPEG is a display preview, while
+the cached floating-point base remains available for subsequent renders and
+export. The RAW-to-editor handoff uses memory buffers rather than an intermediate
+image file on disk.
 
 ### Guided filtering and export profiles
 
@@ -65,6 +190,9 @@ normalization retains this object as the white-balance input. `src/utils/whiteBa
 defines UI limits and logarithmic Kelvin slider scaling. `Color.tsx` displays Kelvin
 and tint; `ImageCanvas.tsx` maps clicked/dragged regions through crop, orientation,
 flips and perspective into original-image coordinates.
+Temperature and tint use native `f32` storage. Frontend values are rounded to the
+same precision with `Math.fround`; chromaticity and Bradford calculations use `f64`.
+Sidecars represent these values as JSON numbers, whose text format has no bit-depth type.
 
 `src-tauri/src/white_balance.rs` converts camera matrices/neutral coefficients into
 as-shot Kelvin/tint and computes Bradford LMS adaptation. Its bounded metadata cache
@@ -101,6 +229,7 @@ PNG 16-bit uses the GPU's 16-bit render output.
 The metadata panel shows camera/exposure/file details and a collapsed, independently
 scrollable list of additional readable EXIF values. Binary EXIF fields are skipped
 during extraction.
+Read-only metadata values support normal text selection.
 
 ### Workspace panel layout
 
@@ -185,8 +314,13 @@ Catalog filters are combined in SQLite, while
 `src/utils/catalog.ts` retains the active image's optimistic rating when a new
 rating removes it from the filtered page. Opening a video catalog entry launches
 the system player.
+`catalog_images.exif_json` uses key-sorted serialization through `BTreeMap`.
+Schema version 2 stores `is_raw` and `is_edited` as constrained 0/1 integers;
+the schema upgrader validates these fields and canonicalizes existing EXIF JSON.
+Thumbnail validity is determined by the thumbnail cache files and renderer keys.
 RAW development has one path: `raw_processing.rs` uses the linked rawler crate
-and hands pixels to `image_loader.rs` in memory. `highlight_recovery.rs` applies the
+with the RCD adapter for standard RGB Bayer demosaicing, and hands pixels to
+`image_loader.rs` in memory. `highlight_recovery.rs` applies the
 user setting after development; Linear RAW Processing is controlled by the
 persistent `linear_raw_mode` setting. Clone/Heal strokes live in sidecar mask adjustments and
 are composited during image rendering; the source image remains intact.
@@ -426,6 +560,7 @@ are composited during image rendering; the source image remains intact.
 | `image_loader.rs` | Image decoding/loading, in-process RAW dispatch, Highlight Recovery, and composite preview support. |
 | `highlight_recovery.rs` | Adjustable highlight recovery applied after RAW development. |
 | `raw_processing.rs` | In-process rawler development, Linear RAW modes, and RAW orientation. |
+| `../rcd/` | Rust/C++ adapter and build recipe for the pinned upstream librtprocess RCD library. |
 | `white_balance.rs` | Camera white-balance metadata, Kelvin/tint conversion, cached references and Bradford adaptation. |
 | `multi_exposure.rs` | Canon in-camera multi-exposure white-balance handling used by RAW development. |
 | `image_processing.rs` | Core adjustment pipeline, geometry, color, masks, histogram/waveform data. |
@@ -451,12 +586,28 @@ are composited during image rendering; the source image remains intact.
 | `shaders/flare.wgsl` | GPU flare shader. |
 | `shaders/shader.wgsl` | Main GPU image-processing shader. |
 
-## Updating RAW engine and rawler EXIF tool
+## Updating the RAW engine
+
+From the project root, updating rawler in the source code only requires:
+
+```powershell
+cargo update --manifest-path src-tauri/Cargo.toml -p rawler
+```
+
+`Cargo.toml` points to upstream rawler and `Cargo.lock` records the selected
+revision. Keep the updated lockfile. Rebuild SlowRAW normally afterward.
+If upstream changes its API, adapt `raw_processing.rs` (development/orientation)
+and `exif_processing.rs` (metadata). `image_loader.rs` receives decoded pixels
+directly in memory.
+`multi_exposure.rs` and `highlight_recovery.rs` provide additional processing.
+Linear RAW Processing and Highlight Recovery are persisted in `app_settings.rs`.
+
+## Updating RAW and EXIF dependencies together
 
 Before compiling, update Rawler and kamadak-exif from the project root:
 
 ```powershell
-npm run update:rawler
+npm run update:metadata
 ```
 
 `Cargo.toml` points to upstream rawler and `Cargo.lock` records the selected
@@ -474,6 +625,18 @@ Linear RAW Processing and Highlight Recovery are persisted in `app_settings.rs`.
 ```powershell
 npm run update:kamadak-exif
 ```
+
+## Updating the RCD library
+
+```powershell
+npm run update:rcd
+```
+
+The command updates `src-tauri/rcd/upstream-revision` to librtprocess's current
+upstream HEAD. Keep this pinned revision with the source. The next native build
+fetches that commit and statically rebuilds the RCD library. Run the workspace tests
+after updating. An upstream API change is handled in `rcd/bridge.cpp`; Rawler remains
+the RAW decoder. The bundled library license is in `resources/licenses/librtprocess.txt`.
 
 ## Push to github
 

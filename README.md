@@ -1,3 +1,9 @@
+[![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge\&logo=rust\&logoColor=white)](https://www.rust-lang.org/)
+[![wgpu](https://img.shields.io/badge/wgpu-%23282C34.svg?style=for-the-badge\&logo=webgpu\&logoColor=white)](https://wgpu.rs/)
+[![React](https://img.shields.io/badge/react-%2320232a.svg?style=for-the-badge\&logo=react\&logoColor=%2361DAFB)](https://react.dev/)
+[![Tauri](https://img.shields.io/badge/Tauri-24C8DB?style=for-the-badge\&logo=tauri\&logoColor=white)](https://tauri.app/)
+[![AGPL-3.0](https://img.shields.io/badge/License-AGPL_v3-blue.svg?style=for-the-badge)](https://opensource.org/licenses/AGPL-3.0)
+
 </div>
 
 ## Why it exists
@@ -14,12 +20,15 @@ But all i found had atleast one of the following:
 
 ## What This Version Is
 
+Author: Arvid Storck, chatgpt.
+
 This version focuses on the core photographic workflow:
 
 - **Local SQLite catalog** for large photo libraries
 - **Simple RAW editing** with a focused, non-destructive workflow
 - **Local processing** of photos, metadata, thumbnails, and exports
 - **Built-in RAW engine** updated through the source dependency and application rebuild
+- **RCD Bayer demosaicing** with manual sharpening and blur controls
 - **Separately updateable Lensfun profiles**
 - **Local AI/ML for traditional processing**, such as noise reduction
 - **No generative AI image editing**
@@ -66,6 +75,15 @@ The application keeps the original files on normal local storage while using a d
 
 The editing workflow is intentionally focused rather than being expanded into a cloud or generative-AI platform.
 
+## The Idea
+
+This version grew from a simple goal: combine a straightforward RAW editor with a real local catalog that remains practical as a photo library grows.
+
+The original RapidRAW project provided a strong base for the editor and UI. This version adds a stronger catalog-oriented workflow for large local collections.
+
+The catalog was introduced because large libraries can become difficult to manage efficiently when the application relies mainly on filesystem browsing. A database-backed catalog makes filtering, sorting, metadata queries, albums, and large-library navigation much more practical.
+
+The result is intended to stay simple.
 
 ## RAW Engine & Lens Profiles
 
@@ -73,7 +91,23 @@ The editing workflow is intentionally focused rather than being expanded into a 
 
 RAW development uses [dnglab / rawler](https://github.com/dnglab/dnglab/tree/main/rawler) linked into SlowRAW. RAW files work immediately after installation; no separate engine, toolchain download, or temporary image file is required at runtime. Linear RAW Processing is available in Settings.
 
-This updates the source dependencies within the Cargo.toml requirements and records them in Cargo.lock. Compile SlowRAW normally afterward. See [docs/README.md](docs/README.md#updating-raw-and-exif-dependencies) for integration details and compatibility checks.
+Standard RGB Bayer images use RCD demosaicing from [librtprocess](https://github.com/CarVac/librtprocess). Sharpening is applied manually in Details; Sharpness and Blur each range from 0 to 100 and reset the other control when changed.
+
+To update the separately pinned RCD library before rebuilding:
+
+```powershell
+npm run update:rcd
+```
+
+The first clean source build requires Git, a C++ compiler and network access to fetch the library. Distributed builds include the compiled library.
+
+Before compiling, update Rawler and kamadak-exif together from the project root:
+
+```powershell
+npm run update:metadata
+```
+
+This updates the source dependencies within the Cargo.toml requirements and records them in Cargo.lock. Compile SlowRAW normally afterward. See [docs/README.md](docs/README.md#updating-raw-and-exif-dependencies-together) for integration details and checks.
 
 ### Separately Updateable Lens Profiles
 
@@ -131,10 +165,14 @@ Supported desktop platforms:
 You'll need [Rust](https://www.rust-lang.org/tools/install) and [Node.js](https://nodejs.org/).
 
 ```bash
-# 1. Install frontend dependencies
+# 1. Clone the repository
+git clone <YOUR-REPOSITORY-URL>
+cd <YOUR-REPOSITORY-DIRECTORY>
+
+# 2. Install frontend dependencies
 npm ci
 
-# 2. Start the application
+# 3. Start the application
 npm start
 ```
 
@@ -245,6 +283,7 @@ This project is based on and builds upon the following open-source projects:
 
 * **[RapidRAW](https://github.com/CyberTimon/RapidRAW):** Original application and foundation.
 * **[rawler](https://github.com/dnglab/dnglab/tree/main/rawler):** RAW decoding infrastructure.
+* **[librtprocess](https://github.com/CarVac/librtprocess):** RCD Bayer demosaicing and border interpolation.
 * **[lensfun](https://lensfun.github.io/):** Lens-correction library and profile database.
 * **[nind-denoise](https://github.com/trougnouf/nind-denoise):** Local model-based noise reduction.
 * **[NegPy](https://github.com/marcinz606/NegPy):** Inspiration for film-negative conversion.
@@ -258,3 +297,13 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 See the [LICENSE](LICENSE) file for the complete license text.
 
 This repository is based on RapidRAW by CyberTimon and contains substantial modifications.
+
+### Update RAW and EXIF support before compiling
+
+```powershell
+npm run update:metadata
+```
+
+This updates Rawler and kamadak-exif in `src-tauri/Cargo.lock` within the declared
+dependency requirements. Compile normally afterward. PNG export supports
+8/16-bit color.

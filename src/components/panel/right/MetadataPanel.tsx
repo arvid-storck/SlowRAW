@@ -52,22 +52,7 @@ const CAMERA_ICONS: Record<string, React.FC> = {
 };
 
 function MetadataItem({ label, value }: MetaDataItemProps) {
-  const { t } = useTranslation();
-  const [isHovered, setIsHovered] = useState(false);
-  const [copied, setCopied] = useState(false);
-
   const strValue = String(value);
-
-  const handleCopy = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(strValue);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy', err);
-    }
-  };
 
   return (
     <div className="flex justify-between items-start gap-4 py-1.5 px-2 rounded-md hover:bg-card-active transition-colors cursor-default">
@@ -79,36 +64,14 @@ function MetadataItem({ label, value }: MetaDataItemProps) {
       >
         {label}
       </Text>
-      <div
-        className="grid cursor-pointer text-right min-w-0 flex-1"
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => {
-          setIsHovered(false);
-          setCopied(false);
-        }}
-        onClick={handleCopy}
+      <Text
+        variant={TextVariants.small}
+        color={TextColors.primary}
+        className="break-words min-w-0 text-right line-clamp-3 select-text"
         data-tooltip={strValue.length > 500 ? strValue.slice(0, 500) + '...' : strValue}
       >
-        <Text
-          variant={TextVariants.small}
-          color={TextColors.primary}
-          className={clsx(
-            'col-start-1 row-start-1 break-words min-w-0 text-right line-clamp-3 transition-opacity duration-200 ease-in-out select-none',
-            isHovered ? 'opacity-0' : 'opacity-100',
-          )}
-        >
-          {strValue}
-        </Text>
-        <span
-          aria-hidden={!isHovered}
-          className={clsx(
-            'col-start-1 row-start-1 text-xs font-medium text-text-primary select-none transition-opacity duration-200 ease-in-out pointer-events-none flex items-center justify-end h-full',
-            isHovered ? 'opacity-100' : 'opacity-0',
-          )}
-        >
-          {copied ? t('editor.metadata.copied') : t('editor.metadata.copy')}
-        </span>
-      </div>
+        {strValue}
+      </Text>
     </div>
   );
 }

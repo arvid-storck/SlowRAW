@@ -393,8 +393,7 @@ export default function SettingsPanel({
     useWgpuRenderer: appSettings?.useWgpuRenderer ?? (osPlatform === 'linux' ? false : true),
     thumbnailWorkerThreads: appSettings?.thumbnailWorkerThreads ?? 4,
     imageCacheSize: appSettings?.imageCacheSize ?? 5,
-    rawPreprocessingColorNr: appSettings?.rawPreprocessingColorNr ?? 0.5,
-    rawPreprocessingSharpening: appSettings?.rawPreprocessingSharpening ?? 0.35,
+    rawPreprocessingColorNr: appSettings?.rawPreprocessingColorNr ?? 0.0,
     applyPreprocessingToNonRaws: appSettings?.applyPreprocessingToNonRaws ?? false,
   });
   const [restartRequired, setRestartRequired] = useState(false);
@@ -495,8 +494,7 @@ export default function SettingsPanel({
       useWgpuRenderer: appSettings?.useWgpuRenderer ?? true,
       thumbnailWorkerThreads: appSettings?.thumbnailWorkerThreads ?? 4,
       imageCacheSize: appSettings?.imageCacheSize ?? 5,
-      rawPreprocessingColorNr: appSettings?.rawPreprocessingColorNr ?? 0.5,
-      rawPreprocessingSharpening: appSettings?.rawPreprocessingSharpening ?? 0.35,
+      rawPreprocessingColorNr: appSettings?.rawPreprocessingColorNr ?? 0.0,
       applyPreprocessingToNonRaws: appSettings?.applyPreprocessingToNonRaws ?? false,
     });
     setRestartRequired(false);
@@ -522,7 +520,6 @@ export default function SettingsPanel({
         key === 'rawHighlightCompression' ||
         key === 'rawHighlightRecoveryEnabled' ||
         key === 'rawPreprocessingColorNr' ||
-        key === 'rawPreprocessingSharpening' ||
         key === 'applyPreprocessingToNonRaws'
       ) {
         await invoke('clear_image_caches');
@@ -1560,27 +1557,9 @@ export default function SettingsPanel({
                           max={1.0}
                           step={0.05}
                           value={processingSettings.rawPreprocessingColorNr}
-                          defaultValue={0.5}
+                          defaultValue={0}
                           onChange={(e: any) =>
                             handleProcessingSettingChange('rawPreprocessingColorNr', parseFloat(e.target.value))
-                          }
-                          fillOrigin="min"
-                        />
-                      </SettingItem>
-
-                      <SettingItem
-                        label={t('settings.processing.preprocessing.sharpening')}
-                        description={t('settings.processing.preprocessing.sharpeningDesc')}
-                      >
-                        <Slider
-                          label={t('settings.tagging.amount')}
-                          min={0}
-                          max={1.0}
-                          step={0.05}
-                          value={processingSettings.rawPreprocessingSharpening}
-                          defaultValue={0.35}
-                          onChange={(e: any) =>
-                            handleProcessingSettingChange('rawPreprocessingSharpening', parseFloat(e.target.value))
                           }
                           fillOrigin="min"
                         />

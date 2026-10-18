@@ -24,10 +24,10 @@ export function withKelvinWhiteBalance<T>(
     ...adjustments,
     whiteBalance: {
       temperature: Number.isFinite(whiteBalance.temperature)
-        ? Math.max(MIN_TEMPERATURE, Math.min(MAX_TEMPERATURE, whiteBalance.temperature))
+        ? Math.fround(Math.max(MIN_TEMPERATURE, Math.min(MAX_TEMPERATURE, whiteBalance.temperature)))
         : REFERENCE_WHITE_BALANCE.temperature,
       tint: Number.isFinite(whiteBalance.tint)
-        ? Math.max(-MAX_TINT, Math.min(MAX_TINT, whiteBalance.tint))
+        ? Math.fround(Math.max(-MAX_TINT, Math.min(MAX_TINT, whiteBalance.tint)))
         : REFERENCE_WHITE_BALANCE.tint,
     },
   };

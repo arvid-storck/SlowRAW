@@ -68,6 +68,7 @@ export enum DetailsAdjustment {
   ColorNoiseReduction = 'colorNoiseReduction',
   LumaNoiseReduction = 'lumaNoiseReduction',
   Sharpness = 'sharpness',
+  Blur = 'blur',
   SharpnessThreshold = 'sharpnessThreshold',
   ChromaticAberrationRedCyan = 'chromaticAberrationRedCyan',
   ChromaticAberrationBlueYellow = 'chromaticAberrationBlueYellow',
@@ -236,6 +237,7 @@ export interface Adjustments {
   sectionVisibility: SectionVisibility;
   shadows: number;
   sharpness: number;
+  blur: number;
   sharpnessThreshold: number;
   showClipping: boolean;
   structure: number;
@@ -340,6 +342,7 @@ export interface MaskAdjustments {
   sectionVisibility: SectionVisibility;
   shadows: number;
   sharpness: number;
+  blur: number;
   sharpnessThreshold: number;
   structure: number;
   whiteBalance: WhiteBalance | null;
@@ -481,6 +484,7 @@ export const INITIAL_MASK_ADJUSTMENTS: MaskAdjustments = {
   },
   shadows: 0,
   sharpness: 0,
+  blur: 0,
   sharpnessThreshold: 15,
   structure: 0,
   whiteBalance: null,
@@ -571,6 +575,7 @@ export const INITIAL_ADJUSTMENTS: Adjustments = {
   },
   shadows: 0,
   sharpness: 0,
+  blur: 0,
   sharpnessThreshold: 15,
   showClipping: false,
   structure: 0,
@@ -593,22 +598,30 @@ export const INITIAL_ADJUSTMENTS: Adjustments = {
 };
 
 const deepCloneCurves = (curves: any): Curves => ({
-  blue: curves?.blue?.map((p: Coord) => ({ ...p })) || [
-    { x: 0, y: 0 },
-    { x: 255, y: 255 },
-  ],
-  green: curves?.green?.map((p: Coord) => ({ ...p })) || [
-    { x: 0, y: 0 },
-    { x: 255, y: 255 },
-  ],
-  luma: curves?.luma?.map((p: Coord) => ({ ...p })) || [
-    { x: 0, y: 0 },
-    { x: 255, y: 255 },
-  ],
-  red: curves?.red?.map((p: Coord) => ({ ...p })) || [
-    { x: 0, y: 0 },
-    { x: 255, y: 255 },
-  ],
+  blue: curves?.blue
+    ? monotonicCurve(curves.blue)
+    : [
+        { x: 0, y: 0 },
+        { x: 255, y: 255 },
+      ],
+  green: curves?.green
+    ? monotonicCurve(curves.green)
+    : [
+        { x: 0, y: 0 },
+        { x: 255, y: 255 },
+      ],
+  luma: curves?.luma
+    ? monotonicCurve(curves.luma)
+    : [
+        { x: 0, y: 0 },
+        { x: 255, y: 255 },
+      ],
+  red: curves?.red
+    ? monotonicCurve(curves.red)
+    : [
+        { x: 0, y: 0 },
+        { x: 255, y: 255 },
+      ],
 });
 
 const deepCloneParametric = (pCurve: any): ParametricCurve => ({
@@ -671,6 +684,7 @@ export const normalizeLoadedAdjustments = (loadedAdjustments: Adjustments): any 
           ...INITIAL_MASK_ADJUSTMENTS.sectionVisibility,
           ...(containerAdjustments.sectionVisibility || {}),
         },
+        ...normalizeDetailSettings(containerAdjustments),
         sharpnessThreshold: containerAdjustments.sharpnessThreshold ?? INITIAL_MASK_ADJUSTMENTS.sharpnessThreshold,
       },
       subMasks: normalizedSubMasks,
@@ -747,9 +761,30 @@ export const normalizeLoadedAdjustments = (loadedAdjustments: Adjustments): any 
       ...INITIAL_ADJUSTMENTS.sectionVisibility,
       ...(loadedAdjustments.sectionVisibility || {}),
     },
+    ...normalizeDetailSettings(loadedAdjustments),
     sharpnessThreshold: loadedAdjustments.sharpnessThreshold ?? INITIAL_ADJUSTMENTS.sharpnessThreshold,
   };
 };
+
+export function normalizeDetailSettings(value: { sharpness?: number; blur?: number }) {
+  const sharpness = Number.isFinite(value.sharpness) ? value.sharpness! : 0;
+  const blur = Number.isFinite(value.blur) ? Math.max(0, Math.min(100, value.blur!)) : 0;
+  return { sharpness: blur > 0 ? 0 : Math.max(0, Math.min(100, sharpness)), blur };
+}
+
+export function monotonicCurve(points: Array<Coord>): Array<Coord> {
+  const sorted = points
+    .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
+    .map((p) => ({ x: Math.max(0, Math.min(255, p.x)), y: Math.max(0, Math.min(255, p.y)) }))
+    .sort((a, b) => a.x - b.x)
+    .filter((p, i, all) => i === 0 || p.x > all[i - 1].x);
+  const ceiling = Math.max(sorted[0]?.y ?? 0, sorted.at(-1)?.y ?? 255);
+  let previous = 0;
+  return sorted.map((p) => {
+    previous = Math.max(previous, Math.min(ceiling, p.y));
+    return { x: p.x, y: previous };
+  });
+}
 
 export interface AdjustmentGroup {
   label: string;
@@ -801,7 +836,7 @@ export const ADJUSTMENT_GROUPS: Record<string, AdjustmentGroup[]> = {
     },
     {
       label: 'modals.copyPaste.groups.sharpness',
-      keys: [DetailsAdjustment.Sharpness, DetailsAdjustment.SharpnessThreshold],
+      keys: [DetailsAdjustment.Sharpness, DetailsAdjustment.Blur, DetailsAdjustment.SharpnessThreshold],
     },
     {
       label: 'modals.copyPaste.groups.noiseReduction',
@@ -895,6 +930,7 @@ export const ADJUSTMENT_SECTIONS: Sections = {
     DetailsAdjustment.Structure,
     DetailsAdjustment.Centré,
     DetailsAdjustment.Sharpness,
+    DetailsAdjustment.Blur,
     DetailsAdjustment.SharpnessThreshold,
     DetailsAdjustment.LumaNoiseReduction,
     DetailsAdjustment.ColorNoiseReduction,

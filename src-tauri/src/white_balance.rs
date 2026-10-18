@@ -57,8 +57,8 @@ const ROBERTSON_ISOTHERMS: [[f64; 4]; 31] = [
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub struct WhiteBalance {
-    pub temperature: f64,
-    pub tint: f64,
+    pub temperature: f32,
+    pub tint: f32,
 }
 
 fn isotherm_direction(slope: f64) -> (f64, f64) {
@@ -108,8 +108,8 @@ impl WhiteBalance {
                 let offset = ((u - locus_u) * du + (v - locus_v) * dv) / len;
 
                 return Self {
-                    temperature: 1.0e6 / (prev_mired * f + mired * (1.0 - f)),
-                    tint: offset * TINT_SCALE,
+                    temperature: (1.0e6 / (prev_mired * f + mired * (1.0 - f))) as f32,
+                    tint: (offset * TINT_SCALE) as f32,
                 };
             }
 
@@ -120,7 +120,7 @@ impl WhiteBalance {
     }
 
     pub fn to_xy(self) -> (f64, f64) {
-        let mired = 1.0e6 / self.temperature;
+        let mired = 1.0e6 / f64::from(self.temperature);
         let i = ROBERTSON_ISOTHERMS
             .iter()
             .skip(1)
@@ -137,8 +137,8 @@ impl WhiteBalance {
         let dv = prev_direction.1 * f + next_direction.1 * (1.0 - f);
         let len = (du * du + dv * dv).sqrt();
 
-        let u = prev_u * f + next_u * (1.0 - f) + du / len * self.tint / TINT_SCALE;
-        let v = prev_v * f + next_v * (1.0 - f) + dv / len * self.tint / TINT_SCALE;
+        let u = prev_u * f + next_u * (1.0 - f) + du / len * f64::from(self.tint) / TINT_SCALE;
+        let v = prev_v * f + next_v * (1.0 - f) + dv / len * f64::from(self.tint) / TINT_SCALE;
         let denom = u - 4.0 * v + 2.0;
         (1.5 * u / denom, v / denom)
     }
@@ -146,12 +146,13 @@ impl WhiteBalance {
     pub fn clamped(self) -> Self {
         Self {
             temperature: if self.temperature.is_finite() {
-                self.temperature.clamp(MIN_TEMPERATURE, MAX_TEMPERATURE)
+                self.temperature
+                    .clamp(MIN_TEMPERATURE as f32, MAX_TEMPERATURE as f32)
             } else {
-                ILLUMINANT_D65_TEMPERATURE
+                ILLUMINANT_D65_TEMPERATURE as f32
             },
             tint: if self.tint.is_finite() {
-                self.tint.clamp(-MAX_TINT, MAX_TINT)
+                self.tint.clamp(-MAX_TINT as f32, MAX_TINT as f32)
             } else {
                 0.0
             },
@@ -201,7 +202,8 @@ impl WhiteBalance {
 
         let mut estimate = Self::from_camera_neutral(xyz_to_camera_d65, neutral)?;
         for _ in 0..20 {
-            let weight = ((1.0 / estimate.temperature - 1.0 / ILLUMINANT_D65_TEMPERATURE)
+            let weight = ((1.0 / f64::from(estimate.temperature)
+                - 1.0 / ILLUMINANT_D65_TEMPERATURE)
                 / (1.0 / ILLUMINANT_A_TEMPERATURE - 1.0 / ILLUMINANT_D65_TEMPERATURE))
                 .clamp(0.0, 1.0) as f32;
             let xyz_to_camera: Vec<f32> = xyz_to_camera_a
@@ -210,7 +212,8 @@ impl WhiteBalance {
                 .map(|(a, d65)| weight * a + (1.0 - weight) * d65)
                 .collect();
             let next = Self::from_camera_neutral(&xyz_to_camera, neutral)?;
-            let converged = (next.temperature - estimate.temperature).abs() < 0.1;
+            let converged =
+                (f64::from(next.temperature) - f64::from(estimate.temperature)).abs() < 0.1;
             estimate = next;
             if converged {
                 break;
@@ -292,6 +295,20 @@ pub fn as_shot_white_balance(path: &str) -> WhiteBalance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_are_stored_as_f32_and_coordinates_calculated_as_f64() {
+        assert_eq!(std::mem::size_of::<WhiteBalance>(), 8);
+        let value = WhiteBalance {
+            temperature: 5432.123456_f64 as f32,
+            tint: -12.3456789_f64 as f32,
+        };
+        let encoded = serde_json::to_string(&value).unwrap();
+        let decoded: WhiteBalance = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, value);
+        let xy: (f64, f64) = decoded.to_xy();
+        assert!(xy.0.is_finite() && xy.1.is_finite());
+    }
 
     #[test]
     fn equal_white_balances_have_identity_gains() {
