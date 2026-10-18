@@ -245,7 +245,7 @@ SlowRAW is designed to remain lightweight while making extensive use of GPU acce
 
 ## Maintainer Documentation
 
-See [docs/README.md](docs/README.md) for the code structure, file responsibilities and development guidance.
+See [docs/CODEMAP.md](docs/CODEMAP.md) for the code structure, file responsibilities and development guidance.
 
 ### RAW Format Issues
 
