@@ -586,34 +586,16 @@ are composited during image rendering; the source image remains intact.
 | `shaders/flare.wgsl` | GPU flare shader. |
 | `shaders/shader.wgsl` | Main GPU image-processing shader. |
 
-## Updating the RAW engine
+## Updating the RAW engine and rawler metadata reader
 
 From the project root, updating rawler in the source code only requires:
 
 ```powershell
-cargo update --manifest-path src-tauri/Cargo.toml -p rawler
+npm run update:rawler
 ```
 
 `Cargo.toml` points to upstream rawler and `Cargo.lock` records the selected
 revision. Keep the updated lockfile. Rebuild SlowRAW normally afterward.
-If upstream changes its API, adapt `raw_processing.rs` (development/orientation)
-and `exif_processing.rs` (metadata). `image_loader.rs` receives decoded pixels
-directly in memory.
-`multi_exposure.rs` and `highlight_recovery.rs` provide additional processing.
-Linear RAW Processing and Highlight Recovery are persisted in `app_settings.rs`.
-
-## Updating RAW and EXIF dependencies together
-
-Before compiling, update Rawler and kamadak-exif from the project root:
-
-```powershell
-npm run update:metadata
-```
-
-`Cargo.toml` points to upstream rawler and `Cargo.lock` records the selected
-revision. The command refreshes Rawler and the compatible kamadak-exif version
-selected by Cargo.toml. For a new major/minor EXIF API version, adjust its Cargo.toml
-requirement first. Keep the updated lockfile and compile SlowRAW normally afterward.
 If upstream changes its API, adapt `raw_processing.rs` (development/orientation)
 and `exif_processing.rs` (metadata). `image_loader.rs` receives decoded pixels
 directly in memory.
