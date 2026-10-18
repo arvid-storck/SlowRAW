@@ -10,7 +10,6 @@
     "tauri": "tauri",
     "start": "tauri dev",
     "typecheck": "tsc --noEmit",
-    "update:rcd": "node scripts/update-rcd.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -21,7 +20,7 @@
     "i18n:lint": "i18next-cli lint",
     "update:rawler": "cargo update --manifest-path src-tauri/Cargo.toml -p rawler",
     "update:kamadak-exif": "cargo update --manifest-path src-tauri/Cargo.toml -p kamadak-exif",
-    "update:metadata": "cargo update --manifest-path src-tauri/Cargo.toml -p rawler -p kamadak-exif"
+    "update:rcd": "node scripts/update-rcd.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
