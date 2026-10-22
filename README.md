@@ -168,10 +168,7 @@ Export color spaces are selected independently.
 
 [vkdt's display documentation](https://github.com/hanatos/vkdt/blob/master/doc/howto/colour-display/readme.md#high-dynamic-range)
 reports incorrect image appearance with HDR10/PQ framebuffers on Windows and
-therefore disables HDR framebuffers by default on all platforms. It does not
-identify a specific Windows bug. That warning concerns HDR presentation, not
-ICC-based wide-gamut display in SDR, and does not mean that Windows HDR always
-fails. SlowRAW's legacy SDR Windows display path does not depend on HDR10/PQ.
+therefore disables HDR framebuffers by default on all platforms.
 
 ## Maintainer Documentation
 
