@@ -72,16 +72,6 @@ I would have prefered to use someone else not vibecoded projekt or purchase one 
 
 See the upstream repository for the original project, its contributors, and its complete historical development record.
 
-## For whom is this for?
-
-This version of SlowRAW is for photographers who want a <strong>clean, fast, local workflow</strong> with both a real catalog and a straightforward RAW editor.
-
-It is particularly focused on large photo libraries where folder-based browsing alone becomes cumbersome.
-
-The application keeps the original files on normal local storage while using a database-backed catalog for browsing, filtering, ratings, tags, albums, metadata, and large-library navigation.
-
-The editing workflow is intentionally focused rather than being expanded into a cloud or generative-AI platform.
-
 ## The Idea
 
 This version grew from a simple goal: combine a straightforward RAW editor with a real local catalog that remains practical as a photo library grows.
