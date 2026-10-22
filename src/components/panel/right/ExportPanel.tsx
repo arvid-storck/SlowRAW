@@ -1,3 +1,4 @@
+import { COLOR_SPACES } from '../../../utils/colorSpaces';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -211,8 +212,10 @@ export default function ExportPanel({
     setJpegQuality,
     tiffBitDepth,
     pngBitDepth,
+    colorSpace,
     setTiffBitDepth,
     setPngBitDepth,
+    setColorSpace,
     enableResize,
     setEnableResize,
     resizeMode,
@@ -394,6 +397,7 @@ export default function ExportPanel({
       jpegQuality,
       tiffBitDepth,
       pngBitDepth,
+      colorSpace,
       keepMetadata,
       preserveTimestamps,
       preserveFolders,
@@ -440,6 +444,7 @@ export default function ExportPanel({
     jpegQuality,
     tiffBitDepth,
     pngBitDepth,
+    colorSpace,
     enableResize,
     resizeMode,
     resizeValue,
@@ -482,6 +487,7 @@ export default function ExportPanel({
       jpegQuality,
       tiffBitDepth,
       pngBitDepth,
+      colorSpace,
       keepMetadata,
       preserveTimestamps,
       preserveFolders,
@@ -610,28 +616,44 @@ export default function ExportPanel({
               <Dropdown
                 options={FILE_FORMATS.map((format) => ({ value: format.id, label: format.name }))}
                 value={fileFormat}
-                onChange={setFileFormat}
+                onChange={(value) => {
+                  setFileFormat(value);
+                  if (['webp', 'avif'].includes(value)) setColorSpace('srgb');
+                }}
                 disabled={isExporting}
                 className="w-full"
               />
-              {[FileFormats.Jpeg, FileFormats.Webp, FileFormats.Jxl].includes(fileFormat as FileFormats) && (
-                <div className={isExporting ? 'opacity-50 pointer-events-none' : ''}>
-                  <Slider
-                    defaultValue={90}
-                    label={
-                      fileFormat === FileFormats.Jxl && jpegQuality === 100
-                        ? t('export.file.qualityLossless')
-                        : t('export.file.quality')
-                    }
-                    max={100}
-                    min={1}
-                    onChange={(e) => setJpegQuality(Number(e.target.value))}
-                    step={1}
-                    value={jpegQuality}
-                    fillOrigin="min"
-                  />
-                </div>
+              <Text variant={TextVariants.label}>{t('colorManagement.exportSpace')}</Text>
+              <Dropdown
+                options={[...COLOR_SPACES]}
+                value={colorSpace}
+                onChange={(value) => setColorSpace(value as typeof colorSpace)}
+                disabled={isExporting || ['webp', 'avif'].includes(fileFormat)}
+                className="w-full"
+              />
+              {['webp', 'avif'].includes(fileFormat) && <Text>{t('colorManagement.srgbOnly')}</Text>}
+              {fileFormat === FileFormats.Jxl && colorSpace !== 'srgb' && (
+                <Text>{t('colorManagement.jxlLossless')}</Text>
               )}
+              {[FileFormats.Jpeg, FileFormats.Webp, FileFormats.Jxl].includes(fileFormat as FileFormats) &&
+                !(fileFormat === FileFormats.Jxl && colorSpace !== 'srgb') && (
+                  <div className={isExporting ? 'opacity-50 pointer-events-none' : ''}>
+                    <Slider
+                      defaultValue={90}
+                      label={
+                        fileFormat === FileFormats.Jxl && jpegQuality === 100
+                          ? t('export.file.qualityLossless')
+                          : t('export.file.quality')
+                      }
+                      max={100}
+                      min={1}
+                      onChange={(e) => setJpegQuality(Number(e.target.value))}
+                      step={1}
+                      value={jpegQuality}
+                      fillOrigin="min"
+                    />
+                  </div>
+                )}
               {(fileFormat === FileFormats.Tiff || fileFormat === FileFormats.Png) && (
                 <div className={isExporting ? 'opacity-50 pointer-events-none' : ''}>
                   <Text variant={TextVariants.label} className="mb-1">

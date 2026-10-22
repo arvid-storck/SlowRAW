@@ -1,3 +1,4 @@
+import { COLOR_SPACES, type ColorSpace } from '../utils/colorSpaces';
 import { useState, useMemo, useCallback, type SetStateAction } from 'react';
 import {
   ExportPreset,
@@ -29,6 +30,7 @@ export function useExportSettings() {
   const [jpegQuality, setJpegQuality] = useDraftState('jpegQuality', 90);
   const [tiffBitDepth, setTiffBitDepth] = useDraftState<TiffBitDepth>('tiffBitDepth', 16);
   const [pngBitDepth, setPngBitDepth] = useDraftState<PngBitDepth>('pngBitDepth', 8);
+  const [colorSpace, setColorSpace] = useDraftState<ColorSpace>('colorSpace', 'srgb');
   const [enableResize, setEnableResize] = useDraftState('enableResize', false);
   const [resizeMode, setResizeMode] = useDraftState('resizeMode', 'longEdge');
   const [resizeValue, setResizeValue] = useDraftState('resizeValue', 2048);
@@ -56,6 +58,11 @@ export function useExportSettings() {
     setJpegQuality(preset.jpegQuality);
     setTiffBitDepth(preset.tiffBitDepth ?? 16);
     setPngBitDepth(preset.pngBitDepth === 16 ? 16 : 8);
+    setColorSpace(
+      !['webp', 'avif'].includes(preset.fileFormat) && COLOR_SPACES.some((space) => space.value === preset.colorSpace)
+        ? preset.colorSpace!
+        : 'srgb',
+    );
     setEnableResize(preset.enableResize);
     setResizeMode(preset.resizeMode);
     setResizeValue(preset.resizeValue);
@@ -82,6 +89,7 @@ export function useExportSettings() {
       jpegQuality,
       tiffBitDepth,
       pngBitDepth,
+      colorSpace,
       enableResize,
       resizeMode,
       resizeValue,
@@ -106,6 +114,7 @@ export function useExportSettings() {
       jpegQuality,
       tiffBitDepth,
       pngBitDepth,
+      colorSpace,
       enableResize,
       resizeMode,
       resizeValue,
@@ -134,8 +143,10 @@ export function useExportSettings() {
     setJpegQuality,
     tiffBitDepth,
     pngBitDepth,
+    colorSpace,
     setTiffBitDepth,
     setPngBitDepth,
+    setColorSpace,
     enableResize,
     setEnableResize,
     resizeMode,

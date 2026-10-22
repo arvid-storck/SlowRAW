@@ -416,12 +416,6 @@ pub struct AppSettings {
     #[serde(default)]
     pub raw_highlight_recovery_enabled: Option<bool>,
     #[serde(default)]
-    pub processing_backend: Option<String>,
-    #[serde(default)]
-    pub linux_gpu_optimization: Option<bool>,
-    #[serde(default)]
-    pub linux_gpu_optimization_migrated_v1: Option<bool>,
-    #[serde(default)]
     pub library_view_mode: Option<String>,
     #[serde(default = "default_export_presets")]
     pub export_presets: Vec<ExportPreset>,
@@ -443,8 +437,6 @@ pub struct AppSettings {
     pub waveform_height: Option<u32>,
     #[serde(default)]
     pub active_waveform_channel: Option<String>,
-    #[serde(default)]
-    pub use_wgpu_renderer: Option<bool>,
     #[serde(default)]
     pub canvas_input_mode: Option<String>,
     #[serde(default)]
@@ -533,9 +525,6 @@ impl Default for AppSettings {
             copy_paste_settings: CopyPasteSettings::default(),
             raw_highlight_compression: Some(2.5),
             raw_highlight_recovery_enabled: Some(true),
-            processing_backend: Some("auto".to_string()),
-            linux_gpu_optimization: Some(false),
-            linux_gpu_optimization_migrated_v1: Some(true),
             library_view_mode: Some("flat".to_string()),
             export_presets: default_export_presets(),
             my_lenses: Some(Vec::new()),
@@ -551,10 +540,6 @@ impl Default for AppSettings {
             is_waveform_visible: Some(false),
             waveform_height: Some(220),
             active_waveform_channel: Some("luma".to_string()),
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            use_wgpu_renderer: Some(false),
-            #[cfg(not(any(target_os = "linux", target_os = "android")))]
-            use_wgpu_renderer: Some(true),
             canvas_input_mode: Some("mouse".to_string()),
             zoom_speed_multiplier: Some(1.0),
             max_zoom_percent: Some(100),
@@ -608,20 +593,10 @@ pub fn load_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
     let all_current_keys = all_available_adjustments();
     let default_included = default_included_adjustments();
     let mut settings_modified = false;
-
     if settings.root_folders.is_empty()
         && let Some(last) = &settings.last_root_path
     {
         settings.root_folders.push(last.clone());
-        settings_modified = true;
-    }
-
-    #[cfg(target_os = "linux")]
-    if !settings.linux_gpu_optimization_migrated_v1.unwrap_or(false) {
-        if settings.linux_gpu_optimization == Some(true) {
-            settings.linux_gpu_optimization = Some(false);
-        }
-        settings.linux_gpu_optimization_migrated_v1 = Some(true);
         settings_modified = true;
     }
 

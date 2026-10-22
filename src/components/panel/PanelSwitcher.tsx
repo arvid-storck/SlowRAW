@@ -3,16 +3,7 @@ import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import { useDraggable, useDroppable, useDndMonitor } from '@dnd-kit/core';
-import {
-  SlidersHorizontal,
-  Info,
-  Crop,
-  Layers,
-  Paintbrush,
-  FileInput,
-  CalendarDays,
-  type LucideIcon,
-} from 'lucide-react';
+import { SlidersHorizontal, Info, Crop, Layers, FileInput, CalendarDays, type LucideIcon } from 'lucide-react';
 import { Panel, PanelRegion } from '../ui/AppProperties';
 import { SwitcherPlacement, useUIStore } from '../../store/useUIStore';
 
@@ -21,7 +12,6 @@ export const PANEL_ICONS: Record<Panel, LucideIcon> = {
   [Panel.Adjustments]: SlidersHorizontal,
   [Panel.Crop]: Crop,
   [Panel.Masks]: Layers,
-  [Panel.Ai]: Paintbrush,
   [Panel.Export]: FileInput,
   [Panel.Catalog]: CalendarDays,
 };
@@ -31,7 +21,6 @@ const PANEL_TITLES: Record<Panel, string> = {
   [Panel.Adjustments]: 'editor.switcher.tooltips.adjust',
   [Panel.Crop]: 'editor.switcher.tooltips.crop',
   [Panel.Masks]: 'editor.switcher.tooltips.masks',
-  [Panel.Ai]: 'editor.switcher.tooltips.inpaint',
   [Panel.Export]: 'editor.switcher.tooltips.export',
   [Panel.Catalog]: 'catalog.dates',
 };

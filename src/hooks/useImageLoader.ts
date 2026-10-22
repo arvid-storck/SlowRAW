@@ -24,7 +24,7 @@ export function useImageLoader(cachedEditStateRef: React.RefObject<any>) {
   const setLibrary = useLibraryStore((s) => s.setLibrary);
   const appSettings = useSettingsStore((s) => s.appSettings);
 
-  const isWgpuActive = appSettings?.useWgpuRenderer !== false && selectedImage?.isReady && hasRenderedFirstFrame;
+  const isWgpuActive = selectedImage?.isReady && hasRenderedFirstFrame;
 
   useEffect(() => {
     if (selectedImage && !selectedImage.isReady && selectedImage.path) {
@@ -32,7 +32,6 @@ export function useImageLoader(cachedEditStateRef: React.RefObject<any>) {
 
       const loadMetadataEarly = async () => {
         try {
-          useEditorStore.getState().patchesSentToBackend.clear();
           await invoke('clear_session_caches').catch((e) => console.warn('Cache clear failed:', e));
 
           const metadata: any = await invoke(Invokes.LoadMetadata, { path: selectedImage.path });

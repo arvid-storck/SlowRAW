@@ -228,7 +228,6 @@ export function useAppContextMenus(props: UseAppContextMenusProps) {
                     error: null,
                     targetPaths: [selectedImage.path],
                     progressMessage: null,
-                    isRaw: selectedImage?.isRaw || false,
                   },
                 });
               },
@@ -316,9 +315,8 @@ export function useAppContextMenus(props: UseAppContextMenusProps) {
                 resetHistory({
                   ...INITIAL_ADJUSTMENTS,
                   aspectRatio: originalAspectRatio,
-                  aiPatches: [],
                 });
-                setEditor({ adjustments: { ...INITIAL_ADJUSTMENTS, aspectRatio: originalAspectRatio, aiPatches: [] } });
+                setEditor({ adjustments: { ...INITIAL_ADJUSTMENTS, aspectRatio: originalAspectRatio } });
               },
             },
           ],
@@ -617,7 +615,6 @@ export function useAppContextMenus(props: UseAppContextMenusProps) {
                     error: null,
                     targetPaths: finalSelection,
                     progressMessage: null,
-                    isRaw: selectedImage?.isRaw || false,
                   },
                 });
               },

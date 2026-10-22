@@ -185,7 +185,6 @@ const EditorToolbar = memo(
 
       const formatKey = (k: string) => {
         const special: Record<string, string> = {
-          aiPatches: 'AI Patches',
           aspectRatio: 'Aspect Ratio',
           flipHorizontal: 'Flip Horizontal',
           flipVertical: 'Flip Vertical',
@@ -292,24 +291,6 @@ const EditorToolbar = memo(
                         changed.push(`Mask ${formatKey(adjKey)}`);
                       }
                     }
-                  }
-                }
-              });
-            }
-          } else if (key === 'aiPatches') {
-            const prevPatches = prev.aiPatches || [];
-            const currPatches = curr.aiPatches || [];
-
-            if (currPatches.length > prevPatches.length) changed.push('Added AI Patch');
-            else if (currPatches.length < prevPatches.length) changed.push('Deleted AI Patch');
-            else {
-              currPatches.forEach((cPatch: any) => {
-                const pPatch = prevPatches.find((p: any) => p.id === cPatch.id);
-                if (pPatch) {
-                  if (pPatch.visible !== cPatch.visible) changed.push('AI Patch Visibility');
-                  if (pPatch.subMasks !== cPatch.subMasks) changed.push('AI Patch Area');
-                  if (pPatch.patchData !== cPatch.patchData || pPatch.prompt !== cPatch.prompt) {
-                    changed.push('AI Generation');
                   }
                 }
               });

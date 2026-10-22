@@ -3,10 +3,7 @@ use tauri::{Runtime, Webview, plugin::Plugin};
 pub struct PinchZoomDisablePlugin;
 
 #[cfg(target_os = "macos")]
-const MACOS_WINDOW_RADIUS: f64 = 14.0;
-
-#[cfg(target_os = "macos")]
-unsafe fn apply_macos_window_rounding(ns_view: *mut objc::runtime::Object) {
+unsafe fn configure_macos_window_layers(ns_view: *mut objc::runtime::Object) {
     use objc::{msg_send, sel, sel_impl};
 
     if ns_view.is_null() {
@@ -26,7 +23,7 @@ unsafe fn apply_macos_window_rounding(ns_view: *mut objc::runtime::Object) {
         let () = msg_send![content_view, setWantsLayer: true];
         let content_layer: *mut objc::runtime::Object = msg_send![content_view, layer];
         if !content_layer.is_null() {
-            let () = msg_send![content_layer, setCornerRadius: MACOS_WINDOW_RADIUS];
+            let () = msg_send![content_layer, setCornerRadius: 0.0_f64];
             let () = msg_send![content_layer, setMasksToBounds: true];
         }
     }
@@ -34,7 +31,7 @@ unsafe fn apply_macos_window_rounding(ns_view: *mut objc::runtime::Object) {
     let () = msg_send![ns_view, setWantsLayer: true];
     let webview_layer: *mut objc::runtime::Object = msg_send![ns_view, layer];
     if !webview_layer.is_null() {
-        let () = msg_send![webview_layer, setCornerRadius: MACOS_WINDOW_RADIUS];
+        let () = msg_send![webview_layer, setCornerRadius: 0.0_f64];
         let () = msg_send![webview_layer, setMasksToBounds: true];
     }
 
@@ -56,7 +53,7 @@ impl<R: Runtime> Plugin<R> for PinchZoomDisablePlugin {
         let _ = webview.with_webview(|_webview| {
             #[cfg(target_os = "macos")]
             unsafe {
-                apply_macos_window_rounding(_webview.inner().cast());
+                configure_macos_window_layers(_webview.inner().cast());
             }
 
             #[cfg(target_os = "linux")]

@@ -173,6 +173,12 @@ struct AllAdjustments {
     tile_offset_x: u32,
     tile_offset_y: u32,
     mask_atlas_cols: u32,
+    working_matrix: mat3x3<f32>,
+    output_matrix: mat3x3<f32>,
+    output_transfer: u32,
+    output_pad1: u32,
+    output_pad2: u32,
+    output_pad3: u32,
 }
 
 struct HslRange {
@@ -233,7 +239,9 @@ fn get_luma(c: vec3<f32>) -> f32 {
 fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     let cutoff = vec3<f32>(0.04045);
     let a = vec3<f32>(0.055);
-    let higher = pow((c + a) / (1.0 + a), vec3<f32>(2.4));
+    // ICC's parametric sRGB curve extends the linear toe below zero.
+    // Keep the unused power branch finite for negative wide-gamut channels.
+    let higher = pow(max((c + a) / (1.0 + a), vec3<f32>(0.0)), vec3<f32>(2.4));
     let lower = c / 12.92;
     return select(higher, lower, c <= cutoff);
 }
@@ -707,6 +715,11 @@ fn apply_creative_color(color: vec3<f32>, sat: f32, vib: f32) -> vec3<f32> {
 }
 
 fn apply_hsl_panel(color: vec3<f32>, hsl_adjustments: array<HslColor, 8>, coords_i: vec2<i32>) -> vec3<f32> {
+    var hsl_enabled = false;
+    for (var i = 0u; i < 8u; i += 1u) {
+        hsl_enabled = hsl_enabled || hsl_adjustments[i].hue != 0.0 || hsl_adjustments[i].saturation != 0.0 || hsl_adjustments[i].luminance != 0.0;
+    }
+    if (!hsl_enabled) { return color; }
     let safe_color = max(color, vec3<f32>(0.0));
     if (distance(safe_color.r, safe_color.g) < 0.001 && distance(safe_color.g, safe_color.b) < 0.001) {
         return safe_color;
@@ -1809,18 +1822,22 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
 
+    // Tone and curves share one wide-gamut D50 working basis, independent of the
+    // selected display/export profile. Negative extended-sRGB RAW channels are
+    // retained until this conversion instead of being mistaken for black.
+    let working_linear = adjustments.working_matrix * composite_rgb_linear;
     var default_tonemapped: vec3<f32>;
     if (adjustments.global.tonemapper_mode == 1u) {
-        default_tonemapped = agx_full_transform(composite_rgb_linear);
+        default_tonemapped = linear_to_srgb(adjustments.working_matrix * srgb_to_linear(agx_full_transform(composite_rgb_linear)));
     } else if (is_raw == 1u) {
-        var srgb_emulated = linear_to_srgb(composite_rgb_linear);
+        var srgb_emulated = linear_to_srgb(working_linear);
         const BRIGHTNESS_GAMMA: f32 = 1.1;
         srgb_emulated = pow(srgb_emulated, vec3<f32>(1.0 / BRIGHTNESS_GAMMA));
         const CONTRAST_MIX: f32 = 0.75;
         let contrast_curve = srgb_emulated * srgb_emulated * (3.0 - 2.0 * srgb_emulated);
         default_tonemapped = mix(srgb_emulated, contrast_curve, CONTRAST_MIX);
     } else {
-        default_tonemapped = linear_to_srgb(composite_rgb_linear);
+        default_tonemapped = linear_to_srgb(working_linear);
     }
     var base_srgb = default_tonemapped;
 
@@ -1861,6 +1878,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
         let noise_rough = gradient_noise(rough_coord + vec2<f32>(5.2, 1.3));
         let noise_val = mix(noise_base, noise_rough, roughness);
         final_rgb += vec3<f32>(noise_val) * amount * luma_mask;
+    }
+
+    // Curves use an sRGB-like perceptual domain; encode the actual output TRC
+    // only here so the samples and their ICC profile always agree.
+    let target_linear = max(adjustments.output_matrix * srgb_to_linear(final_rgb), vec3<f32>(0.0));
+    if (adjustments.output_transfer == 1u) {
+        final_rgb = pow(target_linear, vec3<f32>(1.0 / 2.19921875));
+    } else if (adjustments.output_transfer == 3u) {
+        let c = target_linear;
+        final_rgb = select(1.09929682680944 * pow(c, vec3<f32>(0.45)) - 0.09929682680944, 4.5 * c, c < vec3<f32>(0.018053968510807));
+    } else if (adjustments.output_transfer == 4u) {
+        final_rgb = pow(target_linear, vec3<f32>(1.0 / 1.8));
+    } else {
+        final_rgb = linear_to_srgb(target_linear);
     }
 
     if (adjustments.global.show_clipping == 1u) {

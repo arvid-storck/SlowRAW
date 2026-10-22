@@ -147,7 +147,7 @@ export function useEditorActions() {
           if (selectedImage && pathsToReset.includes(selectedImage.path)) {
             const aspect =
               selectedImage.width && selectedImage.height ? selectedImage.width / selectedImage.height : null;
-            const resetData = { ...INITIAL_ADJUSTMENTS, aspectRatio: aspect, aiPatches: [] };
+            const resetData = { ...INITIAL_ADJUSTMENTS, aspectRatio: aspect };
             resetHistory(resetData);
             setEditor({ adjustments: resetData });
           }

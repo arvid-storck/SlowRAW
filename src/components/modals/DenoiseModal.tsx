@@ -1,10 +1,9 @@
 import IndeterminateProgress from '../ui/IndeterminateProgress';
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CheckCircle, XCircle, Loader2, Save, RefreshCw, ZoomIn, ZoomOut, Move, Grip } from 'lucide-react';
 import { motion } from 'framer-motion';
 import Button from '../ui/Button';
-import Dropdown from '../ui/Dropdown';
 import Slider from '../ui/Slider';
 import Text from '../ui/Text';
 import { TextColors, TextVariants, TextWeights } from '../../types/typography';
@@ -13,8 +12,8 @@ import { listen } from '@tauri-apps/api/event';
 interface DenoiseModalProps {
   isOpen: boolean;
   onClose(): void;
-  onDenoise(intensity: number, method: 'ai' | 'bm3d'): void;
-  onBatchDenoise(intensity: number, method: 'ai' | 'bm3d', paths: string[]): Promise<string[]>;
+  onDenoise(intensity: number): void;
+  onBatchDenoise(intensity: number, paths: string[]): Promise<string[]>;
   onSave(): Promise<string>;
   onOpenFile(path: string): void;
   error: string | null;
@@ -22,8 +21,6 @@ interface DenoiseModalProps {
   originalBase64: string | null;
   isProcessing: boolean;
   progressMessage: string | null;
-  aiModelDownloadStatus: string | null;
-  isRaw: boolean;
   loadingImageUrl?: string | null;
   targetPaths: string[];
 }
@@ -220,8 +217,6 @@ export default function DenoiseModal({
   originalBase64,
   isProcessing,
   progressMessage,
-  aiModelDownloadStatus,
-  isRaw,
   loadingImageUrl,
   targetPaths,
 }: DenoiseModalProps) {
@@ -229,20 +224,11 @@ export default function DenoiseModal({
   const [isMounted, setIsMounted] = useState(false);
   const [show, setShow] = useState(false);
   const [intensity, setIntensity] = useState<number>(15);
-  const [method, setMethod] = useState<'ai' | 'bm3d'>('ai');
   const [isSaving, setIsSaving] = useState(false);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; path: string } | null>(null);
   const isBatch = targetPaths.length > 1;
   const mouseDownTarget = useRef<EventTarget | null>(null);
-
-  const methodOptions = useMemo<Array<{ label: string; value: 'ai' | 'bm3d' }>>(
-    () => [
-      { label: t('modals.denoise.methodAi'), value: 'ai' },
-      { label: t('modals.denoise.methodBm3d'), value: 'bm3d' },
-    ],
-    [t],
-  );
 
   useEffect(() => {
     const unlisten = listen('denoise-batch-progress', (e: any) => {
@@ -256,14 +242,11 @@ export default function DenoiseModal({
   const currentStatusText =
     isBatch && batchProgress
       ? t('modals.denoise.batchProgressText', { current: batchProgress.current, total: batchProgress.total })
-      : aiModelDownloadStatus?.includes('NIND')
-        ? t('modals.denoise.downloadingText', { status: aiModelDownloadStatus })
-        : progressMessage || t('modals.denoise.initializing');
+      : progressMessage || t('modals.denoise.initializing');
 
   useEffect(() => {
     if (isOpen) {
-      setMethod(isRaw ? 'ai' : 'bm3d');
-      setIntensity(isRaw ? 50 : 15);
+      setIntensity(15);
       setIsMounted(true);
       const timer = setTimeout(() => setShow(true), 10);
       return () => clearTimeout(timer);
@@ -277,7 +260,7 @@ export default function DenoiseModal({
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [isOpen, isRaw]);
+  }, [isOpen]);
 
   const handleClose = useCallback(() => {
     if (isSaving) return;
@@ -300,7 +283,7 @@ export default function DenoiseModal({
     if (isBatch) {
       setIsSaving(true);
       try {
-        await onBatchDenoise(intensity / 100, method, targetPaths);
+        await onBatchDenoise(intensity / 100, targetPaths);
         onClose();
       } catch (e) {
         console.error('Batch denoise failed:', e);
@@ -309,7 +292,7 @@ export default function DenoiseModal({
         setBatchProgress(null);
       }
     } else {
-      onDenoise(intensity / 100, method);
+      onDenoise(intensity / 100);
     }
   };
 
@@ -398,11 +381,7 @@ export default function DenoiseModal({
 
               <IndeterminateProgress />
 
-              <Text
-                variant={TextVariants.small}
-                data-tooltip={t('modals.denoise.gpuWarningTooltip')}
-                className="mt-6 text-center max-w-xs opacity-60"
-              >
+              <Text variant={TextVariants.small} className="mt-6 text-center max-w-xs opacity-60">
                 {t('modals.denoise.speedNotice')}
               </Text>
             </motion.div>
@@ -452,27 +431,14 @@ export default function DenoiseModal({
     return (
       <div className={`w-full flex items-center gap-4 ${disabled ? 'opacity-50 pointer-events-none' : ''}`}>
         <div className="flex-1 flex items-center gap-6">
-          <div className="flex flex-col gap-1 w-[280px] mt-2 shrink-0">
-            <Text variant={TextVariants.body} weight={TextWeights.medium}>
-              {t('modals.denoise.methodLabel')}
-            </Text>
-            <Dropdown
-              options={methodOptions}
-              value={method}
-              onChange={(val) => {
-                setMethod(val);
-                setIntensity(val === 'ai' ? 50 : 15);
-              }}
-            />
-          </div>
           <div className="flex-1 max-w-[280px]">
             <Slider
-              label={method === 'ai' ? t('modals.denoise.qualityTileSizeLabel') : t('modals.denoise.strengthLabel')}
+              label={t('modals.denoise.strengthLabel')}
               value={intensity}
               min={0}
               max={100}
               step={1}
-              defaultValue={method === 'ai' ? 50 : 15}
+              defaultValue={15}
               onChange={(e) => setIntensity(Number(e.target.value))}
               trackClassName="bg-bg-secondary"
               fillOrigin="min"

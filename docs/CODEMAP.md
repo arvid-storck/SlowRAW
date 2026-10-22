@@ -9,7 +9,7 @@ This document describes the current implementation.
 
 The application uses the SlowRAW product/executable name. The internal
 `io.github.arvid-storck.SlowRAW` identifier owns its application-data directory.
-Startup copies legacy settings, albums, models and catalog data into the new
+Startup copies legacy settings, albums and catalog data into the new
 directory once, preserving existing destination files. SQLite catalogs are
 snapshotted with their committed WAL data. Portable builds keep their own data
 directory and `rapidraw.db` path. Desktop icons are generated from root `icon.png`.
@@ -24,14 +24,15 @@ debug console availability and diagnostic configuration.
 
 ## Current editing implementation
 
-Export-setting presets and crop aspect-ratio choices are independent features.
-The composition guide is Rule of Thirds; `O` toggles it on/off.
+Export-setting presets and crop aspect-ratio state are stored independently.
+CompositionOverlays renders the Rule of Thirds guide. Workspace border radii are
+centralized in styles.css, with rounded switch tracks/knobs and slider handles.
+Native macOS content/webview layers also use zero radius.
 
 ### Pick and Reject flags
 
-`P` picks, `X` rejects, and `U` clears flags on
-selected images. The bottom bar has toggles; thumbnails/list/filmstrip show badges
-and dim rejects. Catalog flag filters combine with metadata filters and smart groups.
+Flag actions share selected-image state across the library and editor. Catalog
+flag filters combine with metadata filters and smart groups.
 Flags are mutually exclusive internal `flag:pick`/`flag:reject` sidecar tags; SQLite
 rebuilds the flag column from those tags. Flagging updates sidecar metadata and the catalog index.
 `node scripts/test-image-flags.mjs` checks selection scope, queued writes, toggling,
@@ -39,14 +40,13 @@ clear, pending-page overlays and error rollback with in-memory stores/IPC only.
 
 ### Adjustment panels and curves
 
-Adjustment panel customization is accessible in Settings → Customization only. Drag handles reorder sections and tool groups; eye buttons hide them.
+Adjustment section/tool order, visibility and collapse state are persisted by
+the settings and adjustment-layout components.
 Section/tool collapse state and layout are saved in `adjustmentLayout`. Hiding a
 control changes its UI visibility; section enable/disable controls govern processing.
 Startup migrates saved `adjustmentVisibility` preferences into
 the current layout when `adjustmentLayout` is absent.
-Shift/Alt slows curve dragging to one fifth; inactive channels show colored curves
-and parametric reference markers.
-The reset button restores the active curve channel. Point dragging is bounded by
+Curves keeps reset state per channel. Point dragging is bounded by
 neighboring Y values; parametric curves and native curve uploads use monotonically
 non-decreasing points. Shared slider labels are keyboard-accessible reset controls.
 
@@ -54,8 +54,9 @@ non-decreasing points. Shared slider labels are keyboard-accessible reset contro
 
 Rawler decodes and normalizes sensor samples. Standard RGB Bayer images use the
 statically linked upstream librtprocess RCD implementation through the
-`src-tauri/rcd` Rust adapter. Other sensor layouts and Fuji rotated sensors use
-Rawler's sensor-specific development. RCD runs before Rawler's camera color
+`src-tauri/rcd` Rust adapter. X-Trans (6x6 CFA), other sensor layouts and Fuji rotated
+sensors use Rawler's sensor-specific development, including its demosaicing.
+RCD is Bayer-only and runs before Rawler's camera color
 calibration and final crop; floating-point scaling preserves highlight headroom.
 The adapter builds upstream RCD and border interpolation from a pinned Git commit,
 cached under `src-tauri/target/rcd-source`. The first clean build needs Git and network
@@ -79,13 +80,13 @@ The normal editor loading path is:
 RAW file bytes
   -> Rawler: decode sensor samples and camera metadata
   -> black-level subtraction and floating-point normalization
-  -> RCD demosaicing for supported Bayer sensors
+  -> demosaicing: RCD for supported 2x2 RGB Bayer; Rawler for X-Trans/other layouts
   -> Rawler: camera white balance, color calibration and sensor crop
   -> linear RGB (32-bit float per channel), then EXIF orientation
   -> configured Highlight Recovery and optional color noise reduction
   -> in-memory base-image cache
-  -> preview rendering: geometry, adjustments, tone mapping and sRGB encoding
-  -> in-memory JPEG preview -> frontend image canvas
+  -> preview rendering: geometry, adjustments, tone mapping and selected output encoding
+  -> native GPU surface (Windows/macOS; Wayland/Vulkan on Linux)
 ```
 
 #### 1. Reading and decoding the sensor data
@@ -115,8 +116,9 @@ adapter calls upstream librtprocess to estimate the missing RGB components from
 neighboring sensor samples. It handles the sensor's actual CFA pattern and scales
 its scratch buffer to the library's numeric range before restoring the input units.
 Rawler's own rescale/demosaic steps are then skipped because they have already run.
-Other sensor layouts use Rawler's sensor-specific development; already-demosaiced
-Linear RAW data follows the Linear RAW branch.
+X-Trans uses Rawler's own 6x6-CFA demosaicing, not the RCD adapter. Other
+unsupported layouts also use Rawler; already-demosaiced Linear RAW data follows
+the Linear RAW branch.
 
 librtprocess is an external source dependency statically linked into SlowRAW.
 The adapter passes pixel buffers within the same process. See
@@ -161,16 +163,122 @@ additional sharpening is disabled.
 
 `useImageProcessing.ts` requests a preview sized for the current viewport and zoom.
 The native image/GPU pipeline applies the current geometry and edits to the
-developed base image. Tone mapping and the display sRGB transfer function turn
+developed base image. Tone mapping and the fixed preview transfer function turn
 linear light values into display-ready values. This display conversion is
 separate from RAW decoding and demosaicing.
 
-The backend returns the rendered preview as JPEG bytes in memory. The frontend
-creates a Blob URL and displays it through `ImageCanvas.tsx`; zoomed updates can
-use a rendered region-of-interest patch. This JPEG is a display preview, while
-the cached floating-point base remains available for subsequent renders and
-export. The RAW-to-editor handoff uses memory buffers rather than an intermediate
-image file on disk.
+#### 6. Native GPU presentation
+
+Editor previews use a native GPU surface on every desktop platform. On Linux,
+the supported editor session is Wayland/Vulkan. gpu_processing.rs creates
+WgpuDisplay; the shared high-precision adjustment pipeline writes RGBA16Float
+tiles into floating-point working/display textures. The display shader samples
+that texture directly. The transparent webview supplies controls and overlays.
+
+lib.rs::process_preview_job requires an available native Vulkan surface. apply_adjustments returns completion/error, not image bytes.
+The wgpu-frame-ready event enables the native canvas. Errors travel through the
+preview worker as Result values and appear in the editor. update_wgpu_transform
+redraws the existing texture for pan/zoom without rerunning RAW development.
+
+wayland_display.rs creates an input-transparent, desynchronized child surface
+below GTK’s webview using its existing Wayland connection in guest mode. GTK
+retains the parent surface and event queue; the bridge owns its child and
+dispatches only its events. GTK allocation and scale determine viewport size
+and position, including native-titlebar offsets. If GTK replaces the parent
+surface or presentation fails, the editor reports display loss and requests restart.
+
+GPU readback remains available for exports, thumbnails and histogram/waveform
+analysis. Crop and before/after helper images and denoise-dialog images retain
+their existing encoding; they are separate UI assets, not an alternative editor
+preview renderer. preview_encoding.rs shares lossless PNG16/JPEG XL encoding
+between auxiliary images and export. Library thumbnails use their own cache.
+
+### Color spaces and ICC conversion
+
+color_management.rs reuses moxcms (already an image dependency) with extended-range
+floating-point conversion. Input ICC profiles are read through ImageDecoder;
+RGB source images are converted to extended sRGB without discarding negative
+components. RAW calibration likewise retains negative RGB components, which can
+represent valid colors outside sRGB. Neutral HSL controls bypass their color
+clamping. Earlier creative adjustments still have their own gamut constraints.
+
+The output tone/curve stage uses one shared D50 ProPhoto-primary working basis,
+independent of the output selection. This is an internal processing basis, not a
+display option. The shader converts into the requested output primaries after
+tone/curves, applies the matching transfer function, then clips to that output
+gamut. Changing this working basis can change the appearance of older edits,
+especially saturated colors; sidecar settings and source files are retained.
+
+Built-in output profiles cover sRGB, Adobe RGB (1998), Display P3, SDR Rec. 2020
+and ProPhoto RGB. The profile writer uses D50 PCS white and a proper Bradford
+white adaptation in chad, rather than a cone-response matrix. JPEG/PNG/TIFF and
+lossless JXL embed the actual output profile; wide outputs use EXIF ColorSpace
+65535 rather than incorrectly claiming sRGB. Watermarks are converted to the
+export space before blending. WebP/AVIF remain sRGB-only and reject other spaces.
+Wide-gamut JXL export is lossless RGBA16; the existing sRGB lossy JXL option remains.
+
+Preview processing has a fixed Rec. 2020 output encoding, independent of the screen
+and exports. The common display shader decodes that texture to linear Rec. 2020
+before applying the screen transform. It converts the native canvas background
+from sRGB separately. The webview still supplies the controls and overlays.
+
+The display-only matrix/TRC approach is inspired by
+[vkdt's display color management](https://github.com/hanatos/vkdt/blob/master/doc/howto/colour-display/readme.md).
+This is a new Rust/WGSL implementation using the existing moxcms dependency;
+vkdt's RAW pipeline, UI and source files are not bundled.
+
+native_display.rs selects only advertised Vulkan surface pairs. Managed presentation
+prefers float scRGB, then extended sRGB, 10-bit/float PQ or P3, with SDR sRGB as
+the last available transport. Negative/extended scRGB values are preserved.
+PQ uses a fixed 80-nit SDR reference white, not HDR highlight expansion.
+SDR prefers an advertised 10-bit UNORM format over 8-bit; actual scan-out precision
+also depends on the OS and driver.
+
+windows_display.rs associates the main window with its current monitor, queries
+active DisplayConfig paths and prefers GET_ADVANCED_COLOR_INFO_2 activeColorMode
+(SDR/WCG/HDR), with the older enabled/enforced flags on older Windows.
+With Advanced Color active, or an inconclusive query, the app uses compositor-managed
+presentation without applying a monitor profile itself. On legacy unmanaged SDR,
+GetICMProfileW supplies the monitor profile. The shader uses its RGB matrix and
+inverse per-channel TRCs on an SDR UNORM surface; the sRGB Vulkan label does not
+mean the app clips those device values to sRGB first. This relies on the legacy
+desktop passing device values through without an additional color transform.
+Missing/unreadable, LUT-based or invalid profiles report an explicit editor error.
+Profile errors retain the display object for retry after correcting the OS profile;
+only actual surface loss drops the display and requires restart.
+
+Monitor profiles are cached by device name, profile path and modification time.
+Display state is refreshed during rendering (at most once per second), and window
+moves/resizes invalidate it. The matrix is a uniform; inverse TRCs use a cached
+4096x1 RGBA16Float texture with denser sampling near black. CPU clear colors use
+the same curves as the image shader. No image readback or compressed transfer is
+introduced for presentation. Windows calibration ramps remain OS-owned.
+
+Wayland and MoltenVK/ColorSync presentation delegate the actual monitor conversion
+to the compositor using the selected surface description. If it exposes only sRGB,
+the system-managed transport is sRGB; the app does not force unsupported wide modes.
+No Linux/macOS physical wide-gamut validation has been performed here. Monitor ICC
+conversion is not calibration or soft proofing. Input ICC conversion and
+ExportSettings.color_space remain independent; export settings persist in the
+session draft and presets.
+
+Run the native color_management, preview_encoding, native_display, color_tests
+and export tests for profile round-trips, lossless export/helper encoding,
+extended input colors, native display shader transfer/matrix/alpha behavior,
+surface selection, monitor TRC round-trips and EXIF/ICC consistency.
+
+### Noise reduction
+
+Details adjustments apply luminance/color noise reduction in the GPU processing
+pipeline. The RAW loader optionally reduces chroma noise after demosaicing,
+controlled by the preprocessing settings.
+
+`denoising.rs` implements traditional BM3D for the single-image and batch dialog.
+Block matching groups similar patches; two collaborative DCT-filtering passes
+produce the result. RAW results receive the default CPU RAW rendering before
+color conversion. Comparison previews use ICC-tagged Rec.2020 PNG16. Saves reuse
+the export encoder: TIFF16 for RAW input, PNG16 for decoded input, with the
+Rec.2020 profile embedded. Source images stay at their original locations.
 
 ### Guided filtering and export profiles
 
@@ -178,7 +286,7 @@ Guided-filter coefficients are built from log luminance/dark-channel statistics 
 bounded resolution, cached with the GPU input, and sampled across render tiles.
 Clarity, structure, dehaze and tonal detail recovery use them in preview and export.
 Gaussian blur serves sharpening/glow/halation where needed. JPEG/PNG
-encoders embed the bundled CC0 sRGB profile independently of EXIF preservation.
+encoders embed the selected output ICC independently of EXIF preservation.
 Thumbnail disk cache keys include the renderer revision; mismatched renders are
 regenerated on demand.
 
@@ -224,7 +332,7 @@ The native `legacy_brush_tests` test verifies the same bitmap as an ordinary bru
 ### Export bit depth and session state
 
 `useExportSettings.ts` stores export options in a session draft shared across panel
-mounts. PNG supports 8/16-bit RGB/RGBA output with an embedded sRGB profile.
+mounts. PNG supports 8/16-bit RGB/RGBA output with the selected embedded output profile.
 PNG 16-bit uses the GPU's 16-bit render output.
 The metadata panel shows camera/exposure/file details and a collapsed, independently
 scrollable list of additional readable EXIF values. Binary EXIF fields are skipped
@@ -264,13 +372,11 @@ the header shows page X of Y, match count and catalog total. Empty results show
 page 1 of 1. When results shrink, an out-of-range page is clamped and reloaded.
 Catalog mode owns the page-navigation controls.
 
-Right-click a smart group → Edit filters opens the filter panel and loads its
-criteria into a draft. Saving updates that group's ID in the existing hierarchy.
-Cancel editing leaves the stored group
-unchanged. Legacy single-value filters are normalized by `normalizeCatalogFilter`;
+Smart-group editing loads saved criteria into a draft. Saving updates the same
+group ID in the hierarchy; cancellation discards the draft. Legacy single-value filters are normalized by `normalizeCatalogFilter`;
 `updateSmartGroup` updates nested smart groups in their existing positions.
 
-Catalog folders → Rescan folders incrementally checks disk changes; internal
+Catalog-folder rescans incrementally check disk changes; internal
 refreshes reload index/facet data. The export panel handles GUI export, and external
 edit sessions coordinate round trips with other editors.
 
@@ -279,7 +385,7 @@ edit sessions coordinate round trips with other editors.
 - SQLite indexes the local photo library.
 - Original photos remain on the filesystem; edits are stored separately.
 - RAW development and image processing run locally.
-- Model-based processing is used for noise reduction.
+- Traditional luminance/color filtering and BM3D provide noise reduction.
 
 ## How the parts fit together
 
@@ -333,7 +439,7 @@ are composited during image rendering; the source image remains intact.
 | Editor adjustment or preview | `src/components/panel/Editor.tsx`, `src/components/adjustments/` | `src/hooks/useImageProcessing.ts`, `src-tauri/src/image_processing.rs`, `src-tauri/src/gpu_processing.rs` |
 | Clone/Heal spot removal | `src/components/panel/right/MasksPanel.tsx`, `src/components/panel/editor/ImageCanvas.tsx` | `src/utils/maskUtils.ts`, `src-tauri/src/spot_removal.rs`, `src-tauri/src/image_loader.rs` |
 | Highlight Recovery | `src/components/panel/SettingsPanel.tsx` | `src-tauri/src/app_settings.rs`, `src-tauri/src/image_loader.rs`, `src-tauri/src/highlight_recovery.rs` |
-| Noise reduction | `src/components/modals/DenoiseModal.tsx` | `src-tauri/src/denoising.rs`, `src-tauri/src/ai_processing.rs` |
+| Noise reduction | `src/components/modals/DenoiseModal.tsx` | `src-tauri/src/denoising.rs` |
 | RAW dependency update | `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` | `src-tauri/src/raw_processing.rs`, `src-tauri/src/exif_processing.rs`; rebuild the app |
 | Lens profile update | `src/components/panel/SettingsPanel.tsx` | `src-tauri/src/component_updates.rs`, `src-tauri/src/lens_correction.rs` |
 | TIFF bit depth and export metadata | `src/components/panel/right/ExportPanel.tsx`, `src/hooks/useExportSettings.ts` | `src-tauri/src/export_processing.rs`, `src-tauri/src/exif_processing.rs` |
@@ -356,7 +462,7 @@ are composited during image rendering; the source image remains intact.
 | `i18next.config.ts` | Translation extraction/check configuration. |
 | `src-tauri/Cargo.toml` / `Cargo.lock` | Rust dependencies / locked versions, including the linked rawler source revision. |
 | `src-tauri/rust-toolchain.toml` | Rust toolchain selection. |
-| `src-tauri/build.rs` | Build-time resource/dependency preparation. |
+| `src-tauri/build.rs` | Tauri build-time preparation. |
 | `src-tauri/tauri.conf.json` | Main Tauri app/build configuration. |
 | `src-tauri/tauri.linux.conf.json` / `tauri.macos.conf.json` | Platform-specific Tauri overrides. |
 | `src-tauri/capabilities/` | Tauri permissions. |
@@ -371,13 +477,13 @@ are composited during image rendering; the source image remains intact.
 | File | Responsibility |
 | --- | --- |
 | `scripts/build-portable.ps1` | Builds and packages a portable Windows ZIP in a fresh output folder. |
-| `scripts/clean.mjs` | Removes explicit generated build paths; `--dependencies` also removes node_modules and downloaded ONNX runtime files, with project-boundary and symlink checks. |
+| `scripts/clean.mjs` | Removes explicit generated build paths; `--dependencies` also removes node_modules, with project-boundary and symlink checks. |
 | `scripts/test-desktop-workflow.mjs` | Zoom focus/scale, export-session persistence, metadata and branding regression checks. |
 | `scripts/test-catalog.mjs` | In-memory catalog paging/count/stale-reply, smart-filter editing and album-group creation checks. |
 | `scripts/test-logging.mjs` | Production console suppression, debug console availability and diagnostic configuration checks. |
 | `scripts/test-image-flags.mjs` | In-memory flag selection, write queue and rollback regression checks. |
 | `scripts/test-white-balance.mjs` | Frontend white-balance defaults, bounds and Kelvin slider scaling checks. |
-| `docs/README.md` | Source-file map and technical overview (this document). |
+| `docs/CODEMAP.md` | Source-file map and technical overview (this document). |
 | `docs/catalog-focused-build.md` | Catalog filtering, paging, cache and validation notes. |
 
 ## Frontend files (`src/`)
@@ -388,7 +494,7 @@ are composited during image rendering; the source image remains intact.
 | --- | --- |
 | `main.tsx` | Starts React; disables browser console output in production builds. |
 | `App.tsx` | Composes the application shell, views, global panels, events, and interactions. |
-| `styles.css` | Global styles and theme-related CSS. |
+| `styles.css` | Global styles, theme variables and centralized square workspace corners. |
 | `window/TitleBar.tsx` | Custom window title bar. |
 | `store/useEditorStore.ts` | Selected image, adjustments, editor state, undo/copy state. |
 | `store/useLibraryStore.ts` | Library images, catalog mode, filters, pages, albums, selection; default sort is capture date ascending, with saved preferences restored at startup. |
@@ -491,7 +597,6 @@ are composited during image rendering; the source image remains intact.
 | `components/ui/CollapsibleSection.tsx` | Expandable settings/control section. |
 | `components/ui/IndeterminateProgress.tsx` | Animated progress indicator shared by HDR, panorama and denoising dialogs. |
 | `components/ui/ColorWheel.tsx` | Color-wheel control. |
-| `components/ui/DepthRangePicker.tsx` | Depth-range selection control. |
 | `components/ui/Dropdown.tsx` | Shared dropdown/select control. |
 | `components/ui/ExportImportProperties.tsx` | Shared export/import data definitions. |
 | `components/ui/ExportPresetsList.tsx` | Export preset list. |
@@ -516,6 +621,7 @@ are composited during image rendering; the source image remains intact.
 | `utils/maskUtils.ts` | Mask conversion and helper functions. |
 | `utils/mediaTypes.ts` | Recognizes video paths for frontend media dispatch. |
 | `utils/themes.ts` | Theme definitions. |
+| `utils/colorSpaces.ts` | Shared output-space list; display choices exclude ProPhoto. |
 | `utils/zoom.ts` | Zoom constants and constraints. |
 | `utils/whiteBalance.ts` | Kelvin/tint types and limits, default resolution and logarithmic temperature slider scaling. |
 
@@ -536,27 +642,32 @@ are composited during image rendering; the source image remains intact.
 | `main.rs` | Native executable entry point; calls `rapidraw_lib::run()`. |
 | `lib.rs` | Tauri setup, command implementations/registration and application wiring. |
 | `adjustment_utils.rs` | Shared adjustment-processing helpers. |
-| `ai_processing.rs` | Model-backed noise reduction and remaining compatibility types. |
 | `app_settings.rs` | Persistent settings schema, defaults, loading/saving, workspace defaults. |
 | `app_state.rs` | Shared native application state and caches. |
 | `cache_utils.rs` | Image/render cache keys and cache containers. |
 | `catalog.rs` | SQLite schema/index, catalog folders, metadata facets, filtering, albums/smart groups, paged queries. |
 | `component_updates.rs` | Downloads Lensfun profile updates. |
 | `culling.rs` | Image culling analysis/actions. |
-| `denoising.rs` | Noise-reduction algorithms and save/batch flows. |
+| `denoising.rs` | Traditional noise reduction and standalone save/batch flows. |
 | `exif_processing.rs` | EXIF extraction and sidecar reading/writing. |
 | `export_processing.rs` | Export formats and output encoding, including true 8/16-bit TIFF. |
 | `file_management.rs` | Filesystem operations, import/move/copy, sidecars, and path handling. |
 | `focus_stacking.rs` | Focus-stack processing. |
 | `formats.rs` | Supported image, RAW, and video-format recognition. |
-| `gpu_processing.rs` | GPU render pipeline and shader integration. |
+| `gpu_processing.rs` | Shared GPU render pipeline, native editor presentation and readback for exports/analysis. |
+| `native_display.rs` | Vulkan transport selection, monitor matrix/TRC validation and display color uniforms. |
+| `windows_display.rs` | Window-to-monitor lookup, Advanced Color state and legacy SDR ICC profile discovery. |
+| `vulkan_instance.rs` | Vulkan-only instance creation; direct bundled MoltenVK loading on macOS. |
+| `wayland_display.rs` | Linux GTK/Wayland child-surface ownership, input transparency, viewport sizing and event dispatch. |
 | `shaders/guided.wgsl` | GPU log-statistics, box filtering and guided coefficient passes. |
 | `../icc/sRGB-v2-magic.icc`, `../icc/README.md` | Embedded export profile and CC0 attribution. |
 | `guided_perspective.rs` | Guided perspective correction. |
 | `hdr_deghosting.rs` | HDR input alignment/deghosting. |
 | `image_loader.rs` | Image decoding/loading, in-process RAW dispatch, Highlight Recovery, and composite preview support. |
 | `highlight_recovery.rs` | Adjustable highlight recovery applied after RAW development. |
-| `raw_processing.rs` | In-process rawler development, Linear RAW modes, and RAW orientation. |
+| `color_management.rs` | Built-in RGB profiles, extended-range ICC transforms and GPU output matrices. |
+| `preview_encoding.rs` | Shared ICC-tagged lossless PNG16/JPEG XL encoding for exports and auxiliary images. |
+| `raw_processing.rs` | Rawler decoding/development, Bayer RCD dispatch, Rawler X-Trans path, Linear RAW modes and orientation. |
 | `../rcd/` | Rust/C++ adapter and build recipe for the pinned upstream librtprocess RCD library. |
 | `white_balance.rs` | Camera white-balance metadata, Kelvin/tint conversion, cached references and Bradford adaptation. |
 | `multi_exposure.rs` | Canon in-camera multi-exposure white-balance handling used by RAW development. |
@@ -574,10 +685,7 @@ are composited during image rendering; the source image remains intact.
 | `portable_paths.rs` | Portable marker detection and app-data/config paths. |
 | `spot_removal.rs` | Non-destructive source-based Clone and Heal compositing for mask strokes. |
 | `tagging.rs` | Per-image tag add/remove and sidecar synchronization. |
-| `tagging_utils/mod.rs` | Tagging helper module exports. |
-| `tagging_utils/candidates.rs` | Candidate tag handling helpers. |
-| `tagging_utils/hierarchy.rs` | Tag hierarchy helpers. |
-| `window_customizer.rs` | Window/webview customization. |
+| `window_customizer.rs` | Window/webview customization, including square macOS content layers. |
 | `shaders/blur.wgsl` | GPU blur shader. |
 | `shaders/display.wgsl` | GPU display shader. |
 | `shaders/flare.wgsl` | GPU flare shader. |
@@ -628,6 +736,67 @@ git commit -m "Text här"
 git push -u origin main
 ```
 
+### Desktop graphics backends
+
+wgpu defaults are disabled. Only the Vulkan backend is compiled on Windows, Linux
+and macOS. vulkan_instance.rs creates the shared Vulkan instance; there is no
+backend menu or DX12/native-Metal renderer. Old backend/display-space settings
+are ignored when reading saved JSON.
+
+On macOS, vulkan_instance.rs loads the bundled libMoltenVK.dylib directly through
+ash, enables HAL-requested extensions plus portability enumeration, and transfers
+instance ownership to wgpu-hal. MoltenVK translates the common Vulkan shaders and
+commands to Metal. It is a platform runtime, not another application rendering path.
+The normal initialization and compute-only export/analysis retry use this factory.
+
+## Building and cleaning
+
+Runtime OS/API requirements are listed in README. Build prerequisites are Rust,
+Node.js/npm, Git and the platform-specific Tauri
+build dependencies. Linux native-display builds also need Wayland client development
+libraries (for example libwayland-dev on Debian/Ubuntu or wayland-devel on Fedora).
+On macOS install MoltenVK before building (for example, brew install molten-vk).
+Alternatively set SLOWRAW_MOLTENVK_PATH to the target-architecture dylib and
+SLOWRAW_MOLTENVK_NOTICES to its redistribution license directory. build.rs stages
+the runtime in src-tauri/target/moltenvk and notices in resources/macos/licenses;
+tauri.macos.conf.json embeds/signs the dylib in the app's Frameworks directory.
+Installed macOS builds need neither Homebrew nor a separate Vulkan SDK.
+For universal builds provide a universal MoltenVK dylib, not an architecture-only
+Homebrew library. Build and runtime verification on macOS remains required.
+
+Run these commands from the project root:
+
+```powershell
+npm ci
+npm start
+npm run tauri -- build
+```
+
+npm start runs the development app. The Tauri build embeds the frontend and writes
+release output under src-tauri/target/release. The first clean native build fetches
+the pinned librtprocess source over the network.
+
+For a Windows portable ZIP:
+
+```powershell
+./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
+```
+
+The portable builder uses the production Tauri build and bundles the executable,
+resources, Lensfun profiles and licenses. Use a fresh output directory to preserve
+any user data in an existing portable copy.
+
+```powershell
+npm run clean -- --dry-run
+npm run clean
+npm run clean:deep -- --dry-run
+npm run clean:deep
+```
+
+The clean script validates explicit output paths before removing them. Deep cleanup
+also removes node_modules and generated MoltenVK notices; run npm ci before building again. See
+[Dependency and distribution size](#dependency-and-distribution-size) for details.
+
 ## Development checks
 
 ```powershell
@@ -637,6 +806,7 @@ npm run i18n:check
 npm run i18n:lint
 node scripts/test-catalog.mjs
 node scripts/test-desktop-workflow.mjs
+node scripts/test-color-workflow.mjs
 node scripts/test-logging.mjs
 node scripts/test-mask-compat.mjs
 node scripts/test-image-flags.mjs
@@ -656,7 +826,14 @@ cached. Keep `CARGO_INCREMENTAL=0` when reproducing the linker issue.
 Native library tests verify the library's test cases. Run
 `cargo build --manifest-path src-tauri/Cargo.toml --bin SlowRAW` to
 check debug linking, and `npm run tauri -- build --no-bundle` to verify the
-production executable with its embedded frontend.
+production executable with its embedded frontend. The Common Controls 6 dependency
+is embedded by the Windows linker for both the app and Rust unit-test harnesses.
+The optional live-desktop profile diagnostic reads the current Windows color mode
+and validates the assigned monitor profile:
+
+```powershell
+cargo test --manifest-path src-tauri/Cargo.toml --lib windows_display::tests -- --ignored --nocapture
+```
 
 The native app uses Windows/macOS/Linux icons referenced by Tauri and the
 Linux packaging icon.
@@ -672,21 +849,24 @@ Linux packaging icon.
 - Imageproc enables Rayon for parallel image processing.
   Separate image hashing and supported codecs have their own dependencies.
 - Sysinfo enables disk and system/memory queries. Reqwest enables JSON/HTTPS.
-- ORT uses the verified ONNX runtime supplied by `build.rs`; its
-  enabled features provide standard-library, ndarray and tracing support.
-  The runtime-load regression test checks native library initialization.
 - Release uses speed optimization, LTO and symbol stripping, with unwinding
   retained for panics.
-- Portable Windows packaging includes the EXE, Windows ONNX runtime and
-  application resources/licenses. It reports EXE, folder and ZIP sizes.
+- Portable Windows packaging includes the EXE and application resources/licenses. It reports EXE, folder and ZIP sizes.
 
 `npm run clean` removes generated build caches. Export portable output before
 cleaning, and use a fresh output directory for portable builds.
-`npm run clean:deep` adds `node_modules` and the explicit runtime files
-`src-tauri/resources/onnxruntime.dll`, `libonnxruntime.so` and
-`libonnxruntime.dylib` to cleanup. `build.rs` downloads the required platform
-runtime when needed. Both commands support `-- --dry-run` to preview cleanup targets.
+`npm run clean:deep` also removes `node_modules` and generated MoltenVK notices. Both commands support `-- --dry-run` to preview cleanup targets.
 
 Package sizes depend on the toolchain, dependency versions and bundled resources.
 Use the portable script's size report for the build being distributed.
 Interactive UI and real-camera regression checks are separate from automated tests.
+
+### Native Linux display verification
+
+The Wayland path needs a Linux build and a live compositor for validation. In a
+Wayland/Vulkan session, verify image display, sliders, zoom/pan, window resize,
+monitor scale changes, native titlebars, masking overlays, crop view and catalog
+navigation. Check automatic transport selection and visible display-loss errors. Test Intel/AMD/NVIDIA Vulkan drivers, extended-sRGB and PQ
+surfaces where advertised, and PQ background/white consistency with OS HDR mode.
+Windows shader tests do not
+validate the GTK/Wayland bridge or physical wide-gamut output.

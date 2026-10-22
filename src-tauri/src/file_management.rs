@@ -75,7 +75,7 @@ fn compute_thumbnail_cache_hash(path_str: &str, adjustments_bytes: &[u8]) -> Opt
 
     let mut hasher = blake3::Hasher::new();
     // Regenerate thumbnails after retiring the selection-refinement renderer.
-    hasher.update(b"rcd-neutral-detail-monotonic-curves-v10");
+    hasher.update(b"icc-extended-rgb-output-v11");
     hasher.update(path_str.as_bytes());
     hasher.update(&img_mod_time.to_le_bytes());
     hasher.update(adjustments_bytes);
@@ -1232,7 +1232,7 @@ pub fn generate_thumbnail_data(
             let raw_scale_factor = 1.0f32;
 
             let composite_image = if let Some(img) = preloaded_image {
-                image_loader::composite_patches_on_image(img, &adjustments)?
+                crate::spot_removal::composite_spot_removals(img, &adjustments)
             } else {
                 let mmap_guard;
                 let vec_guard;
@@ -1415,7 +1415,7 @@ pub fn generate_thumbnail_data(
     }
 
     let mut final_image = if let Some(img) = preloaded_image {
-        image_loader::composite_patches_on_image(img, &adjustments)?
+        crate::spot_removal::composite_spot_removals(img, &adjustments)
     } else {
         match read_file_mapped(&source_path) {
             Ok(mmap) => image_loader::load_and_composite(

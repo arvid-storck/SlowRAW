@@ -7,11 +7,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use image::{DynamicImage, GrayImage};
 use serde::{Deserialize, Serialize};
 use sysinfo::Disks;
-use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 use wgpu::{Texture, TextureView};
 
-use crate::ai_processing::AiState;
 use crate::cache_utils::DecodedImageCache;
 use crate::gpu_processing::GpuProcessor;
 use crate::image_processing::GpuContext;
@@ -72,7 +70,7 @@ pub struct PreviewJob {
     pub request_analytics: bool,
     pub compute_waveform: bool,
     pub active_waveform_channel: Option<String>,
-    pub responder: tokio::sync::oneshot::Sender<Vec<u8>>,
+    pub responder: tokio::sync::oneshot::Sender<Result<(), String>>,
 }
 
 pub struct AnalyticsJob {
@@ -141,14 +139,14 @@ pub type TransformedImageCache = (u64, Arc<DynamicImage>, (f32, f32));
 
 pub struct AppState {
     pub window_setup_complete: AtomicBool,
+    #[cfg(target_os = "linux")]
+    pub wayland_display: Mutex<Option<Arc<crate::wayland_display::WaylandDisplay>>>,
     pub gpu_crash_flag_path: Mutex<Option<PathBuf>>,
     pub original_image: Mutex<Option<LoadedImage>>,
     pub cached_preview: Mutex<Option<CachedPreview>>,
     pub gpu_context: Mutex<Option<GpuContext>>,
     pub gpu_image_cache: Mutex<Option<GpuImageCache>>,
     pub gpu_processor: Mutex<Option<GpuProcessorState>>,
-    pub ai_state: Mutex<Option<AiState>>,
-    pub ai_init_lock: TokioMutex<()>,
     pub export_task_token: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     pub hdr_result: Arc<Mutex<Option<DynamicImage>>>,
     pub panorama_result: Arc<Mutex<Option<DynamicImage>>>,
@@ -162,7 +160,6 @@ pub struct AppState {
     pub preview_worker_tx: Mutex<Option<Sender<PreviewJob>>>,
     pub analytics_worker_tx: Mutex<Option<Sender<AnalyticsJob>>>,
     pub mask_cache: Mutex<HashMap<u64, GrayImage>>,
-    pub patch_cache: Mutex<HashMap<String, serde_json::Value>>,
     pub geometry_cache: Mutex<HashMap<u64, DynamicImage>>,
     pub thumbnail_geometry_cache: Mutex<HashMap<String, ThumbnailGeometryEntry>>,
     pub lens_db: Mutex<Option<Arc<LensDatabase>>>,

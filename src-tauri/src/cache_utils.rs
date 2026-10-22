@@ -104,10 +104,6 @@ pub fn calculate_geometry_hash(adjustments: &serde_json::Value) -> u64 {
 
     hash_spot_removals(adjustments, &mut hasher);
 
-    if let Some(patches) = adjustments.get("aiPatches") {
-        patches.to_string().hash(&mut hasher);
-    }
-
     adjustments["orientationSteps"].as_u64().hash(&mut hasher);
 
     for key in GEOMETRY_KEYS {
@@ -205,57 +201,6 @@ pub fn calculate_transform_hash(adjustments: &serde_json::Value) -> u64 {
         if let Some(val) = adjustments.get(key) {
             key.hash(&mut hasher);
             val.to_string().hash(&mut hasher);
-        }
-    }
-
-    if let Some(patches_val) = adjustments.get("aiPatches")
-        && let Some(patches_arr) = patches_val.as_array()
-    {
-        patches_arr.len().hash(&mut hasher);
-
-        for patch in patches_arr {
-            if let Some(id) = patch.get("id").and_then(|v| v.as_str()) {
-                id.hash(&mut hasher);
-            }
-
-            let is_visible = patch
-                .get("visible")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            is_visible.hash(&mut hasher);
-
-            if let Some(patch_data) = patch.get("patchData") {
-                let color_len = patch_data
-                    .get("color")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .len();
-                color_len.hash(&mut hasher);
-
-                let mask_len = patch_data
-                    .get("mask")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .len();
-                mask_len.hash(&mut hasher);
-            } else {
-                let data_len = patch
-                    .get("patchDataBase64")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .len();
-                data_len.hash(&mut hasher);
-            }
-
-            if let Some(sub_masks_val) = patch.get("subMasks") {
-                sub_masks_val.to_string().hash(&mut hasher);
-            }
-
-            let invert = patch
-                .get("invert")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            invert.hash(&mut hasher);
         }
     }
 
@@ -374,9 +319,6 @@ pub fn clear_image_caches(state: tauri::State<AppState>) {
 
 #[tauri::command]
 pub fn clear_session_caches(state: tauri::State<AppState>) {
-    if let Ok(mut patch_cache) = state.patch_cache.lock() {
-        patch_cache.clear();
-    }
     if let Ok(mut mask_cache) = state.mask_cache.lock() {
         mask_cache.clear();
     }

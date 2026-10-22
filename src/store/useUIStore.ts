@@ -73,7 +73,6 @@ interface DenoiseModalState {
   error: string | null;
   targetPaths: string[];
   progressMessage: string | null;
-  isRaw: boolean;
 }
 
 interface NegativeConversionModalState {
@@ -98,7 +97,6 @@ const DEFAULT_PANEL_DEFAULT_REGIONS: Record<Panel, PanelRegion> = {
   [Panel.Adjustments]: 'rightTop',
   [Panel.Crop]: 'rightTop',
   [Panel.Masks]: 'rightTop',
-  [Panel.Ai]: 'rightTop',
 };
 
 export const DEFAULT_PANEL_WIDTH = 350;
@@ -346,7 +344,6 @@ export const useUIStore = create<UIState>((set, get) => ({
     error: null,
     targetPaths: [],
     progressMessage: null,
-    isRaw: false,
   },
   cullingModalState: { isOpen: false, suggestions: null, progress: null, error: null, pathsToCull: [] },
   collageModalState: { isOpen: false, sourceImages: [] },

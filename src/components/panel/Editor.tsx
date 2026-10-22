@@ -4,10 +4,11 @@ import { Loader2 } from 'lucide-react';
 import clsx from 'clsx';
 import { invoke } from '@tauri-apps/api/core';
 import debounce from 'lodash.debounce';
+import { useTranslation } from 'react-i18next';
 
 import { ImageDimensions, RenderSize, useImageRenderSize } from '../../hooks/useImageRenderSize';
 import { getZoomImageDimensions, resizeZoomViewport } from '../../utils/zoom';
-import { Adjustments, AiPatch, MaskContainer, INITIAL_ADJUSTMENTS } from '../../utils/adjustments';
+import { Adjustments, MaskContainer, INITIAL_ADJUSTMENTS } from '../../utils/adjustments';
 import {
   calculateCenteredCrop,
   getOrientedDimensions,
@@ -65,7 +66,6 @@ const checkCropValid = (pixelCrop: Partial<Crop>, imageW: number, imageH: number
 };
 
 interface WgpuRenderState {
-  useWgpuRenderer: boolean | undefined;
   isReady: boolean;
   hasRenderedFirstFrame: boolean;
   isCropping: boolean;
@@ -83,6 +83,7 @@ interface EditorProps {
 }
 
 export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, transformWrapperRef }: EditorProps) {
+  const { t } = useTranslation();
   const appSettings = useSettingsStore((s) => s.appSettings);
   const isFullScreen = useUIStore((s) => s.isFullScreen);
   const showTopPanel = useUIStore((s) => s.uiVisibility.topPanel);
@@ -96,7 +97,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
   const adjustmentsHistoryIndex = useEditorStore((s) => s.historyIndex);
   const finalPreviewUrl = useEditorStore((s) => s.finalPreviewUrl);
   const uncroppedAdjustedPreviewUrl = useEditorStore((s) => s.uncroppedAdjustedPreviewUrl);
-  const interactivePatch = useEditorStore((s) => s.interactivePatch);
   const showOriginal = useEditorStore((s) => s.showOriginal);
   const isSliderDragging = useEditorStore((s) => s.isSliderDragging);
   const targetZoom = useEditorStore((s) => s.zoom);
@@ -108,10 +108,9 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
   const brushSettings = useEditorStore((s) => s.brushSettings);
   const activeMaskContainerId = useEditorStore((s) => s.activeMaskContainerId);
   const activeMaskId = useEditorStore((s) => s.activeMaskId);
-  const activeAiPatchContainerId = useEditorStore((s) => s.activeAiPatchContainerId);
-  const activeAiSubMaskId = useEditorStore((s) => s.activeAiSubMaskId);
   const isMaskControlHovered = useEditorStore((s) => s.isMaskControlHovered);
   const hasRenderedFirstFrame = useEditorStore((s) => s.hasRenderedFirstFrame);
+  const previewError = useEditorStore((s) => s.previewError);
 
   const setEditor = useEditorStore((s) => s.setEditor);
   const undo = useEditorStore((s) => s.undo);
@@ -360,10 +359,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
           ...c,
           subMasks: c.subMasks.map((sm: SubMask) => (sm.id === subMaskId ? { ...sm, ...updatedData } : sm)),
         })),
-        aiPatches: (prev.aiPatches || []).map((p: AiPatch) => ({
-          ...p,
-          subMasks: p.subMasks.map((sm: SubMask) => (sm.id === subMaskId ? { ...sm, ...updatedData } : sm)),
-        })),
       }));
     },
     [setAdjustments],
@@ -384,7 +379,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
 
   const isCropping = activePanel === Panel.Crop;
   const isMasking = activePanel === Panel.Masks;
-  const isAiEditing = activePanel === Panel.Ai;
 
   const croppedDimensions = useMemo<ImageDimensions | null>(() => {
     if (!selectedImage) {
@@ -686,18 +680,12 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
       );
       return container?.subMasks.find((sm) => sm.id === activeMaskId);
     }
-    if (isAiEditing && activeAiSubMaskId) {
-      const container = adjustments.aiPatches.find((c: AiPatch) =>
-        c.subMasks.some((sm: SubMask) => sm.id === activeAiSubMaskId),
-      );
-      return container?.subMasks?.find((sm: SubMask) => sm.id === activeAiSubMaskId);
-    }
     return null;
-  }, [adjustments.masks, adjustments.aiPatches, activeMaskId, activeAiSubMaskId, isMasking, isAiEditing]);
+  }, [adjustments.masks, activeMaskId, isMasking]);
 
   const isBrushActive = useMemo(() => {
-    return (isMasking || isAiEditing) && (activeSubMask?.type === Mask.Brush || activeSubMask?.type === Mask.Flow);
-  }, [isMasking, isAiEditing, activeSubMask?.type]);
+    return isMasking && (activeSubMask?.type === Mask.Brush || activeSubMask?.type === Mask.Flow);
+  }, [isMasking, activeSubMask?.type]);
 
   const isPanningDisabled =
     isMaskHovered ||
@@ -708,19 +696,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
         activeSubMask?.type === Mask.Flow ||
         activeSubMask?.type === Mask.Clone ||
         activeSubMask?.type === Mask.Heal ||
-        activeSubMask?.type === Mask.AiSubject ||
-        activeSubMask?.type === Mask.Color ||
-        activeSubMask?.type === Mask.Luminance ||
-        activeSubMask?.parameters?.isInitialDraw)) ||
-    (isAiEditing &&
-      (activeSubMask?.type === Mask.Brush ||
-        activeSubMask?.type === Mask.Flow ||
-        activeSubMask?.type === Mask.Clone ||
-        activeSubMask?.type === Mask.Liquify ||
-        activeSubMask?.type === Mask.Retouch ||
-        activeSubMask?.type === Mask.Heal ||
-        activeSubMask?.type === Mask.AiSubject ||
-        activeSubMask?.type === Mask.QuickEraser ||
         activeSubMask?.type === Mask.Color ||
         activeSubMask?.type === Mask.Luminance ||
         activeSubMask?.parameters?.isInitialDraw)) ||
@@ -1215,10 +1190,10 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
   );
 
   useEffect(() => {
-    if (!isMasking && !isAiEditing) {
+    if (!isMasking) {
       setIsMaskTouchInteracting(false);
     }
-  }, [isMasking, isAiEditing]);
+  }, [isMasking]);
 
   const hasDisplayableImage = finalPreviewUrl || selectedImage?.thumbnailUrl;
   const showSpinner = isLoading && !hasDisplayableImage;
@@ -1275,36 +1250,13 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
     try {
       const cropOffset = [jsAdjustments.crop?.x || 0, jsAdjustments.crop?.y || 0];
 
-      const { patchesSentToBackend } = useEditorStore.getState();
-
-      const stripSubMasks = (subMasks: any[]) => {
-        if (!Array.isArray(subMasks)) return;
-        subMasks.forEach((sm) => {
-          if (sm.id && sm.parameters && patchesSentToBackend.has(sm.id)) {
-            if (sm.parameters.mask_data_base64 !== undefined) sm.parameters.mask_data_base64 = null;
-            if (sm.parameters.maskDataBase64 !== undefined) sm.parameters.maskDataBase64 = null;
-          }
-        });
-      };
-
-      const strippedAdjustments = structuredClone(jsAdjustments);
-      if (strippedAdjustments.masks) {
-        strippedAdjustments.masks.forEach((m: any) => stripSubMasks(m.subMasks));
-      }
-      if (strippedAdjustments.aiPatches) {
-        strippedAdjustments.aiPatches.forEach((p: any) => stripSubMasks(p.subMasks));
-      }
-
-      const strippedMaskDef = structuredClone(maskDef);
-      stripSubMasks(strippedMaskDef.subMasks);
-
       const dataUrl: string = await invoke(Invokes.GenerateMaskOverlay, {
         cropOffset,
         height: Math.round(renderSize.height),
-        maskDef: strippedMaskDef,
+        maskDef,
         scale: renderSize.scale,
         width: Math.round(renderSize.width),
-        jsAdjustments: strippedAdjustments,
+        jsAdjustments,
       });
 
       if (dataUrl) {
@@ -1352,7 +1304,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
   }, [croppedDimensions]);
 
   const wgpuStateRef = useRef<WgpuRenderState>({
-    useWgpuRenderer: appSettings?.useWgpuRenderer,
     isReady: selectedImage?.isReady ?? false,
     hasRenderedFirstFrame,
     isCropping,
@@ -1369,7 +1320,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
     const bgSecondaryStr = rootStyle.getPropertyValue('--app-bg-secondary') || 'rgb(35, 35, 35)';
 
     wgpuStateRef.current = {
-      useWgpuRenderer: appSettings?.useWgpuRenderer,
       isReady: selectedImage?.isReady ?? false,
       hasRenderedFirstFrame,
       isCropping,
@@ -1379,7 +1329,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
       bgSecondary: appSettings?.editorNeutralGreyBg ? [128 / 255, 128 / 255, 128 / 255, 1] : parseRgb(bgSecondaryStr),
     };
   }, [
-    appSettings?.useWgpuRenderer,
     appSettings?.editorNeutralGreyBg,
     selectedImage?.isReady,
     hasRenderedFirstFrame,
@@ -1393,7 +1342,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
   useEffect(() => {
     syncWgpuRef.current();
   }, [
-    appSettings?.useWgpuRenderer,
     appSettings?.editorNeutralGreyBg,
     selectedImage?.isReady,
     hasRenderedFirstFrame,
@@ -1444,7 +1392,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
       if (
         currentRect.width < 10 ||
         currentRect.height < 10 ||
-        state.useWgpuRenderer === false ||
         !state.isReady ||
         !state.hasRenderedFirstFrame ||
         irs.width === 0 ||
@@ -1568,8 +1515,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
     let activeMaskDef = null;
     if (activePanel === Panel.Masks && activeMaskContainerId) {
       activeMaskDef = adjustments.masks?.find((c: MaskContainer) => c.id === activeMaskContainerId);
-    } else if (activePanel === Panel.Ai && activeAiPatchContainerId) {
-      activeMaskDef = adjustments.aiPatches?.find((p: AiPatch) => p.id === activeAiPatchContainerId);
     }
 
     if (!activeMaskDef) return null;
@@ -1604,41 +1549,15 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
       geometry[k] = (adjustments as any)[k];
     });
 
-    const subMasks = activeMaskDef.subMasks?.map((sm: any) => {
-      const { parameters, ...rest } = sm;
-      const cleanParams = { ...parameters };
-      const maskDataFingerprint = cleanParams.mask_data_base64
-        ? `${cleanParams.mask_data_base64.length}-${cleanParams.mask_data_base64.slice(-20)}`
-        : null;
-      const maskDataCamelFingerprint = cleanParams.maskDataBase64
-        ? `${cleanParams.maskDataBase64.length}-${cleanParams.maskDataBase64.slice(-20)}`
-        : null;
-      delete cleanParams.mask_data_base64;
-      delete cleanParams.maskDataBase64;
-      return {
-        ...rest,
-        parameters: cleanParams,
-        _maskDataFingerprint: maskDataFingerprint,
-        _maskDataCamelFingerprint: maskDataCamelFingerprint,
-      };
-    });
-
     return JSON.stringify({
       id: activeMaskDef.id,
       invert: activeMaskDef.invert,
       ...('opacity' in activeMaskDef ? { opacity: activeMaskDef.opacity } : {}),
-      subMasks,
+      subMasks: activeMaskDef.subMasks,
       geometry,
       renderSize: { w: imageRenderSize.width, h: imageRenderSize.height },
     });
-  }, [
-    activePanel,
-    activeMaskContainerId,
-    activeAiPatchContainerId,
-    adjustments,
-    imageRenderSize.width,
-    imageRenderSize.height,
-  ]);
+  }, [activePanel, activeMaskContainerId, adjustments, imageRenderSize.width, imageRenderSize.height]);
 
   useEffect(() => {
     let maskDefForOverlay = null;
@@ -1651,26 +1570,10 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
           adjustments: {},
         };
       }
-    } else if (activePanel === Panel.Ai && activeAiPatchContainerId) {
-      const activePatch = adjustments.aiPatches?.find((p: AiPatch) => p.id === activeAiPatchContainerId);
-      if (activePatch) {
-        maskDefForOverlay = {
-          ...activePatch,
-          adjustments: {},
-          opacity: 100,
-        };
-      }
     }
 
     requestMaskOverlay(maskDefForOverlay, imageRenderSize, adjustments);
-  }, [
-    overlayTriggerHash,
-    requestMaskOverlay,
-    activePanel,
-    activeMaskContainerId,
-    activeAiPatchContainerId,
-    imageRenderSize,
-  ]);
+  }, [overlayTriggerHash, requestMaskOverlay, activePanel, activeMaskContainerId, imageRenderSize]);
 
   useEffect(() => {
     let timer: number;
@@ -2193,7 +2096,7 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
     }
   }
 
-  const isWgpuActive = appSettings?.useWgpuRenderer !== false && hasRenderedFirstFrame;
+  const isWgpuActive = hasRenderedFirstFrame;
   const hasRenderedAnyPreview = hasRenderedFirstFrame || !!finalPreviewUrl;
 
   return (
@@ -2201,9 +2104,7 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
       className={clsx(
         'flex-1 flex flex-col relative overflow-hidden min-h-0',
         !isInstantTransition && 'transition-all duration-300 ease-in-out',
-        isFullScreen
-          ? 'rounded-none p-0 gap-0'
-          : clsx('rounded-lg p-2 gap-2', appSettings?.useWgpuRenderer !== false ? 'bg-transparent' : 'bg-bg-secondary'),
+        isFullScreen ? 'rounded-none p-0 gap-0' : 'rounded-lg p-2 gap-2 bg-transparent',
       )}
     >
       {hasRenderedAnyPreview && <div className="hidden" data-bench-id="editor-first-frame" />}
@@ -2239,8 +2140,7 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
         className={clsx(
           'flex-1 relative overflow-hidden touch-none',
           isFullScreen ? 'rounded-none' : 'rounded-lg',
-          appSettings?.useWgpuRenderer !== false &&
-            !isFullScreen &&
+          !isFullScreen &&
             (appSettings?.editorNeutralGreyBg ? 'ring-[9999px] ring-[#808080]' : 'ring-[9999px] ring-bg-secondary'),
           !isWgpuActive && (appSettings?.editorNeutralGreyBg ? 'bg-[#808080]' : 'bg-bg-secondary'),
         )}
@@ -2253,6 +2153,14 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
         onPointerCancel={handlePointerUp}
         onClick={handleClick}
       >
+        {previewError && (
+          <div role="alert" className="absolute inset-0 z-[60] bg-bg-secondary flex items-center justify-center p-8">
+            <div className="max-w-lg text-center text-text-primary">
+              <p className="font-semibold mb-2">{t('colorManagement.nativeDisplayError')}</p>
+              <p>{previewError}</p>
+            </div>
+          </div>
+        )}
         {showSpinner && (
           <div
             className={clsx(
@@ -2272,9 +2180,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
           }}
         >
           <ImageCanvas
-            appSettings={appSettings}
-            activeAiPatchContainerId={activeAiPatchContainerId}
-            activeAiSubMaskId={activeAiSubMaskId}
             activeMaskContainerId={activeMaskContainerId}
             activeMaskId={activeMaskId}
             adjustments={adjustments}
@@ -2283,8 +2188,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
             finalPreviewUrl={finalPreviewUrl}
             handleCropComplete={handleCropComplete}
             imageRenderSize={imageRenderSize}
-            interactivePatch={interactivePatch}
-            isAiEditing={isAiEditing}
             isCropping={isCropping}
             isMaskControlHovered={isMaskControlHovered}
             isMasking={isMasking}

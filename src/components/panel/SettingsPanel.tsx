@@ -386,11 +386,8 @@ export default function SettingsPanel({
     mediumThumbnailResolution: appSettings?.mediumThumbnailResolution || 1280,
     rawHighlightCompression: appSettings?.rawHighlightCompression ?? 2.5,
     rawHighlightRecoveryEnabled: appSettings?.rawHighlightRecoveryEnabled ?? true,
-    processingBackend: appSettings?.processingBackend || 'auto',
-    linuxGpuOptimization: appSettings?.linuxGpuOptimization ?? false,
     highResZoomMultiplier: appSettings?.highResZoomMultiplier || 1.0,
     useFullDpiRendering: appSettings?.useFullDpiRendering ?? false,
-    useWgpuRenderer: appSettings?.useWgpuRenderer ?? (osPlatform === 'linux' ? false : true),
     thumbnailWorkerThreads: appSettings?.thumbnailWorkerThreads ?? 4,
     imageCacheSize: appSettings?.imageCacheSize ?? 5,
     rawPreprocessingColorNr: appSettings?.rawPreprocessingColorNr ?? 0.0,
@@ -420,21 +417,6 @@ export default function SettingsPanel({
     ],
     [t],
   );
-
-  const filteredBackendOptions = useMemo<OptionItem<string>[]>(() => {
-    const rawOptions = [
-      { value: 'auto', label: t('settings.processing.backends.auto') },
-      { value: 'vulkan', label: t('settings.processing.backends.vulkan') },
-      { value: 'dx12', label: t('settings.processing.backends.dx12') },
-      { value: 'metal', label: t('settings.processing.backends.metal') },
-      { value: 'gl', label: t('settings.processing.backends.gl') },
-    ];
-    return rawOptions.filter((opt) => {
-      if (opt.value === 'metal' && osPlatform !== 'macos') return false;
-      if (opt.value === 'dx12' && osPlatform === 'macos') return false;
-      return true;
-    });
-  }, [t, osPlatform]);
 
   const tonemapperOptions = useMemo<OptionItem<string>[]>(
     () => [
@@ -487,11 +469,8 @@ export default function SettingsPanel({
       mediumThumbnailResolution: appSettings?.mediumThumbnailResolution || 1280,
       rawHighlightCompression: appSettings?.rawHighlightCompression ?? 2.5,
       rawHighlightRecoveryEnabled: appSettings?.rawHighlightRecoveryEnabled ?? true,
-      processingBackend: appSettings?.processingBackend || 'auto',
-      linuxGpuOptimization: appSettings?.linuxGpuOptimization ?? false,
       highResZoomMultiplier: appSettings?.highResZoomMultiplier || 1.0,
       useFullDpiRendering: appSettings?.useFullDpiRendering ?? false,
-      useWgpuRenderer: appSettings?.useWgpuRenderer ?? true,
       thumbnailWorkerThreads: appSettings?.thumbnailWorkerThreads ?? 4,
       imageCacheSize: appSettings?.imageCacheSize ?? 5,
       rawPreprocessingColorNr: appSettings?.rawPreprocessingColorNr ?? 0.0,
@@ -507,12 +486,7 @@ export default function SettingsPanel({
   const handleProcessingSettingChange = async (key: string, value: any) => {
     setProcessingSettings((prev) => ({ ...prev, [key]: value }));
 
-    if (
-      key === 'processingBackend' ||
-      key === 'linuxGpuOptimization' ||
-      key === 'useWgpuRenderer' ||
-      key === 'thumbnailWorkerThreads'
-    ) {
+    if (key === 'thumbnailWorkerThreads') {
       setRestartRequired(true);
     } else {
       await onSettingsChange({ ...appSettings, [key]: value });
@@ -1171,17 +1145,6 @@ export default function SettingsPanel({
                       </li>
                       <li>
                         <a
-                          href="https://github.com/trougnouf/nind-denoise"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-semibold text-accent hover:underline"
-                        >
-                          {t('uiText.SettingsPanel.nind_denoise')}
-                        </a>
-                        : {t('settings.thanks.list.nind')}
-                      </li>
-                      <li>
-                        <a
                           href="https://github.com/darktable-org/darktable"
                           target="_blank"
                           rel="noopener noreferrer"
@@ -1435,41 +1398,6 @@ export default function SettingsPanel({
                       </SettingItem>
 
                       <SettingItem
-                        label={t('settings.processing.wgpu')}
-                        description={
-                          osPlatform === 'linux'
-                            ? t('settings.processing.wgpuDescLinux')
-                            : t('settings.processing.wgpuDescRecommended')
-                        }
-                      >
-                        <Switch
-                          checked={processingSettings.useWgpuRenderer}
-                          disabled={osPlatform === 'linux'}
-                          id="wgpu-renderer-toggle"
-                          label={t('settings.processing.wgpuLabel')}
-                          onChange={(checked) => handleProcessingSettingChange('useWgpuRenderer', checked)}
-                        />
-                      </SettingItem>
-
-                      <SettingItem
-                        label={t('settings.processing.backend')}
-                        description={t('settings.processing.backendDesc')}
-                      >
-                        <Dropdown
-                          onChange={(value: any) => handleProcessingSettingChange('processingBackend', value)}
-                          options={filteredBackendOptions}
-                          value={
-                            filteredBackendOptions.some(
-                              (option) => option.value === processingSettings.processingBackend,
-                            )
-                              ? processingSettings.processingBackend
-                              : 'auto'
-                          }
-                          triggerClassName="bg-bg-primary"
-                        />
-                      </SettingItem>
-
-                      <SettingItem
                         label={t('uiText.SettingsPanel.lensfun_database')}
                         description={t(
                           'uiText.SettingsPanel.download_the_current_xml_database_directly_from_the_official_lensfun_lensfun_source',
@@ -1483,20 +1411,6 @@ export default function SettingsPanel({
 
                       {componentMessage && (
                         <Text color={componentError ? TextColors.error : TextColors.info}>{componentMessage}</Text>
-                      )}
-
-                      {osPlatform !== 'macos' && osPlatform !== 'windows' && (
-                        <SettingItem
-                          label={t('settings.processing.linuxCompat')}
-                          description={t('settings.processing.linuxCompatDesc')}
-                        >
-                          <Switch
-                            checked={processingSettings.linuxGpuOptimization}
-                            id="gpu-compat-toggle"
-                            label={t('settings.processing.linuxCompatLabel')}
-                            onChange={(checked) => handleProcessingSettingChange('linuxGpuOptimization', checked)}
-                          />
-                        </SettingItem>
                       )}
 
                       {restartRequired && (

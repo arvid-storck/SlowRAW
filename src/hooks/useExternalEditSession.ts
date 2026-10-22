@@ -58,6 +58,7 @@ export function useExternalEditSession(handleImageSelect: (path: string) => void
       jpegQuality: session.jpegQuality,
       tiffBitDepth: 16,
       pngBitDepth: 16,
+      colorSpace: 'srgb',
       keepMetadata: true,
       preserveTimestamps: false,
       preserveFolders: false,

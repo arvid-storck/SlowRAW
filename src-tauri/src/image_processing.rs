@@ -577,29 +577,6 @@ fn interpolate_pixel_with_tca(
     pixel_out[2] = sample_channel(bx, by, 2);
 }
 
-fn solve_generic_distortion_inv(r_target: f64, k_scaled: f64) -> f64 {
-    if k_scaled.abs() < 1e-9 {
-        return r_target;
-    }
-
-    let mut r = r_target;
-    for _ in 0..10 {
-        let r2 = r * r;
-        let val = k_scaled * r2 * r + r - r_target;
-        let slope = 3.0 * k_scaled * r2 + 1.0;
-
-        if slope.abs() < 1e-9 {
-            break;
-        }
-        let delta = val / slope;
-        r -= delta;
-        if delta.abs() < 1e-6 {
-            break;
-        }
-    }
-    r
-}
-
 fn compute_lens_auto_crop_scale(params: &GeometryParams, width: f32, height: f32) -> f64 {
     let cx = (width / 2.0) as f64;
     let cy = (height / 2.0) as f64;
@@ -848,179 +825,6 @@ pub fn warp_image_geometry(image: &DynamicImage, params: GeometryParams) -> Dyna
     DynamicImage::ImageRgb32F(out_img)
 }
 
-pub fn unwarp_image_geometry(warped_image: &DynamicImage, params: GeometryParams) -> DynamicImage {
-    let src_img = warped_image.to_rgb32f();
-    let (width, height) = src_img.dimensions();
-    let mut out_buffer = vec![0.0f32; (width * height * 3) as usize];
-
-    let (forward_transform, cx, cy, half_diagonal) =
-        build_transform_matrices(&params, width as f32, height as f32);
-    let max_radius_sq_inv = 1.0 / ((cx * cx + cy * cy) as f64);
-    let hd = half_diagonal;
-
-    let k_distortion = (params.distortion as f64 / 100.0) * 2.5;
-    let lk1 = params.lens_dist_k1 as f64;
-    let lk2 = params.lens_dist_k2 as f64;
-    let lk3 = params.lens_dist_k3 as f64;
-    let lens_dist_amt = (params.lens_distortion_amount as f64) * 2.5;
-
-    let has_lens_correction = params.lens_distortion_enabled
-        && (lk1.abs() > 1e-6 || lk2.abs() > 1e-6 || lk3.abs() > 1e-6);
-    let is_ptlens = params.lens_model == 1;
-
-    let auto_crop_scale = if has_lens_correction || k_distortion.abs() > 1e-5 {
-        compute_lens_auto_crop_scale(&params, width as f32, height as f32) as f32
-    } else {
-        1.0
-    };
-
-    let src_raw = src_img.as_raw();
-    let width_usize = width as usize;
-    let height_usize = height as usize;
-
-    out_buffer
-        .par_chunks_exact_mut(width_usize * 3)
-        .enumerate()
-        .for_each(|(y, row_pixel_data)| {
-            let y_f = y as f32;
-
-            for (x, pixel) in row_pixel_data.as_chunks_mut::<3>().0.iter_mut().enumerate() {
-                let x_f = x as f32;
-                let mut current_x = x_f;
-                let mut current_y = y_f;
-
-                if k_distortion.abs() > 1e-5 {
-                    let dx = (current_x - cx) as f64;
-                    let dy = (current_y - cy) as f64;
-                    let r_distorted = (dx * dx + dy * dy).sqrt();
-
-                    if r_distorted > 1e-6 {
-                        let k_effective = k_distortion * max_radius_sq_inv;
-                        let r_straight = solve_generic_distortion_inv(r_distorted, k_effective);
-
-                        let scale = r_straight / r_distorted;
-                        current_x = cx + (dx * scale) as f32;
-                        current_y = cy + (dy * scale) as f32;
-                    }
-                }
-
-                if has_lens_correction {
-                    let dx = (current_x - cx) as f64;
-                    let dy = (current_y - cy) as f64;
-                    let rd = (dx * dx + dy * dy).sqrt();
-
-                    if rd > 1e-6 {
-                        let mut ru = rd;
-
-                        for _ in 0..8 {
-                            let ru_norm = ru / hd;
-                            let ru_norm2 = ru_norm * ru_norm;
-
-                            let (f_val, f_prime) = if is_ptlens {
-                                let a = lk1;
-                                let b = lk2;
-                                let c = lk3;
-                                let d = 1.0 - a - b - c;
-                                let poly = a * ru_norm2 * ru_norm + b * ru_norm2 + c * ru_norm + d;
-
-                                let val = ru * poly;
-                                let prime = 4.0 * a * ru_norm2 * ru_norm
-                                    + 3.0 * b * ru_norm2
-                                    + 2.0 * c * ru_norm
-                                    + d;
-                                (val, prime)
-                            } else {
-                                let poly = 1.0
-                                    + lk1 * ru_norm2
-                                    + lk2 * (ru_norm2 * ru_norm2)
-                                    + lk3 * (ru_norm2 * ru_norm2 * ru_norm2);
-                                let val = ru * poly;
-                                let poly_prime = 2.0 * lk1 * ru_norm
-                                    + 4.0 * lk2 * ru_norm2 * ru_norm
-                                    + 6.0 * lk3 * (ru_norm2 * ru_norm2) * ru_norm;
-                                let prime = poly + ru_norm * poly_prime;
-                                (val, prime)
-                            };
-
-                            let g_val = ru + (f_val - ru) * lens_dist_amt - rd;
-                            let g_prime = 1.0 + (f_prime - 1.0) * lens_dist_amt;
-
-                            if g_prime.abs() < 1e-7 {
-                                break;
-                            }
-                            let delta = g_val / g_prime;
-                            ru -= delta;
-                            if delta.abs() < 1e-4 {
-                                break;
-                            }
-                        }
-
-                        let scale = ru / rd;
-                        current_x = cx + (dx * scale) as f32;
-                        current_y = cy + (dy * scale) as f32;
-                    }
-                }
-
-                if auto_crop_scale > 1.0 {
-                    current_x = cx + (current_x - cx) * auto_crop_scale;
-                    current_y = cy + (current_y - cy) * auto_crop_scale;
-                }
-
-                let target_vec = forward_transform * NaVector3::new(current_x, current_y, 1.0);
-
-                if target_vec.z.abs() > 1e-6 {
-                    let inv_z = 1.0 / target_vec.z;
-
-                    let src_x = target_vec.x * inv_z;
-                    let src_y = target_vec.y * inv_z;
-
-                    interpolate_pixel(src_raw, width_usize, height_usize, src_x, src_y, pixel);
-                }
-            }
-        });
-
-    let out_img = Rgb32FImage::from_vec(width, height, out_buffer).unwrap();
-    DynamicImage::ImageRgb32F(out_img)
-}
-
-pub fn inverse_transform_mask(
-    mask: image::GrayImage,
-    adjustments: &serde_json::Value,
-) -> image::GrayImage {
-    let rotation_degrees = adjustments
-        .get("rotation")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as f32;
-    let mask_dyn = image::DynamicImage::ImageLuma8(mask);
-
-    let unrotated_fine = if rotation_degrees.abs() > 1e-5 {
-        crate::image_processing::apply_rotation(mask_dyn, -rotation_degrees).into_owned()
-    } else {
-        mask_dyn
-    };
-
-    let flip_h = adjustments
-        .get("flipHorizontal")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let flip_v = adjustments
-        .get("flipVertical")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let flipped = apply_flip(unrotated_fine, flip_h, flip_v).into_owned();
-
-    let steps = adjustments
-        .get("orientationSteps")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u8;
-    let inverse_steps = (4 - (steps % 4)) % 4;
-    let unrotated_coarse = apply_coarse_rotation(flipped, inverse_steps).into_owned();
-
-    let unwarped = apply_unwarp_geometry(unrotated_coarse, adjustments).into_owned();
-
-    unwarped.into_luma8()
-}
-
 pub fn apply_cpu_default_raw_processing(image: &mut DynamicImage) {
     let mut f32_image = image.to_rgb32f();
 
@@ -1119,19 +923,6 @@ pub fn apply_geometry_warp<'a>(
     let params = get_geometry_params_from_json(adjustments);
     if !is_geometry_identity(&params) {
         Cow::Owned(warp_image_geometry(image.as_ref(), params))
-    } else {
-        image
-    }
-}
-
-pub fn apply_unwarp_geometry<'a>(
-    image: impl IntoCowImage<'a>,
-    adjustments: &serde_json::Value,
-) -> Cow<'a, DynamicImage> {
-    let image = image.into_cow();
-    let params = get_geometry_params_from_json(adjustments);
-    if !is_geometry_identity(&params) {
-        Cow::Owned(unwarp_image_geometry(image.as_ref(), params))
     } else {
         image
     }
@@ -1482,6 +1273,10 @@ pub struct AllAdjustments {
     pub tile_offset_x: u32,
     pub tile_offset_y: u32,
     pub mask_atlas_cols: u32,
+    pub working_matrix: GpuMat3,
+    pub output_matrix: GpuMat3,
+    pub output_transfer: u32,
+    pub output_padding: [u32; 3],
 }
 
 struct AdjustmentScales {
@@ -1743,7 +1538,7 @@ fn rotate_and_scale_primary(primary: Vec2, white_point: Vec2, scale: f32, rotati
     white_point + p_rotated
 }
 
-fn mat3_to_gpu_mat3(m: Mat3) -> GpuMat3 {
+pub(crate) fn mat3_to_gpu_mat3(m: Mat3) -> GpuMat3 {
     GpuMat3 {
         col0: [m.x_axis.x, m.x_axis.y, m.x_axis.z, 0.0],
         col1: [m.y_axis.x, m.y_axis.y, m.y_axis.z, 0.0],
@@ -1942,11 +1737,6 @@ pub fn is_image_edited(
         return false;
     }
 
-    if let Some(patches) = adj.get("aiPatches").and_then(|v| v.as_array())
-        && !patches.is_empty()
-    {
-        return true;
-    }
     if let Some(masks) = adj.get("masks").and_then(|v| v.as_array())
         && !masks.is_empty()
     {
@@ -2459,14 +2249,17 @@ pub fn get_all_adjustments_from_json(
         mask_count += 1;
     }
 
-    AllAdjustments {
+    let mut all = AllAdjustments {
         global,
         mask_adjustments,
         mask_count,
         tile_offset_x: 0,
         tile_offset_y: 0,
         mask_atlas_cols: 1,
-    }
+        ..Default::default()
+    };
+    crate::color_management::ColorSpace::Srgb.configure(&mut all);
+    all
 }
 
 #[derive(Clone)]

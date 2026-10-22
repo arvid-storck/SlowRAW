@@ -327,7 +327,7 @@ export default function Controls() {
               weight={TextWeights.normal}
               className="text-center"
             >
-              {t('editor.ai.noImageSelected')}
+              {t('editor.noImageSelected')}
             </Text>
           </div>
         )}

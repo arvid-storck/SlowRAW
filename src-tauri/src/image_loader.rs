@@ -6,20 +6,15 @@ use crate::file_management::{parse_virtual_path, read_file_mapped};
 use crate::formats::is_raw_file;
 use crate::image_processing::ImageMetadata;
 use crate::image_processing::{apply_orientation, reduce_raw_color_noise};
-use crate::mask_generation::{MaskDefinition, SubMask, generate_mask_bitmap};
 use crate::white_balance::WhiteBalance;
 use anyhow::{Context, Result, anyhow};
-use base64::{Engine as _, engine::general_purpose};
 use exif::{Reader as ExifReader, Tag};
-use image::{DynamicImage, GenericImageView, ImageReader, imageops};
+use image::{DynamicImage, GenericImageView, ImageReader};
 use rawler::Orientation;
-use rayon::prelude::*;
-use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::sync::OnceLock;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -36,33 +31,6 @@ pub struct LoadImageResult {
     pub as_shot_white_balance: WhiteBalance,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PatchMaskInfo {
-    id: String,
-    name: String,
-    #[serde(default)]
-    invert: bool,
-    #[serde(default)]
-    sub_masks: Vec<SubMask>,
-}
-
-fn srgb_to_linear_lut() -> &'static [f32; 256] {
-    static LUT: OnceLock<[f32; 256]> = OnceLock::new();
-    LUT.get_or_init(|| {
-        let mut lut = [0.0f32; 256];
-        for (i, v) in lut.iter_mut().enumerate() {
-            let x = i as f32 / 255.0;
-            *v = if x <= 0.04045 {
-                x / 12.92
-            } else {
-                ((x + 0.055) / 1.055).powf(2.4)
-            };
-        }
-        lut
-    })
-}
-
 pub fn load_and_composite(
     base_image: &[u8],
     path: &str,
@@ -73,7 +41,10 @@ pub fn load_and_composite(
 ) -> Result<DynamicImage> {
     let base_image =
         load_base_image_from_bytes(base_image, path, use_fast_raw_dev, settings, cancel_token)?;
-    composite_patches_on_image(&base_image, adjustments)
+    Ok(crate::spot_removal::composite_spot_removals(
+        &base_image,
+        adjustments,
+    ))
 }
 
 pub fn load_base_image_from_bytes(
@@ -163,7 +134,32 @@ pub fn load_image_with_orientation(
 
     check_cancel()?;
 
-    let image = reader.decode().context("Failed to decode image")?;
+    use image::ImageDecoder;
+    let format = reader.format();
+    let mut decoder = reader
+        .into_decoder()
+        .context("Failed to create image decoder")?;
+    let mut profile = decoder
+        .icc_profile()
+        .context("Failed to read input ICC profile")?;
+    // image's TIFF pixel-allocation limit can also block ICC tags larger than
+    // a tiny image's pixel buffer. Read metadata without that pixel-sized limit.
+    if profile.is_none() && format == Some(image::ImageFormat::Tiff) {
+        profile = image::codecs::tiff::TiffDecoder::new(cursor.clone())?
+            .icc_profile()
+            .context("Failed to read TIFF ICC profile")?;
+    }
+    let mut image = DynamicImage::from_decoder(decoder).context("Failed to decode image")?;
+    if let Some(profile) = profile {
+        let source =
+            moxcms::ColorProfile::new_from_slice(&profile).context("Invalid input ICC profile")?;
+        image = crate::color_management::convert_image(
+            &image,
+            &source,
+            crate::color_management::ColorSpace::Srgb,
+        )
+        .map_err(|error| anyhow!("Input color conversion failed: {error}"))?;
+    }
     check_cancel()?;
 
     let oriented_image = {
@@ -184,432 +180,6 @@ pub fn load_image_with_orientation(
     };
 
     Ok(DynamicImage::ImageRgb32F(oriented_image.to_rgb32f()))
-}
-
-pub fn composite_patches_on_image(
-    base_image: &DynamicImage,
-    current_adjustments: &Value,
-) -> Result<DynamicImage> {
-    let spot_image = crate::spot_removal::composite_spot_removals(base_image, current_adjustments);
-    let patches_val = match current_adjustments.get("aiPatches") {
-        Some(val) => val,
-        None => return Ok(spot_image),
-    };
-
-    let patches_arr = match patches_val.as_array() {
-        Some(arr) if !arr.is_empty() => arr,
-        _ => return Ok(spot_image),
-    };
-
-    let visible_patches: Vec<&Value> = patches_arr
-        .par_iter()
-        .filter(|patch_obj| {
-            let is_visible = patch_obj
-                .get("visible")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            if !is_visible {
-                return false;
-            }
-            patch_obj
-                .get("patchData")
-                .and_then(|data| data.get("color"))
-                .and_then(|color| color.as_str())
-                .is_some_and(|s| !s.is_empty())
-        })
-        .collect();
-
-    if visible_patches.is_empty() {
-        return Ok(spot_image);
-    }
-
-    let (base_w, base_h) = spot_image.dimensions();
-
-    struct DecodedPatch {
-        offset_x: Option<u32>,
-        offset_y: Option<u32>,
-        mask: image::GrayImage,
-        color: image::RgbImage,
-        is_srgb_encoded: bool,
-    }
-
-    let decoded_patches: Result<Vec<DecodedPatch>> = visible_patches
-        .par_iter()
-        .map(|patch_obj| {
-            let patch_data = patch_obj.get("patchData").context("Missing patchData")?;
-            let offset_x = patch_data
-                .get("offsetX")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32);
-            let offset_y = patch_data
-                .get("offsetY")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32);
-            let is_cropped = offset_x.is_some() && offset_y.is_some();
-
-            let is_srgb_encoded = patch_data
-                .get("isSrgbEncoded")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            let mask_bitmap = if let Some(mask_b64) = patch_data
-                .get("mask")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-            {
-                let mask_bytes = general_purpose::STANDARD.decode(mask_b64)?;
-                let mask_img = image::load_from_memory(&mask_bytes)?.to_luma8();
-                if !is_cropped && (mask_img.width() != base_w || mask_img.height() != base_h) {
-                    imageops::resize(&mask_img, base_w, base_h, imageops::FilterType::Lanczos3)
-                } else {
-                    mask_img
-                }
-            } else {
-                let patch_info: PatchMaskInfo = serde_json::from_value((*patch_obj).clone())
-                    .context("Failed to deserialize patch info for mask generation")?;
-
-                let mask_def = MaskDefinition {
-                    id: patch_info.id,
-                    name: patch_info.name,
-                    visible: true,
-                    invert: patch_info.invert,
-                    opacity: 100.0,
-                    adjustments: Value::Null,
-                    sub_masks: patch_info.sub_masks,
-                };
-
-                let orientation_steps = current_adjustments
-                    .get("orientationSteps")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u8;
-                let (trans_w, trans_h) = if orientation_steps % 2 == 1 {
-                    (base_h, base_w)
-                } else {
-                    (base_w, base_h)
-                };
-
-                let mut gen_mask =
-                    generate_mask_bitmap(&mask_def, trans_w, trans_h, 1.0, (0.0, 0.0), None)
-                        .context("Failed to generate mask from sub_masks for compositing")?;
-
-                gen_mask =
-                    crate::image_processing::inverse_transform_mask(gen_mask, current_adjustments);
-
-                if let (Some(ox), Some(oy)) = (offset_x, offset_y) {
-                    let w = patch_data
-                        .get("width")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as u32)
-                        .unwrap_or(base_w);
-                    let h = patch_data
-                        .get("height")
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as u32)
-                        .unwrap_or(base_h);
-                    let crop_w = w.min(base_w.saturating_sub(ox));
-                    let crop_h = h.min(base_h.saturating_sub(oy));
-                    gen_mask = imageops::crop_imm(&gen_mask, ox, oy, crop_w, crop_h).to_image();
-                }
-                gen_mask
-            };
-
-            let color_b64 = patch_data
-                .get("color")
-                .and_then(|v| v.as_str())
-                .context("Missing color data")?;
-            let color_bytes = general_purpose::STANDARD.decode(color_b64)?;
-            let color_image_u8 = image::load_from_memory(&color_bytes)?.to_rgb8();
-
-            let (patch_w, patch_h) = color_image_u8.dimensions();
-            let final_color = if !is_cropped && (base_w != patch_w || base_h != patch_h) {
-                imageops::resize(
-                    &color_image_u8,
-                    base_w,
-                    base_h,
-                    imageops::FilterType::Lanczos3,
-                )
-            } else {
-                color_image_u8
-            };
-
-            Ok(DecodedPatch {
-                offset_x,
-                offset_y,
-                mask: mask_bitmap,
-                color: final_color,
-                is_srgb_encoded,
-            })
-        })
-        .collect();
-
-    let decoded_patches = decoded_patches?;
-
-    let mut composited_image = spot_image;
-    let lut = srgb_to_linear_lut();
-
-    let get_color = |patch: &DecodedPatch, r: u8, g: u8, b: u8| -> (f32, f32, f32) {
-        if patch.is_srgb_encoded {
-            (lut[r as usize], lut[g as usize], lut[b as usize])
-        } else {
-            (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
-        }
-    };
-
-    match &mut composited_image {
-        DynamicImage::ImageRgb32F(img_buf) => {
-            for patch in decoded_patches {
-                let mask_raw = patch.mask.as_raw();
-                let color_raw = patch.color.as_raw();
-                let patch_w = patch.mask.width() as usize;
-
-                if let (Some(ox), Some(oy)) = (patch.offset_x, patch.offset_y) {
-                    let max_x = (ox + patch.mask.width()).min(base_w);
-                    let max_y = (oy + patch.mask.height()).min(base_h);
-
-                    let crop_w = max_x.saturating_sub(ox) as usize;
-                    let crop_h = max_y.saturating_sub(oy) as usize;
-
-                    if crop_w == 0 || crop_h == 0 {
-                        continue;
-                    }
-
-                    let base_w_usize = base_w as usize;
-                    let ox_usize = ox as usize;
-                    let oy_usize = oy as usize;
-
-                    img_buf
-                        .par_chunks_mut(base_w_usize * 3)
-                        .enumerate()
-                        .skip(oy_usize)
-                        .take(crop_h)
-                        .for_each(|(y, row)| {
-                            let py = y - oy_usize;
-                            let patch_row_start = py * patch_w;
-
-                            for x in ox_usize..(ox_usize + crop_w) {
-                                let px = x - ox_usize;
-                                let mask_idx = patch_row_start + px;
-                                let mask_value = mask_raw[mask_idx];
-
-                                if mask_value > 0 {
-                                    let color_idx = mask_idx * 3;
-                                    let pr_u8 = color_raw[color_idx];
-                                    let pg_u8 = color_raw[color_idx + 1];
-                                    let pb_u8 = color_raw[color_idx + 2];
-
-                                    let (pr, pg, pb) = get_color(&patch, pr_u8, pg_u8, pb_u8);
-
-                                    let alpha = mask_value as f32 / 255.0;
-                                    let one_minus_alpha = 1.0 - alpha;
-
-                                    let base_idx = x * 3;
-                                    row[base_idx] = pr * alpha + row[base_idx] * one_minus_alpha;
-                                    row[base_idx + 1] =
-                                        pg * alpha + row[base_idx + 1] * one_minus_alpha;
-                                    row[base_idx + 2] =
-                                        pb * alpha + row[base_idx + 2] * one_minus_alpha;
-                                }
-                            }
-                        });
-                } else {
-                    img_buf
-                        .par_chunks_mut((base_w * 3) as usize)
-                        .enumerate()
-                        .for_each(|(y, row)| {
-                            let patch_row_start = y * patch_w;
-                            for x in 0..base_w as usize {
-                                let mask_idx = patch_row_start + x;
-                                let mask_value = mask_raw[mask_idx];
-                                if mask_value > 0 {
-                                    let color_idx = mask_idx * 3;
-                                    let pr_u8 = color_raw[color_idx];
-                                    let pg_u8 = color_raw[color_idx + 1];
-                                    let pb_u8 = color_raw[color_idx + 2];
-
-                                    let (pr, pg, pb) = get_color(&patch, pr_u8, pg_u8, pb_u8);
-
-                                    let alpha = mask_value as f32 / 255.0;
-                                    let one_minus_alpha = 1.0 - alpha;
-
-                                    row[x * 3] = pr * alpha + row[x * 3] * one_minus_alpha;
-                                    row[x * 3 + 1] = pg * alpha + row[x * 3 + 1] * one_minus_alpha;
-                                    row[x * 3 + 2] = pb * alpha + row[x * 3 + 2] * one_minus_alpha;
-                                }
-                            }
-                        });
-                }
-            }
-        }
-        DynamicImage::ImageRgba32F(img_buf) => {
-            for patch in decoded_patches {
-                let mask_raw = patch.mask.as_raw();
-                let color_raw = patch.color.as_raw();
-                let patch_w = patch.mask.width() as usize;
-
-                if let (Some(ox), Some(oy)) = (patch.offset_x, patch.offset_y) {
-                    let max_x = (ox + patch.mask.width()).min(base_w);
-                    let max_y = (oy + patch.mask.height()).min(base_h);
-
-                    let crop_w = max_x.saturating_sub(ox) as usize;
-                    let crop_h = max_y.saturating_sub(oy) as usize;
-
-                    if crop_w == 0 || crop_h == 0 {
-                        continue;
-                    }
-
-                    let base_w_usize = base_w as usize;
-                    let ox_usize = ox as usize;
-                    let oy_usize = oy as usize;
-
-                    img_buf
-                        .par_chunks_mut(base_w_usize * 4)
-                        .enumerate()
-                        .skip(oy_usize)
-                        .take(crop_h)
-                        .for_each(|(y, row)| {
-                            let py = y - oy_usize;
-                            let patch_row_start = py * patch_w;
-
-                            for x in ox_usize..(ox_usize + crop_w) {
-                                let px = x - ox_usize;
-                                let mask_idx = patch_row_start + px;
-                                let mask_value = mask_raw[mask_idx];
-
-                                if mask_value > 0 {
-                                    let color_idx = mask_idx * 3;
-                                    let pr_u8 = color_raw[color_idx];
-                                    let pg_u8 = color_raw[color_idx + 1];
-                                    let pb_u8 = color_raw[color_idx + 2];
-
-                                    let (pr, pg, pb) = get_color(&patch, pr_u8, pg_u8, pb_u8);
-                                    let alpha = mask_value as f32 / 255.0;
-                                    let one_minus_alpha = 1.0 - alpha;
-
-                                    let base_idx = x * 4;
-                                    row[base_idx] = pr * alpha + row[base_idx] * one_minus_alpha;
-                                    row[base_idx + 1] =
-                                        pg * alpha + row[base_idx + 1] * one_minus_alpha;
-                                    row[base_idx + 2] =
-                                        pb * alpha + row[base_idx + 2] * one_minus_alpha;
-                                }
-                            }
-                        });
-                } else {
-                    img_buf
-                        .par_chunks_mut((base_w * 4) as usize)
-                        .enumerate()
-                        .for_each(|(y, row)| {
-                            let patch_row_start = y * patch_w;
-                            for x in 0..base_w as usize {
-                                let mask_idx = patch_row_start + x;
-                                let mask_value = mask_raw[mask_idx];
-                                if mask_value > 0 {
-                                    let color_idx = mask_idx * 3;
-                                    let pr_u8 = color_raw[color_idx];
-                                    let pg_u8 = color_raw[color_idx + 1];
-                                    let pb_u8 = color_raw[color_idx + 2];
-
-                                    let (pr, pg, pb) = get_color(&patch, pr_u8, pg_u8, pb_u8);
-
-                                    let alpha = mask_value as f32 / 255.0;
-                                    let one_minus_alpha = 1.0 - alpha;
-
-                                    row[x * 4] = pr * alpha + row[x * 4] * one_minus_alpha;
-                                    row[x * 4 + 1] = pg * alpha + row[x * 4 + 1] * one_minus_alpha;
-                                    row[x * 4 + 2] = pb * alpha + row[x * 4 + 2] * one_minus_alpha;
-                                }
-                            }
-                        });
-                }
-            }
-        }
-        _ => {
-            let mut rgba32_img = composited_image.to_rgba32f();
-            for patch in decoded_patches {
-                let mask_raw = patch.mask.as_raw();
-                let color_raw = patch.color.as_raw();
-                let patch_w = patch.mask.width() as usize;
-
-                if let (Some(ox), Some(oy)) = (patch.offset_x, patch.offset_y) {
-                    let max_x = (ox + patch.mask.width()).min(base_w);
-                    let max_y = (oy + patch.mask.height()).min(base_h);
-
-                    let crop_w = max_x.saturating_sub(ox) as usize;
-                    let crop_h = max_y.saturating_sub(oy) as usize;
-
-                    if crop_w == 0 || crop_h == 0 {
-                        continue;
-                    }
-
-                    let base_w_usize = base_w as usize;
-                    let ox_usize = ox as usize;
-                    let oy_usize = oy as usize;
-
-                    rgba32_img
-                        .par_chunks_mut(base_w_usize * 4)
-                        .enumerate()
-                        .skip(oy_usize)
-                        .take(crop_h)
-                        .for_each(|(y, row)| {
-                            let py = y - oy_usize;
-                            let patch_row_start = py * patch_w;
-
-                            for x in ox_usize..(ox_usize + crop_w) {
-                                let px = x - ox_usize;
-                                let mask_idx = patch_row_start + px;
-                                let mask_value = mask_raw[mask_idx];
-
-                                if mask_value > 0 {
-                                    let color_idx = mask_idx * 3;
-                                    let pr_u8 = color_raw[color_idx];
-                                    let pg_u8 = color_raw[color_idx + 1];
-                                    let pb_u8 = color_raw[color_idx + 2];
-
-                                    let (pr, pg, pb) = get_color(&patch, pr_u8, pg_u8, pb_u8);
-                                    let alpha = mask_value as f32 / 255.0;
-                                    let one_minus_alpha = 1.0 - alpha;
-
-                                    let base_idx = x * 4;
-                                    row[base_idx] = pr * alpha + row[base_idx] * one_minus_alpha;
-                                    row[base_idx + 1] =
-                                        pg * alpha + row[base_idx + 1] * one_minus_alpha;
-                                    row[base_idx + 2] =
-                                        pb * alpha + row[base_idx + 2] * one_minus_alpha;
-                                }
-                            }
-                        });
-                } else {
-                    rgba32_img
-                        .par_chunks_mut((base_w * 4) as usize)
-                        .enumerate()
-                        .for_each(|(y, row)| {
-                            let patch_row_start = y * patch_w;
-                            for x in 0..base_w as usize {
-                                let mask_idx = patch_row_start + x;
-                                let mask_value = mask_raw[mask_idx];
-                                if mask_value > 0 {
-                                    let color_idx = mask_idx * 3;
-                                    let pr_u8 = color_raw[color_idx];
-                                    let pg_u8 = color_raw[color_idx + 1];
-                                    let pb_u8 = color_raw[color_idx + 2];
-
-                                    let (pr, pg, pb) = get_color(&patch, pr_u8, pg_u8, pb_u8);
-                                    let alpha = mask_value as f32 / 255.0;
-                                    let one_minus_alpha = 1.0 - alpha;
-
-                                    row[x * 4] = pr * alpha + row[x * 4] * one_minus_alpha;
-                                    row[x * 4 + 1] = pg * alpha + row[x * 4 + 1] * one_minus_alpha;
-                                    row[x * 4 + 2] = pb * alpha + row[x * 4 + 2] * one_minus_alpha;
-                                }
-                            }
-                        });
-                }
-            }
-            composited_image = DynamicImage::ImageRgba32F(rgba32_img);
-        }
-    }
-
-    Ok(composited_image)
 }
 
 #[tauri::command]
@@ -658,11 +228,6 @@ pub async fn load_image(
 
         state
             .mask_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-        state
-            .patch_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();

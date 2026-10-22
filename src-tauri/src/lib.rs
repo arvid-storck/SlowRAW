@@ -6,11 +6,11 @@ use mimalloc::MiMalloc;
 static GLOBAL: MiMalloc = MiMalloc;
 
 mod adjustment_utils;
-mod ai_processing;
 mod app_settings;
 mod app_state;
 mod cache_utils;
 mod catalog;
+mod color_management;
 mod component_updates;
 mod culling;
 mod denoising;
@@ -32,15 +32,22 @@ mod lens_correction;
 mod logging;
 mod mask_generation;
 mod multi_exposure;
+mod native_display;
 mod negative_conversion;
 mod panorama_stitching;
 mod panorama_utils;
 mod portable_paths;
+mod preview_encoding;
 mod raw_processing;
 mod spot_removal;
 mod tagging;
+mod vulkan_instance;
+#[cfg(target_os = "linux")]
+mod wayland_display;
 mod white_balance;
 mod window_customizer;
+#[cfg(target_os = "windows")]
+mod windows_display;
 
 // Fail a release build if dependency features ever re-enable native log calls.
 #[cfg(not(debug_assertions))]
@@ -61,13 +68,10 @@ use base64::{Engine as _, engine::general_purpose};
 use image::{DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Luma};
 use image_hdr::hdr_merge_images;
 use image_hdr::input::HDRInput;
-use imgref::ImgRef;
 use mozjpeg_rs::{Encoder, Preset};
-use rgb::{FromSlice, RGBA8};
 
 use serde_json::Value;
 use tauri::{Emitter, Manager, ipc::Response};
-use tokio::sync::Mutex as TokioMutex;
 
 use crate::cache_utils::{
     DecodedImageCache, calculate_full_job_hash, calculate_geometry_hash, calculate_transform_hash,
@@ -76,7 +80,7 @@ use crate::cache_utils::{
 use crate::file_management::{parse_virtual_path, read_file_mapped};
 use crate::formats::is_raw_file;
 use crate::hdr_deghosting::{align_hdr_frames, assert_uniform_dimensions, load_hdr_frames};
-use crate::image_loader::{composite_patches_on_image, load_and_composite};
+use crate::image_loader::load_and_composite;
 use crate::image_processing::{
     RenderRequest, apply_coarse_rotation, apply_cpu_default_raw_processing, apply_flip,
     apply_geometry_warp, apply_linear_to_srgb, downscale_f32_image, get_all_adjustments_from_json,
@@ -87,6 +91,7 @@ use crate::mask_generation::{
     MaskDefinition, generate_mask_bitmap, get_cached_or_generate_mask,
     resolve_warped_image_for_masks,
 };
+use crate::spot_removal::composite_spot_removals;
 use crate::window_customizer::PinchZoomDisablePlugin;
 pub use adjustment_utils::*;
 pub use app_settings::*;
@@ -183,16 +188,9 @@ fn compute_full_transformed_res(
     loaded_image: &LoadedImage,
     adjustments: &serde_json::Value,
 ) -> Result<(Arc<DynamicImage>, (f32, f32)), String> {
-    let has_patches = crate::spot_removal::has_spot_removals(adjustments)
-        || adjustments
-            .get("aiPatches")
-            .and_then(|v| v.as_array())
-            .is_some_and(|a| !a.is_empty());
+    let has_patches = crate::spot_removal::has_spot_removals(adjustments);
     let patched_original_image = if has_patches {
-        Cow::Owned(
-            composite_patches_on_image(&loaded_image.image, adjustments)
-                .map_err(|e| format!("Failed to composite AI patches: {}", e))?,
-        )
+        Cow::Owned(composite_spot_removals(&loaded_image.image, adjustments))
     } else {
         Cow::Borrowed(loaded_image.image.as_ref())
     };
@@ -272,6 +270,7 @@ pub fn get_cached_full_warped_image(
 #[tauri::command]
 async fn update_wgpu_transform(
     payload: WgpuTransformPayload,
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let context = match state
@@ -304,7 +303,12 @@ async fn update_wgpu_transform(
                 0,
                 bytemuck::bytes_of(&display.latest_transform),
             );
-            display.render(&context.device, &context.queue);
+            if let Err(error) = display.render(&context.device, &context.queue) {
+                if error == "NATIVE_DISPLAY_LOST" {
+                    display_lock.take();
+                }
+                let _ = app_handle.emit("wgpu-display-unavailable", error);
+            }
         }
     })
     .await
@@ -317,17 +321,15 @@ async fn update_wgpu_transform(
 fn process_preview_job(
     app_handle: &tauri::AppHandle,
     state: tauri::State<AppState>,
-    mut adjustments_json: serde_json::Value,
+    adjustments_json: serde_json::Value,
     is_interactive: bool,
     target_resolution: Option<u32>,
     roi: Option<(f32, f32, f32, f32)>,
     request_analytics: bool,
     compute_waveform: bool,
     active_waveform_channel: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    let fn_start = std::time::Instant::now();
+) -> Result<(), String> {
     let context = get_or_init_gpu_context(&state, app_handle)?;
-    hydrate_adjustments(&state, &mut adjustments_json);
     let adjustments_clone = adjustments_json;
 
     let loaded_image_guard = state.original_image.lock().unwrap();
@@ -343,16 +345,33 @@ fn process_preview_job(
 
     let default_preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
     let preview_dim = target_resolution.unwrap_or(default_preview_dim);
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
-    let use_wgpu_renderer = settings.use_wgpu_renderer.unwrap_or(true);
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    let use_wgpu_renderer = false;
+    {
+        let mut display = context.display.lock().unwrap_or_else(|e| e.into_inner());
+        let display = display.as_mut().ok_or("NATIVE_DISPLAY_UNAVAILABLE")?;
+        display.prepare(
+            &context.device,
+            &context.queue,
+            color_management::PREVIEW_COLOR_SPACE,
+        )?;
+    }
 
     let has_roi = roi.is_some();
-    let (interactive_divisor, interactive_quality) = match live_quality {
-        "full" => (1.0_f32, 85_u8),
-        "performance" => (if has_roi { 1.8_f32 } else { 1.5_f32 }, 65_u8),
-        _ => (if has_roi { 1.4_f32 } else { 1.0_f32 }, 75_u8),
+    let interactive_divisor = match live_quality {
+        "full" => 1.0_f32,
+        "performance" => {
+            if has_roi {
+                1.8_f32
+            } else {
+                1.5_f32
+            }
+        }
+        _ => {
+            if has_roi {
+                1.4_f32
+            } else {
+                1.0_f32
+            }
+        }
     };
 
     let mut cached_preview_lock = state
@@ -430,14 +449,14 @@ fn process_preview_job(
 
     drop(cached_preview_lock);
 
-    let (processing_image, effective_scale, jpeg_quality) = if is_interactive {
+    let (processing_image, effective_scale) = if is_interactive {
         let orig_w = final_preview_base.width() as f32;
         let small_w = small_preview_base.width() as f32;
         let scale_factor = if orig_w > 0.0 { small_w / orig_w } else { 1.0 };
         let new_scale = scale_for_gpu * scale_factor;
-        (small_preview_base, new_scale, interactive_quality)
+        (small_preview_base, new_scale)
     } else {
-        (final_preview_base, scale_for_gpu, 94)
+        (final_preview_base, scale_for_gpu)
     };
 
     let (preview_width, preview_height) = processing_image.dimensions();
@@ -480,7 +499,7 @@ fn process_preview_job(
 
     let is_raw = loaded_image.is_raw;
     let tm_override = resolve_tonemapper_override_from_handle(app_handle, is_raw);
-    let final_adjustments = get_all_adjustments_from_json(
+    let mut final_adjustments = get_all_adjustments_from_json(
         &adjustments_clone,
         is_raw,
         loaded_image.as_shot_white_balance,
@@ -510,106 +529,35 @@ fn process_preview_job(
         None
     };
 
-    let final_processed_image_result =
-        crate::image_processing::process_and_get_dynamic_image_with_analytics(
-            &context,
-            &state,
-            &processing_image,
-            new_transform_hash,
-            RenderRequest {
-                adjustments: final_adjustments,
-                mask_bitmaps: &mask_bitmaps,
-                roi: pixel_roi,
-            },
-            "apply_adjustments",
-            use_wgpu_renderer,
-            analytics_config,
-        );
-
-    if let Ok(final_processed_image) = final_processed_image_result {
-        if use_wgpu_renderer {
-            let _ = context.device.poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(std::time::Duration::from_millis(500)),
-            });
-            let _ = app_handle.emit(
-                "wgpu-frame-ready",
-                serde_json::json!({ "path": loaded_image.path }),
-            );
-            return Ok(b"WGPU_RENDER".to_vec());
-        }
-
-        let final_processed_image = Arc::new(final_processed_image);
-        let final_rgba_image = match &*final_processed_image {
-            DynamicImage::ImageRgba8(img) => img,
-            _ => return Err("Expected Rgba8 image from GPU for encoding".to_string()),
-        };
-
-        let raw_bytes: &[u8] = final_rgba_image.as_raw();
-        let rgba8_pixels: &[RGBA8] = raw_bytes.as_rgba();
-
-        let img_ref = ImgRef::new(
-            rgba8_pixels,
-            final_rgba_image.width() as usize,
-            final_rgba_image.height() as usize,
-        );
-
-        let step_start = std::time::Instant::now();
-
-        let encode_result = Encoder::new(Preset::BaselineFastest)
-            .quality(jpeg_quality)
-            .fast_color(true)
-            .encode_imgref(img_ref);
-
-        match encode_result {
-            Ok(jpeg_bytes) => {
-                if is_interactive {
-                    let (roi_w, roi_h) = final_rgba_image.dimensions();
-                    let (rx, ry) = if let Some(r) = pixel_roi {
-                        (r.x, r.y)
-                    } else {
-                        (0, 0)
-                    };
-
-                    let mut response = Vec::with_capacity(24 + jpeg_bytes.len());
-                    response.extend_from_slice(&rx.to_le_bytes());
-                    response.extend_from_slice(&ry.to_le_bytes());
-                    response.extend_from_slice(&roi_w.to_le_bytes());
-                    response.extend_from_slice(&roi_h.to_le_bytes());
-                    response.extend_from_slice(&preview_width.to_le_bytes());
-                    response.extend_from_slice(&preview_height.to_le_bytes());
-                    response.extend_from_slice(&jpeg_bytes);
-
-                    log::info!(
-                        "[process_preview_job] interactive ROI {}x{} encode in {:.2?}, total {:.2?}",
-                        roi_w,
-                        roi_h,
-                        step_start.elapsed(),
-                        fn_start.elapsed()
-                    );
-                    Ok(response)
-                } else {
-                    let (width, height) = final_rgba_image.dimensions();
-                    log::info!(
-                        "[process_preview_job] full {}x{} q={} encode in {:.2?}, total {:.2?}",
-                        width,
-                        height,
-                        jpeg_quality,
-                        step_start.elapsed(),
-                        fn_start.elapsed()
-                    );
-                    Ok(jpeg_bytes)
-                }
-            }
-            Err(e) => Err(format!("Failed to encode preview: {}", e)),
-        }
-    } else {
-        log::error!(
-            "[process_preview_job] processing failed after {:.2?}",
-            fn_start.elapsed()
-        );
-        Err("Processing failed".to_string())
+    let output_space = color_management::PREVIEW_COLOR_SPACE;
+    output_space.configure(&mut final_adjustments);
+    crate::image_processing::process_and_get_dynamic_image_with_analytics(
+        &context,
+        &state,
+        &processing_image,
+        new_transform_hash,
+        RenderRequest {
+            adjustments: final_adjustments,
+            mask_bitmaps: &mask_bitmaps,
+            roi: pixel_roi,
+        },
+        "apply_adjustments",
+        true,
+        analytics_config,
+    )?;
+    if context
+        .display
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_none()
+    {
+        return Err("NATIVE_DISPLAY_LOST".into());
     }
+    let _ = app_handle.emit(
+        "wgpu-frame-ready",
+        serde_json::json!({ "path": loaded_image.path }),
+    );
+    Ok(())
 }
 
 fn start_analytics_worker(app_handle: tauri::AppHandle) {
@@ -663,7 +611,7 @@ fn start_preview_worker(app_handle: tauri::AppHandle) {
 
             let state = app_handle.state::<AppState>();
             let responder = job.responder;
-            match process_preview_job(
+            let result = process_preview_job(
                 &app_handle,
                 state,
                 job.adjustments,
@@ -673,14 +621,8 @@ fn start_preview_worker(app_handle: tauri::AppHandle) {
                 job.request_analytics,
                 job.compute_waveform,
                 job.active_waveform_channel.as_deref(),
-            ) {
-                Ok(bytes) => {
-                    let _ = responder.send(bytes);
-                }
-                Err(e) => {
-                    log::error!("Preview worker error: {}", e);
-                }
-            }
+            );
+            let _ = responder.send(result);
         }
     });
 }
@@ -696,7 +638,7 @@ async fn apply_adjustments(
     compute_waveform: bool,
     active_waveform_channel: Option<String>,
     state: tauri::State<'_, AppState>,
-) -> Result<Response, String> {
+) -> Result<(), String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
 
     {
@@ -721,7 +663,7 @@ async fn apply_adjustments(
     }
 
     match rx.await {
-        Ok(bytes) => Ok(Response::new(bytes)),
+        Ok(result) => result,
         Err(_) => Err("Superseded or worker failed".to_string()),
     }
 }
@@ -734,8 +676,7 @@ async fn generate_uncropped_preview(
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
     let context = get_or_init_gpu_context(&state, &app_handle)?;
-    let mut adjustments_clone = js_adjustments.clone();
-    hydrate_adjustments(&state, &mut adjustments_clone);
+    let adjustments_clone = js_adjustments.clone();
 
     let loaded_image = state
         .original_image
@@ -769,16 +710,12 @@ async fn generate_uncropped_preview(
             if let Some(cached) = cache.get(&visual_hash).cloned() {
                 cached
             } else {
-                let has_patches = crate::spot_removal::has_spot_removals(&adjustments_clone)
-                    || adjustments_clone
-                        .get("aiPatches")
-                        .and_then(|v| v.as_array())
-                        .is_some_and(|a| !a.is_empty());
+                let has_patches = crate::spot_removal::has_spot_removals(&adjustments_clone);
                 let patched_image = if has_patches {
-                    Cow::Owned(
-                        composite_patches_on_image(&loaded_image.image, &adjustments_clone)
-                            .unwrap_or_else(|_| loaded_image.image.as_ref().clone()),
-                    )
+                    Cow::Owned(composite_spot_removals(
+                        &loaded_image.image,
+                        &adjustments_clone,
+                    ))
                 } else {
                     Cow::Borrowed(loaded_image.image.as_ref())
                 };
@@ -847,13 +784,15 @@ async fn generate_uncropped_preview(
             tm_override,
         );
         uncropped_adjustments.global.show_clipping = 0;
+        let output_space = color_management::PREVIEW_COLOR_SPACE;
+        output_space.configure(&mut uncropped_adjustments);
 
         let mut render_hasher = std::collections::hash_map::DefaultHasher::new();
         calculate_full_job_hash(&path, &adjustments_clone).hash(&mut render_hasher);
         target_dim.hash(&mut render_hasher);
         let full_hash = render_hasher.finish();
 
-        if let Ok(processed_image) = process_and_get_dynamic_image(
+        if let Ok(processed_image) = image_processing::process_and_get_dynamic_image_with_precision(
             &context,
             &state,
             &flipped_image,
@@ -864,18 +803,13 @@ async fn generate_uncropped_preview(
                 roi: None,
             },
             "generate_uncropped_preview",
+            image_processing::RenderOutputPrecision::SixteenBit,
         ) {
-            let (width, height) = processed_image.dimensions();
-            let rgb_pixels = processed_image.to_rgb8().into_vec();
-
-            if let Ok(bytes) = Encoder::new(Preset::BaselineFastest)
-                .quality(80)
-                .encode_rgb(&rgb_pixels, width, height)
-            {
-                let base64_str = general_purpose::STANDARD.encode(&bytes);
-                let data_url = format!("data:image/jpeg;base64,{}", base64_str);
-                return Ok(data_url);
-            }
+            let bytes = preview_encoding::encode(&processed_image, output_space, false)?;
+            return Ok(format!(
+                "data:image/png;base64,{}",
+                general_purpose::STANDARD.encode(&bytes)
+            ));
         }
 
         Err("Failed to process uncropped preview".to_string())
@@ -1331,15 +1265,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(PinchZoomDisablePlugin)
-        .on_window_event(|window, event| if let tauri::WindowEvent::Resized(size) = event {
+        .on_window_event(|window, event| {
+            if !matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. }) { return; }
+            let Ok(size) = window.inner_size() else { return; };
             let state = window.state::<AppState>();
             if let Some(ctx) = state.gpu_context.lock().unwrap().as_ref()
                 && let Ok(mut display_lock) = ctx.display.try_lock()
                     && let Some(display) = display_lock.as_mut() {
+                        #[cfg(target_os = "linux")]
+                        let size = state.wayland_display.lock().unwrap().as_ref().map(|target| target.size()).unwrap_or(size);
+                        display.invalidate();
                         display.config.width = size.width.max(1);
                         display.config.height = size.height.max(1);
                         display.surface.configure(&ctx.device, &display.config);
-                        display.render(&ctx.device, &ctx.queue);
+                        if let Err(error) = display.render(&ctx.device, &ctx.queue) {
+                            if error == "NATIVE_DISPLAY_LOST" { display_lock.take(); }
+                            let _ = window.emit("wgpu-display-unavailable", error);
+                        }
                     }
         })
         .setup(move |app| {
@@ -1386,7 +1328,7 @@ pub fn run() {
                 *state.gpu_crash_flag_path.lock().unwrap() = Some(crash_flag_path.clone());
             }
 
-            let mut settings: AppSettings = load_settings(app_handle.clone()).unwrap_or_default();
+            let settings: AppSettings = load_settings(app_handle.clone()).unwrap_or_default();
 
             {
                 let state = app.state::<AppState>();
@@ -1395,9 +1337,7 @@ pub fn run() {
             }
 
             if crash_flag_path.exists() {
-                log::warn!("GPU Driver crash detected on last run! Falling back to OpenGL backend.");
-                settings.processing_backend = Some("gl".to_string());
-                let _ = crate::save_settings(settings.clone(), app_handle.clone());
+                log::warn!("GPU initialization failed on the previous run; retrying Vulkan.");
                 let _ = std::fs::remove_file(&crash_flag_path);
             }
 
@@ -1407,61 +1347,11 @@ pub fn run() {
                 *state.lens_db.lock().unwrap() = Some(Arc::new(lens_db));
             }
 
-            unsafe {
-                if let Some(backend) = &settings.processing_backend
-                    && backend != "auto" {
-                        std::env::set_var("WGPU_BACKEND", backend);
-                    }
-
-                #[cfg(target_os = "linux")]
-                {
-                    if settings.linux_gpu_optimization.unwrap_or(false) {
-                        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-                        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
-                        std::env::set_var("NODEVICE_SELECT", "1");
-                    }
-                }
-
-                #[cfg(not(target_os = "android"))]
-                {
-                    let resource_path = app_handle
-                        .path()
-                        .resolve("resources", tauri::path::BaseDirectory::Resource)
-                        .expect("failed to resolve resource directory");
-
-                    let ort_library_name = {
-                        #[cfg(target_os = "windows")]
-                        { "onnxruntime.dll" }
-                        #[cfg(target_os = "linux")]
-                        { "libonnxruntime.so" }
-                        #[cfg(target_os = "macos")]
-                        { "libonnxruntime.dylib" }
-                        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-                        { "libonnxruntime.so" }
-                    };
-                    let ort_library_path = resource_path.join(ort_library_name);
-                    std::env::set_var("ORT_DYLIB_PATH", &ort_library_path);
-                    log::debug!("Set ORT_DYLIB_PATH to: {}", ort_library_path.display());
-                }
-            }
-
             #[cfg(debug_assertions)]
             logging::initialize();
 
-            if let Some(backend) = &settings.processing_backend
-                && backend != "auto" {
-                    log::info!("Applied processing backend setting: {}", backend);
-                }
-
             #[cfg(target_os = "linux")]
-            if settings.linux_gpu_optimization.unwrap_or(false) {
-                log::info!("Applied Linux Compatibility Mode (forced software compositing).");
-            } else {
-                log::info!(
-                    "Wayland Nvidia quirk status: {:?}",
-                    tauri_plugin_wayland_nvidia_quirk::status()
-                );
-            }
+            log::info!("Wayland Nvidia quirk status: {:?}", tauri_plugin_wayland_nvidia_quirk::status());
 
             start_preview_worker(app_handle.clone());
             start_analytics_worker(app_handle.clone());
@@ -1493,6 +1383,14 @@ pub fn run() {
             }
 
             let window = window_builder.build().expect("Failed to build window");
+
+            #[cfg(target_os = "linux")]
+            {
+                match wayland_display::create(&window) {
+                    Ok(display) => *state.wayland_display.lock().unwrap() = Some(display),
+                    Err(error) => log::warn!("Native editor display unavailable: {error}"),
+                }
+            }
 
             #[cfg(target_os = "android")]
             android_integration::initialize_android(&window);
@@ -1631,14 +1529,14 @@ pub fn run() {
         })
         .manage(AppState {
             window_setup_complete: AtomicBool::new(false),
+            #[cfg(target_os = "linux")]
+            wayland_display: Mutex::new(None),
             gpu_crash_flag_path: Mutex::new(None),
             original_image: Mutex::new(None),
             cached_preview: Mutex::new(None),
             gpu_context: Mutex::new(None),
             gpu_image_cache: Mutex::new(None),
             gpu_processor: Mutex::new(None),
-            ai_state: Mutex::new(None),
-            ai_init_lock: TokioMutex::new(()),
             export_task_token: Arc::new(Mutex::new(None)),
             hdr_result: Arc::new(Mutex::new(None)),
             panorama_result: Arc::new(Mutex::new(None)),
@@ -1652,7 +1550,6 @@ pub fn run() {
             preview_worker_tx: Mutex::new(None),
             analytics_worker_tx: Mutex::new(None),
             mask_cache: Mutex::new(HashMap::new()),
-            patch_cache: Mutex::new(HashMap::new()),
             geometry_cache: Mutex::new(HashMap::new()),
             thumbnail_geometry_cache: Mutex::new(HashMap::new()),
             lens_db: Mutex::new(None),

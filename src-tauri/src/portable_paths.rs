@@ -80,7 +80,7 @@ fn copy_missing_tree(source: &Path, destination: &Path) -> Result<(), String> {
             let entry = entry.map_err(|e| e.to_string())?;
             let name = entry.file_name();
             let name_text = name.to_string_lossy();
-            if matches!(name_text.as_ref(), "logs" | "luts")
+            if matches!(name_text.as_ref(), "logs" | "luts" | "models" | "cache")
                 || name_text.ends_with("-wal")
                 || name_text.ends_with("-shm")
             {
@@ -130,7 +130,7 @@ pub fn migrate_legacy_portable_data(app: &AppHandle) -> Result<(), String> {
 
     if root.join("rapidraw.db").exists() || !root.join("portable.flag").exists() {
         let source = legacy_directory(&app.path().app_data_dir().map_err(|e| e.to_string())?);
-        for name in ["settings.json", "albums", "models", "library"] {
+        for name in ["settings.json", "albums", "library"] {
             copy_missing_tree(&source.join(name), &destination.join(name))?;
         }
         let legacy_config =
@@ -197,8 +197,14 @@ mod tests {
         fs::create_dir_all(destination.join("albums")).unwrap();
         fs::write(source.join("albums/albums.json"), "old").unwrap();
         fs::write(source.join("settings.json"), "settings").unwrap();
+        for name in ["models", "cache"] {
+            fs::create_dir_all(source.join(name)).unwrap();
+            fs::write(source.join(name).join("obsolete.bin"), b"cache").unwrap();
+        }
         fs::write(destination.join("albums/albums.json"), "new").unwrap();
         copy_missing_tree(&source, &destination).unwrap();
+        assert!(!destination.join("models").exists());
+        assert!(!destination.join("cache").exists());
         assert_eq!(
             fs::read_to_string(destination.join("albums/albums.json")).unwrap(),
             "new"

@@ -1480,7 +1480,7 @@ export default function CropPanel() {
               weight={TextWeights.normal}
               className="text-center"
             >
-              {t('editor.ai.noImageSelected')}
+              {t('editor.noImageSelected')}
             </Text>
           </div>
         )}

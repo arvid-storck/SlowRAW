@@ -61,7 +61,6 @@ export enum Invokes {
   GenerateUncroppedPreview = 'generate_uncropped_preview',
   GetSupportedFileTypes = 'get_supported_file_types',
   ImportFiles = 'import_files',
-  InvokeGenerativeReplaseWithMaskDef = 'invoke_generative_replace_with_mask_def',
   ListImagesInDir = 'list_images_in_dir',
   ListImagesRecursive = 'list_images_recursive',
   LoadImage = 'load_image',
@@ -104,7 +103,6 @@ export enum ExifOverlay {
 
 export enum Panel {
   Adjustments = 'adjustments',
-  Ai = 'ai',
   Crop = 'crop',
   Export = 'export',
   Masks = 'masks',
@@ -190,8 +188,6 @@ export interface AppSettings {
   adjustmentVisibility?: { [key: string]: boolean };
   rawHighlightCompression?: number;
   rawHighlightRecoveryEnabled?: boolean;
-  processingBackend?: string;
-  linuxGpuOptimization?: boolean;
   exportPresets?: ExportPreset[];
   myLenses?: any;
   displayEditIcon?: boolean;
@@ -202,7 +198,6 @@ export interface AppSettings {
   isWaveformVisible?: boolean;
   waveformHeight?: number;
   activeWaveformChannel?: string;
-  useWgpuRenderer?: boolean;
   canvasInputMode?: 'mouse' | 'trackpad';
   zoomSpeedMultiplier?: number;
   maxZoomPercent?: number;

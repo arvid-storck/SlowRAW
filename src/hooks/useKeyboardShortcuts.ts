@@ -170,7 +170,7 @@ export const useKeyboardShortcuts = ({
         },
       },
       delete_selected: {
-        shouldFire: (s: any) => !s.editor.activeMaskContainerId && !s.editor.activeAiPatchContainerId,
+        shouldFire: (s: any) => !s.editor.activeMaskContainerId,
         execute: (e: any) => {
           e.preventDefault();
           handleDeleteSelected();
@@ -608,8 +608,6 @@ export const useKeyboardShortcuts = ({
           e.preventDefault();
           if (s.editor.isStraightenActive) s.editor.setEditor({ isStraightenActive: false });
           else if (s.ui.customEscapeHandler) s.ui.customEscapeHandler();
-          else if (s.editor.activeAiSubMaskId) s.editor.setEditor({ activeAiSubMaskId: null });
-          else if (s.editor.activeAiPatchContainerId) s.editor.setEditor({ activeAiPatchContainerId: null });
           else if (s.editor.activeMaskId) s.editor.setEditor({ activeMaskId: null });
           else if (s.editor.activeMaskContainerId) s.editor.setEditor({ activeMaskContainerId: null });
           else if (s.ui.activePanel === Panel.Crop) s.ui.setPanel(Panel.Adjustments);
@@ -621,7 +619,7 @@ export const useKeyboardShortcuts = ({
       {
         match: (e: KeyboardEvent, s: any) => {
           const isDeleteKey = s.settings.osPlatform === 'macos' ? e.code === 'Backspace' : e.code === 'Delete';
-          return isDeleteKey && (!!s.editor.activeMaskContainerId || !!s.editor.activeAiPatchContainerId);
+          return isDeleteKey && !!s.editor.activeMaskContainerId;
         },
         execute: (e: KeyboardEvent, s: any) => {
           e.preventDefault();
@@ -633,15 +631,6 @@ export const useKeyboardShortcuts = ({
               },
               activeMaskContainerId: null,
               activeMaskId: null,
-            }));
-          } else if (s.editor.activeAiPatchContainerId) {
-            s.editor.setEditor((state: any) => ({
-              adjustments: {
-                ...state.adjustments,
-                aiPatches: state.adjustments.aiPatches.filter((c: any) => c.id !== s.editor.activeAiPatchContainerId),
-              },
-              activeAiPatchContainerId: null,
-              activeAiSubMaskId: null,
             }));
           }
         },

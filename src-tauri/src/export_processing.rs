@@ -19,25 +19,25 @@ use tauri::Emitter;
 use tauri::Manager;
 
 use crate::AppState;
+use crate::color_management::ColorSpace;
 use crate::exif_processing;
 use crate::file_management::{
     generate_filename_from_template, parse_virtual_path, read_file_mapped,
 };
 use crate::formats::is_raw_file;
-use crate::image_loader::{
-    composite_patches_on_image, load_and_composite, load_base_image_from_bytes,
-};
+use crate::image_loader::load_and_composite;
 use crate::image_processing::{
     AllAdjustments, Crop, GpuContext, RenderOutputPrecision, RenderRequest, downscale_f32_image,
     get_all_adjustments_from_json, get_or_init_gpu_context,
     process_and_get_dynamic_image_with_precision, resolve_tonemapper_override_from_handle,
 };
 use crate::mask_generation::{MaskDefinition, generate_mask_bitmap};
+use crate::spot_removal::composite_spot_removals;
 
 use crate::cache_utils::{calculate_full_job_hash, calculate_transform_hash};
 use crate::{
     apply_all_transformations, generate_transformed_preview, get_cached_or_generate_mask,
-    hydrate_adjustments, load_settings, resolve_warped_image_for_masks,
+    load_settings, resolve_warped_image_for_masks,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -98,6 +98,8 @@ pub struct ExportSettings {
     pub tiff_bit_depth: TiffBitDepth,
     #[serde(default = "default_png_bit_depth")]
     pub png_bit_depth: u8,
+    #[serde(default)]
+    pub color_space: ColorSpace,
     pub resize: Option<ResizeOptions>,
     pub keep_metadata: bool,
     #[serde(default)]
@@ -148,9 +150,25 @@ pub struct WatermarkSettings {
 fn apply_watermark(
     base_image: &mut DynamicImage,
     watermark_settings: &WatermarkSettings,
+    color_space: ColorSpace,
 ) -> Result<(), String> {
-    let watermark_img = image::open(&watermark_settings.path)
+    let bytes = fs::read(&watermark_settings.path)
         .map_err(|e| format!("Failed to open watermark image: {}", e))?;
+    let mut decoder = image::ImageReader::new(Cursor::new(&bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .into_decoder()
+        .map_err(|e| e.to_string())?;
+    use image::ImageDecoder;
+    let profile = decoder.icc_profile().map_err(|e| e.to_string())?;
+    let source = profile
+        .as_deref()
+        .map(moxcms::ColorProfile::new_from_slice)
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(moxcms::ColorProfile::new_srgb);
+    let decoded = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    let watermark_img = crate::color_management::convert_image(&decoded, &source, color_space)?;
 
     let (base_w, base_h) = base_image.dimensions();
     let base_min_dim = base_w.min(base_h) as f32;
@@ -340,7 +358,7 @@ fn apply_export_resize_and_watermark(
     }
 
     if let Some(watermark_settings) = &export_settings.watermark {
-        apply_watermark(&mut image, watermark_settings)?;
+        apply_watermark(&mut image, watermark_settings, export_settings.color_space)?;
     }
     Ok(image)
 }
@@ -475,6 +493,7 @@ fn process_image_for_export_pipeline(
     debug_tag: &str,
     app_handle: &tauri::AppHandle,
     output_precision: RenderOutputPrecision,
+    color_space: ColorSpace,
 ) -> Result<DynamicImage, String> {
     let (transformed_image, unscaled_crop_offset) =
         apply_all_transformations(Cow::Borrowed(base_image), js_adjustments);
@@ -508,6 +527,7 @@ fn process_image_for_export_pipeline(
         tm_override,
     );
     all_adjustments.global.show_clipping = 0;
+    color_space.configure(&mut all_adjustments);
 
     let unique_hash = calculate_full_job_hash(path, js_adjustments);
 
@@ -533,6 +553,7 @@ fn render_output_precision(
     if matches!(output_format.to_lowercase().as_str(), "tif" | "tiff")
         && export_settings.tiff_bit_depth == TiffBitDepth::Sixteen
         || output_format.eq_ignore_ascii_case("png") && export_settings.png_bit_depth == 16
+        || output_format.eq_ignore_ascii_case("jxl")
     {
         RenderOutputPrecision::SixteenBit
     } else {
@@ -578,6 +599,7 @@ fn save_image_with_metadata(
         export_settings.jpeg_quality,
         export_settings.tiff_bit_depth,
         export_settings.png_bit_depth,
+        export_settings.color_space,
     )?;
 
     exif_processing::write_image_with_metadata(
@@ -586,6 +608,7 @@ fn save_image_with_metadata(
         &extension,
         export_settings.keep_metadata,
         export_settings.strip_gps,
+        export_settings.color_space == ColorSpace::Srgb,
     )?;
 
     #[cfg(target_os = "android")]
@@ -644,20 +667,15 @@ fn process_image_for_export(
         "process_image_for_export",
         app_handle,
         render_output_precision(output_format, export_settings),
+        export_settings.color_space,
     )?;
 
     apply_export_resize_and_watermark(processed_image, export_settings)
 }
 
 fn build_single_mask_adjustments(all: &AllAdjustments, mask_index: usize) -> AllAdjustments {
-    let mut single = AllAdjustments {
-        global: all.global,
-        mask_adjustments: all.mask_adjustments,
-        mask_count: 1,
-        tile_offset_x: all.tile_offset_x,
-        tile_offset_y: all.tile_offset_y,
-        mask_atlas_cols: all.mask_atlas_cols,
-    };
+    let mut single = *all;
+    single.mask_count = 1;
     single.mask_adjustments[0] = all.mask_adjustments[mask_index];
     for i in 1..single.mask_adjustments.len() {
         single.mask_adjustments[i] = Default::default();
@@ -674,20 +692,31 @@ fn encode_grayscale_to_png(bitmap: &GrayImage) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
+#[cfg(test)]
 const SRGB_ICC_PROFILE: &[u8] = include_bytes!("../icc/sRGB-v2-magic.icc");
 
-fn encode_image_to_bytes(
+pub(crate) fn encode_image_to_bytes(
     image: &DynamicImage,
     output_format: &str,
     jpeg_quality: u8,
     tiff_bit_depth: TiffBitDepth,
     png_bit_depth: u8,
+    color_space: ColorSpace,
 ) -> Result<Vec<u8>, String> {
+    if color_space != ColorSpace::Srgb
+        && matches!(output_format.to_lowercase().as_str(), "webp" | "avif")
+    {
+        return Err("Wide-gamut export requires JPEG, PNG, TIFF or lossless JPEG XL".to_string());
+    }
+    let profile = color_space.icc();
     let mut image_bytes = Vec::new();
     let mut cursor = Cursor::new(&mut image_bytes);
 
     match output_format.to_lowercase().as_str() {
         "jxl" => {
+            if color_space != ColorSpace::Srgb || jpeg_quality == 100 {
+                return crate::preview_encoding::encode(image, color_space, true);
+            }
             let (width, height) = image.dimensions();
             let has_alpha = image.color().has_alpha();
 
@@ -732,7 +761,7 @@ fn encode_image_to_bytes(
             let rgb_image = image.to_rgb8();
             let mut encoder = JpegEncoder::new_with_quality(&mut cursor, jpeg_quality);
             encoder
-                .set_icc_profile(SRGB_ICC_PROFILE.to_vec())
+                .set_icc_profile(profile.to_vec())
                 .map_err(|e| e.to_string())?;
             rgb_image
                 .write_with_encoder(encoder)
@@ -748,7 +777,7 @@ fn encode_image_to_bytes(
             };
             let mut encoder = image::codecs::png::PngEncoder::new(&mut cursor);
             encoder
-                .set_icc_profile(SRGB_ICC_PROFILE.to_vec())
+                .set_icc_profile(profile.to_vec())
                 .map_err(|e| e.to_string())?;
             output
                 .write_with_encoder(encoder)
@@ -759,8 +788,12 @@ fn encode_image_to_bytes(
                 TiffBitDepth::Eight => DynamicImage::ImageRgb8(image.to_rgb8()),
                 TiffBitDepth::Sixteen => DynamicImage::ImageRgb16(image.to_rgb16()),
             };
+            let mut encoder = image::codecs::tiff::TiffEncoder::new(&mut cursor);
+            encoder
+                .set_icc_profile(profile.to_vec())
+                .map_err(|e| e.to_string())?;
             image_to_encode
-                .write_to(&mut cursor, image::ImageFormat::Tiff)
+                .write_with_encoder(encoder)
                 .map_err(|e| e.to_string())?;
         }
         "avif" => {
@@ -815,12 +848,13 @@ fn export_masks_for_image(
 
     if !mask_bitmaps.is_empty() {
         let tm_override = resolve_tonemapper_override_from_handle(app_handle, is_raw);
-        let all_adjustments = get_all_adjustments_from_json(
+        let mut all_adjustments = get_all_adjustments_from_json(
             js_adjustments,
             is_raw,
             crate::white_balance::as_shot_white_balance(source_path_str),
             tm_override,
         );
+        export_settings.color_space.configure(&mut all_adjustments);
         let unique_hash = calculate_full_job_hash(source_path_str, js_adjustments);
         let output_dir = output_path_obj.parent().unwrap_or(output_path_obj);
         let stem = output_path_obj
@@ -1035,7 +1069,7 @@ async fn export_images_impl(
 
                 let is_current_edit =
                     Some(&source_path_str) == adjustments_mode.active_path.as_ref();
-                let mut js_adjustments = if is_current_edit {
+                let js_adjustments = if is_current_edit {
                     adjustments_mode
                         .active_adjustments
                         .clone()
@@ -1045,8 +1079,6 @@ async fn export_images_impl(
                 } else {
                     crate::exif_processing::load_sidecar(&sidecar_path).adjustments
                 };
-
-                hydrate_adjustments(&state, &mut js_adjustments);
                 let is_raw = is_raw_file(&source_path_str);
                 let original_path = std::path::Path::new(&source_path_str);
                 let file_date = exif_processing::get_creation_date_from_path(original_path);
@@ -1145,8 +1177,7 @@ async fn export_images_impl(
                     let base_image = if is_current_edit {
                         match crate::get_original_image(&state) {
                             Ok((orig_data_arc, _)) => {
-                                composite_patches_on_image(&orig_data_arc, &js_adjustments)
-                                    .map_err(|e| format!("Failed to composite AI patches: {}", e))?
+                                composite_spot_removals(&orig_data_arc, &js_adjustments)
                             }
                             Err(_) => {
                                 let bytes =
@@ -1404,8 +1435,7 @@ pub async fn estimate_export_sizes(
             .unwrap()
             .clone()
             .ok_or("No original image loaded")?;
-        let mut adjustments_clone = current_edit_adjustments.clone().unwrap();
-        hydrate_adjustments(&state, &mut adjustments_clone);
+        let adjustments_clone = current_edit_adjustments.clone().unwrap();
 
         let new_transform_hash = calculate_transform_hash(&adjustments_clone);
         let cached_preview_lock = state.cached_preview.lock().unwrap();
@@ -1469,6 +1499,7 @@ pub async fn estimate_export_sizes(
             tm_override,
         );
         all_adjustments.global.show_clipping = 0;
+        export_settings.color_space.configure(&mut all_adjustments);
         let unique_hash =
             calculate_full_job_hash(&loaded_image.path, &adjustments_clone).wrapping_add(1);
 
@@ -1492,6 +1523,7 @@ pub async fn estimate_export_sizes(
             export_settings.jpeg_quality,
             export_settings.tiff_bit_depth,
             export_settings.png_bit_depth,
+            export_settings.color_space,
         )?;
         let preview_byte_size = preview_bytes.len();
 
@@ -1533,9 +1565,15 @@ pub async fn estimate_export_sizes(
             }
         };
 
-        let original_image =
-            load_base_image_from_bytes(file_data, &source_path_str, true, &settings, None)
-                .map_err(|e| e.to_string())?;
+        let original_image = load_and_composite(
+            file_data,
+            &source_path_str,
+            &js_adjustments,
+            true,
+            &settings,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
 
         let raw_scale_factor = 1.0f32;
 
@@ -1601,6 +1639,7 @@ pub async fn estimate_export_sizes(
             tm_override,
         );
         all_adjustments.global.show_clipping = 0;
+        export_settings.color_space.configure(&mut all_adjustments);
         let unique_hash =
             calculate_full_job_hash(&source_path_str, &js_adjustments).wrapping_add(1);
 
@@ -1624,6 +1663,7 @@ pub async fn estimate_export_sizes(
             export_settings.jpeg_quality,
             export_settings.tiff_bit_depth,
             export_settings.png_bit_depth,
+            export_settings.color_space,
         )?;
         let single_image_estimated_size = preview_bytes.len();
 
@@ -1655,11 +1695,103 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wide_export_metadata_does_not_claim_srgb_or_replace_its_icc() {
+        use image::ImageDecoder;
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.jpg");
+        let image = DynamicImage::new_rgb8(2, 2);
+        image.save(&source).unwrap();
+        let mut bytes = encode_image_to_bytes(
+            &image,
+            "jpeg",
+            90,
+            TiffBitDepth::Eight,
+            8,
+            ColorSpace::AdobeRgb,
+        )
+        .unwrap();
+        exif_processing::write_image_with_metadata(
+            &mut bytes,
+            source.to_str().unwrap(),
+            "jpeg",
+            true,
+            true,
+            false,
+        )
+        .unwrap();
+        let exif = exif::Reader::new()
+            .read_from_container(&mut Cursor::new(&bytes))
+            .unwrap();
+        assert_eq!(
+            exif.get_field(exif::Tag::ColorSpace, exif::In::PRIMARY)
+                .unwrap()
+                .value
+                .get_uint(0),
+            Some(65535)
+        );
+        let mut decoder = image::codecs::jpeg::JpegDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.icc_profile().unwrap().unwrap(),
+            ColorSpace::AdobeRgb.icc()
+        );
+    }
+
+    #[test]
+    fn wide_exports_embed_the_selected_profile() {
+        use image::ImageDecoder;
+        let image = DynamicImage::ImageRgb16(ImageBuffer::from_pixel(
+            2,
+            2,
+            image::Rgb([1234, 32769, 65001]),
+        ));
+        for space in [
+            ColorSpace::Srgb,
+            ColorSpace::AdobeRgb,
+            ColorSpace::DisplayP3,
+            ColorSpace::Rec2020,
+            ColorSpace::ProphotoRgb,
+        ] {
+            for format in ["jpeg", "png", "tiff", "jxl"] {
+                let bytes =
+                    encode_image_to_bytes(&image, format, 100, TiffBitDepth::Sixteen, 16, space)
+                        .unwrap();
+                let profile = match format {
+                    "jpeg" => image::codecs::jpeg::JpegDecoder::new(Cursor::new(bytes))
+                        .unwrap()
+                        .icc_profile()
+                        .unwrap()
+                        .unwrap(),
+                    "png" => image::codecs::png::PngDecoder::new(Cursor::new(bytes))
+                        .unwrap()
+                        .icc_profile()
+                        .unwrap()
+                        .unwrap(),
+                    "tiff" => image::codecs::tiff::TiffDecoder::new(Cursor::new(bytes))
+                        .unwrap()
+                        .icc_profile()
+                        .unwrap()
+                        .unwrap(),
+                    _ => jxl_oxide::JxlImage::read_with_defaults(Cursor::new(bytes))
+                        .unwrap()
+                        .original_icc()
+                        .unwrap()
+                        .to_vec(),
+                };
+                assert_eq!(profile, space.icc(), "{format} {space:?}");
+            }
+        }
+    }
+
+    #[test]
     fn jpeg_and_png_embed_srgb_profile() {
         use image::ImageDecoder;
         let image = DynamicImage::new_rgb8(4, 4);
-        let jpeg = encode_image_to_bytes(&image, "jpeg", 90, TiffBitDepth::Eight, 8).unwrap();
-        let png = encode_image_to_bytes(&image, "png", 90, TiffBitDepth::Eight, 8).unwrap();
+        let jpeg =
+            encode_image_to_bytes(&image, "jpeg", 90, TiffBitDepth::Eight, 8, ColorSpace::Srgb)
+                .unwrap();
+        let png =
+            encode_image_to_bytes(&image, "png", 90, TiffBitDepth::Eight, 8, ColorSpace::Srgb)
+                .unwrap();
         let mut jpeg_decoder = image::codecs::jpeg::JpegDecoder::new(Cursor::new(jpeg)).unwrap();
         let mut png_decoder = image::codecs::png::PngDecoder::new(Cursor::new(png)).unwrap();
         assert_eq!(
@@ -1680,8 +1812,15 @@ mod tests {
             image::Rgba([1024, 32768, 65535, 16384]),
         ));
         for depth in [8, 16] {
-            let bytes =
-                encode_image_to_bytes(&source, "png", 90, TiffBitDepth::Eight, depth).unwrap();
+            let bytes = encode_image_to_bytes(
+                &source,
+                "png",
+                90,
+                TiffBitDepth::Eight,
+                depth,
+                ColorSpace::Srgb,
+            )
+            .unwrap();
             let decoded =
                 image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).unwrap();
             assert_eq!(decoded.color().bits_per_pixel(), u16::from(depth) * 4);
@@ -1693,7 +1832,17 @@ mod tests {
             }
         }
         for depth in [1, 2, 4] {
-            assert!(encode_image_to_bytes(&source, "png", 90, TiffBitDepth::Eight, depth).is_err());
+            assert!(
+                encode_image_to_bytes(
+                    &source,
+                    "png",
+                    90,
+                    TiffBitDepth::Eight,
+                    depth,
+                    ColorSpace::Srgb
+                )
+                .is_err()
+            );
         }
     }
 
@@ -1704,13 +1853,23 @@ mod tests {
             1,
             image::Rgb([1024, 32768, 65535]),
         ));
-        let bytes = encode_image_to_bytes(&image, "tiff", 90, TiffBitDepth::Sixteen, 8).unwrap();
+        let bytes = encode_image_to_bytes(
+            &image,
+            "tiff",
+            90,
+            TiffBitDepth::Sixteen,
+            8,
+            ColorSpace::Srgb,
+        )
+        .unwrap();
         let decoded =
             image::load_from_memory_with_format(&bytes, image::ImageFormat::Tiff).unwrap();
         assert_eq!(decoded.color().bits_per_pixel(), 48);
         assert_eq!(decoded.to_rgb16().get_pixel(0, 0).0, [1024, 32768, 65535]);
 
-        let bytes = encode_image_to_bytes(&image, "tiff", 90, TiffBitDepth::Eight, 8).unwrap();
+        let bytes =
+            encode_image_to_bytes(&image, "tiff", 90, TiffBitDepth::Eight, 8, ColorSpace::Srgb)
+                .unwrap();
         let decoded =
             image::load_from_memory_with_format(&bytes, image::ImageFormat::Tiff).unwrap();
         assert_eq!(decoded.color().bits_per_pixel(), 24);

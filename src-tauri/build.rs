@@ -1,160 +1,92 @@
-use sha2::{Digest, Sha256};
-use std::env;
-use std::fs;
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
-
-fn verify_sha256(path: &Path, expected_hash: &str) -> Result<bool, io::Error> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0; 8192];
-    loop {
-        let n = file.read(&mut buffer)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buffer[..n]);
-    }
-    let hash_bytes = hasher.finalize();
-    let calculated_hash = hex::encode(hash_bytes);
-    Ok(calculated_hash == expected_hash)
-}
-
-fn download_and_verify(
-    url: &str,
-    dest_path: &Path,
-    expected_hash: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
-    let temp_filename = dest_path.file_name().unwrap();
-    let temp_path = out_dir.join(temp_filename);
-
-    println!(
-        "cargo:warning=Downloading to temporary path: {:?}",
-        temp_path
-    );
-    let mut response = reqwest::blocking::get(url)?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_body = response
-            .text()
-            .unwrap_or_else(|_| "Could not read error body".to_string());
-        return Err(format!("Download failed with status {}: {}", status, error_body).into());
-    }
-
-    let mut temp_file = fs::File::create(&temp_path)?;
-    response.copy_to(&mut temp_file)?;
-    println!("cargo:warning=Download complete. Verifying file integrity...");
-
-    match verify_sha256(&temp_path, expected_hash) {
-        Ok(true) => {
-            fs::copy(&temp_path, dest_path)?;
-            fs::remove_file(&temp_path)?;
-            println!(
-                "cargo:warning=Successfully downloaded and verified {:?}.",
-                dest_path
-            );
-            Ok(())
-        }
-        Ok(false) => {
-            fs::remove_file(&temp_path)?;
-            Err("Verification failed! The downloaded file is corrupt.".into())
-        }
-        Err(e) => {
-            fs::remove_file(&temp_path).ok();
-            Err(format!("Could not verify file after download: {}", e).into())
-        }
-    }
-}
-
 fn main() {
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap();
-    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
-
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-
-    let (download_filename, lib_name, expected_hash) =
-        match (target_os.as_str(), target_arch.as_str()) {
-            ("windows", "x86_64") => (
-                "onnxruntime-windows-x86_64.dll",
-                "onnxruntime.dll",
-                "579b636403983254346a5c1d80bd28f1519cd1e284cd204f8d4ff41f8d711559",
-            ),
-            ("windows", "aarch64") => (
-                "onnxruntime-windows-aarch64.dll",
-                "onnxruntime.dll",
-                "79281671a386ed1baab9dbdbb09fe55f99577011472e9526cf9d0b468bb6bcc7",
-            ),
-            ("linux", "x86_64") => (
-                "libonnxruntime-linux-x86_64.so",
-                "libonnxruntime.so",
-                "3da6146e14e7b8aaec625dde11d6114c7457c87a5f93d744897da8781e35c673",
-            ),
-            ("linux", "aarch64") => (
-                "libonnxruntime-linux-aarch64.so",
-                "libonnxruntime.so",
-                "0afd69a0ae38c5099fd0e8604dda398ac43dee67cd9c6394b5142b19e82528de",
-            ),
-            ("macos", "x86_64") => (
-                "libonnxruntime-macos-x86_64.dylib",
-                "libonnxruntime.dylib",
-                "283e595e61cf65df7a6b1d59a1616cbd35c8b6399dd90d799d99b71a3ff83160",
-            ),
-            ("macos", "aarch64") => (
-                "libonnxruntime-macos-aarch64.dylib",
-                "libonnxruntime.dylib",
-                "2b885992d3d6fa4130d39ec84a80d7504ff52750027c547bb22c86165f19406a",
-            ),
-            _ => panic!("Unsupported target: {}-{}", target_os, target_arch),
-        };
-
-    let dest_dir = manifest_dir.join("resources");
-
-    fs::create_dir_all(&dest_dir).unwrap();
-    let dest_path = dest_dir.join(lib_name);
-
-    let mut is_valid = false;
-    if dest_path.exists() {
-        match verify_sha256(&dest_path, expected_hash) {
-            Ok(true) => {
-                println!(
-                    "cargo:warning=ONNX Runtime library already exists and is valid. Skipping download."
-                );
-                is_valid = true;
-            }
-            Ok(false) => {
-                println!(
-                    "cargo:warning=File {:?} exists but has incorrect hash. Deleting and re-downloading.",
-                    dest_path
-                );
-                fs::remove_file(&dest_path).unwrap();
-            }
-            Err(e) => {
-                println!(
-                    "cargo:warning=Could not verify file {:?}: {}. Re-downloading.",
-                    dest_path, e
-                );
-            }
-        }
-    }
-
-    if !is_valid {
+    // Tauri embeds its application manifest only in binaries. Unit-test harnesses
+    // also import TaskDialogIndirect via the dialog plugin and need Common Controls 6.
+    #[cfg(target_os = "windows")]
+    {
+        println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
         println!(
-            "cargo:warning=Downloading ONNX Runtime library for {}-{}...",
-            target_os, target_arch
+            "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
         );
-        let base_url =
-            "https://huggingface.co/CyberTimon/RapidRAW-Models/resolve/main/onnxruntimes-v1.22.0/";
-        let download_url = format!("{}{}?download=true", base_url, download_filename);
-        println!("cargo:warning=URL: {}", download_url);
+    }
+    #[cfg(target_os = "macos")]
+    prepare_moltenvk();
+    #[cfg(target_os = "windows")]
+    tauri_build::try_build(
+        tauri_build::Attributes::new()
+            .windows_attributes(tauri_build::WindowsAttributes::new_without_app_manifest()),
+    )
+    .expect("Build Windows resources");
+    #[cfg(not(target_os = "windows"))]
+    tauri_build::build();
+}
 
-        if let Err(e) = download_and_verify(&download_url, &dest_path, expected_hash) {
-            panic!("Failed to download and verify ONNX Runtime library: {}", e);
+#[cfg(target_os = "macos")]
+fn prepare_moltenvk() {
+    use std::{
+        env, fs,
+        path::{Path, PathBuf},
+    };
+    println!("cargo:rerun-if-env-changed=SLOWRAW_MOLTENVK_PATH");
+    println!("cargo:rerun-if-env-changed=SLOWRAW_MOLTENVK_NOTICES");
+    let library = env::var_os("SLOWRAW_MOLTENVK_PATH").map(PathBuf::from)
+        .or_else(|| ["/opt/homebrew/opt/molten-vk/lib/libMoltenVK.dylib", "/usr/local/opt/molten-vk/lib/libMoltenVK.dylib"]
+            .into_iter().map(PathBuf::from).find(|p| p.is_file()))
+        .expect("Install MoltenVK for the target architecture (brew install molten-vk), or set SLOWRAW_MOLTENVK_PATH and SLOWRAW_MOLTENVK_NOTICES.");
+    let library = library.canonicalize().expect("Resolve MoltenVK library");
+    println!("cargo:rerun-if-changed={}", library.display());
+    let architecture = match env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str() {
+        "aarch64" => "arm64",
+        "x86_64" => "x86_64",
+        _ => panic!("Unsupported macOS architecture"),
+    };
+    assert!(
+        std::process::Command::new("lipo")
+            .args(["-verify_arch", architecture])
+            .arg(&library)
+            .status()
+            .expect("Run lipo")
+            .success(),
+        "MoltenVK does not contain the target architecture"
+    );
+    let source_root = library
+        .parent()
+        .and_then(Path::parent)
+        .expect("MoltenVK prefix");
+    let notices = env::var_os("SLOWRAW_MOLTENVK_NOTICES")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| source_root.to_path_buf());
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let target = manifest.join("resources/macos");
+    let runtime = manifest.join("target/moltenvk");
+    fs::create_dir_all(&runtime).expect("Create MoltenVK runtime directory");
+    fs::create_dir_all(target.join("licenses")).expect("Create MoltenVK resource directory");
+    // Keep the upstream library unmodified. Tauri embeds/signs it in Frameworks.
+    fs::copy(&library, runtime.join("libMoltenVK.dylib")).expect("Stage MoltenVK runtime");
+    let mut count = 0;
+    fn copy_notices(source: &Path, root: &Path, target: &Path, count: &mut usize) {
+        for entry in std::fs::read_dir(source).expect("Read MoltenVK notices") {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                copy_notices(&path, root, target, count);
+            } else if kind.is_file() {
+                let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+                if ["license", "licence", "notice", "copying", "copyright"]
+                    .iter()
+                    .any(|p| name.starts_with(p))
+                {
+                    let dest = target.join(path.strip_prefix(root).unwrap());
+                    std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+                    std::fs::copy(path, dest).unwrap();
+                    *count += 1;
+                }
+            }
         }
     }
-
-    println!("cargo:rerun-if-changed=build.rs");
-
-    tauri_build::build()
+    copy_notices(&notices, &notices, &target.join("licenses"), &mut count);
+    assert!(
+        count > 0,
+        "MoltenVK redistribution notices are required; set SLOWRAW_MOLTENVK_NOTICES to the distribution's license directory"
+    );
 }

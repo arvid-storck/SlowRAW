@@ -139,12 +139,6 @@ export function useTauriListeners({ refreshImageList, markGenerated }: TauriList
           ),
         }));
       }),
-      listen('ai-model-download-start', (event: any) => {
-        if (isEffectActive) useProcessStore.getState().setProcess({ aiModelDownloadStatus: event.payload });
-      }),
-      listen('ai-model-download-finish', () => {
-        if (isEffectActive) useProcessStore.getState().setProcess({ aiModelDownloadStatus: null });
-      }),
       listen('indexing-started', () => {
         if (isEffectActive)
           useProcessStore.getState().setProcess({ isIndexing: true, indexingProgress: { current: 0, total: 0 } });

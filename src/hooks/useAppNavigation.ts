@@ -92,7 +92,6 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
 
       if (selectedImage?.path === path) return;
 
-      useEditorStore.getState().patchesSentToBackend.clear();
       debouncedSave.flush();
       debouncedSetHistory.cancel();
 
@@ -132,8 +131,6 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
         showOriginal: false,
         activeMaskId: null,
         activeMaskContainerId: null,
-        activeAiPatchContainerId: null,
-        activeAiSubMaskId: null,
         isWbPickerActive: false,
         previewOverride: null,
       });
@@ -235,11 +232,6 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
           }, 250);
         }
         return { finalPreviewUrl: null };
-      });
-
-      setEditor((state) => {
-        if (state.interactivePatch?.url) URL.revokeObjectURL(state.interactivePatch.url);
-        return { interactivePatch: null };
       });
     },
     [refs],

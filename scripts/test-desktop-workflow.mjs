@@ -52,6 +52,7 @@ const react = {
 };
 const { useExportSettings } = load('src/hooks/useExportSettings.ts', {
   react,
+  '../utils/colorSpaces': load('src/utils/colorSpaces.ts'),
   '../components/ui/ExportImportProperties': {
     WatermarkAnchor: { BottomRight: 'bottom-right' },
     FILE_FORMATS: [{ id: 'jpeg' }, { id: 'png' }, { id: 'tiff' }],
@@ -60,6 +61,7 @@ const { useExportSettings } = load('src/hooks/useExportSettings.ts', {
 const draft = useExportSettings();
 draft.setFileFormat('png');
 draft.setPngBitDepth(16);
+draft.setColorSpace('prophoto-rgb');
 draft.setJpegQuality(72);
 draft.setResizeValue(1234);
 draft.setFilenameTemplate('session-test');
@@ -69,6 +71,7 @@ cursor = 0;
 const reopened = useExportSettings();
 assert.equal(reopened.fileFormat, 'png');
 assert.equal(reopened.pngBitDepth, 16);
+assert.equal(reopened.colorSpace, 'prophoto-rgb');
 assert.equal(reopened.jpegQuality, 72);
 assert.equal(reopened.resizeValue, 1234);
 assert.equal(reopened.filenameTemplate, 'session-test');
@@ -85,4 +88,38 @@ assert.match(read('src/components/panel/right/MetadataPanel.tsx'), /<details key
 assert.match(read('src/hooks/useImageProcessing.ts'), /targetResolution:/);
 assert.match(read('src-tauri/src/lib.rs'), /target_dim.hash\(&mut geometry_hasher\)/);
 assert.equal(JSON.parse(read('src-tauri/tauri.conf.json')).productName, 'SlowRAW');
-console.log('Passed viewport focus/scale round-trip, export remount persistence, metadata, crop and branding checks.');
+const native = read('src-tauri/src/gpu_processing.rs');
+const bridge = read('src-tauri/src/wayland_display.rs');
+const jobs = read('src-tauri/src/lib.rs');
+assert.match(bridge, /from_foreign_display/);
+assert.match(bridge, /subsurface.set_desync/);
+assert.match(bridge, /subsurface.place_below/);
+assert.match(bridge, /set_input_region/);
+assert.match(bridge, /scale_factor/);
+assert.match(native, /instance\s*\.create_surface\(target\)/);
+assert.match(native, /retrying compute-only/);
+assert.doesNotMatch(native, /panic!\("Failed to acquire surface texture"\)/);
+assert.match(jobs, /NATIVE_DISPLAY_UNAVAILABLE/);
+assert.doesNotMatch(jobs, /apply_adjustments_fallback/);
+assert.match(jobs, /responder.send\(result\)/);
+assert.match(read('src/components/panel/Editor.tsx'), /role="alert"/);
+assert.doesNotMatch(read('src/components/panel/SettingsPanel.tsx'), /useWgpuRenderer|linuxGpuOptimization/);
+assert.match(read('src/hooks/useImageProcessing.ts'), /wgpu-display-unavailable/);
+assert.doesNotMatch(read('src/components/panel/SettingsPanel.tsx'), /disabled=\{osPlatform === 'linux'\}/);
+const manifest = read('src-tauri/Cargo.toml');
+assert.doesNotMatch(manifest, /features[^\n]*"(gles|dx12|metal)"/);
+assert.match(manifest, /features[^\n]*"vulkan"/);
+assert.doesNotMatch(read('src/components/panel/SettingsPanel.tsx'), /filteredBackendOptions|processingBackend|displayColorSpace/);
+assert.match(read('src-tauri/src/vulkan_instance.rs'), /Backends::VULKAN/);
+assert.match(read('src-tauri/src/vulkan_instance.rs'), /libMoltenVK.dylib/);
+assert.match(read('src-tauri/tauri.macos.conf.json'), /libMoltenVK.dylib/);
+assert.match(read('src-tauri/src/native_display.rs'), /S::ExtendedSrgb/);
+assert.match(read('src-tauri/src/native_display.rs'), /S::Bt2100Pq/);
+const css = read('src/styles.css');
+assert.match(css, /\.switch-round\s*\{\s*border-radius: 9999px !important/);
+assert.match(css, /::-webkit-slider-thumb\s*\{[^}]*border-radius: 50% !important/);
+assert.match(css, /::-moz-range-thumb\s*\{[^}]*border-radius: 50% !important/);
+assert.match(css, /\.macos-window-shell\s*\{\s*border-radius: 0;/);
+assert.match(css, /::-webkit-scrollbar-thumb\s*\{[^}]*border-radius: 0;/);
+assert.equal((read('src/components/ui/Switch.tsx').match(/switch-round/g) || []).length, 2);
+console.log('Passed desktop workflow, native-only display error wiring and rounded-control checks.');

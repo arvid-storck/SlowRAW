@@ -169,16 +169,14 @@ function App() {
     })),
   );
 
-  const { selectedImage, activeMaskContainerId, activeAiPatchContainerId, hasRenderedFirstFrame, setEditor } =
-    useEditorStore(
-      useShallow((state) => ({
-        selectedImage: state.selectedImage,
-        activeMaskContainerId: state.activeMaskContainerId,
-        activeAiPatchContainerId: state.activeAiPatchContainerId,
-        hasRenderedFirstFrame: state.hasRenderedFirstFrame,
-        setEditor: state.setEditor,
-      })),
-    );
+  const { selectedImage, activeMaskContainerId, hasRenderedFirstFrame, setEditor } = useEditorStore(
+    useShallow((state) => ({
+      selectedImage: state.selectedImage,
+      activeMaskContainerId: state.activeMaskContainerId,
+      hasRenderedFirstFrame: state.hasRenderedFirstFrame,
+      setEditor: state.setEditor,
+    })),
+  );
 
   const { exportState, setExportState } = useProcessStore(
     useShallow((state) => ({
@@ -385,13 +383,10 @@ function App() {
   const isLightTheme = useMemo(() => [Theme.Light, Theme.Snow, Theme.Arctic].includes(theme as Theme), [theme]);
 
   useEffect(() => {
-    if (
-      (activePanel !== Panel.Masks || !activeMaskContainerId) &&
-      (activePanel !== Panel.Ai || !activeAiPatchContainerId)
-    ) {
+    if (activePanel !== Panel.Masks || !activeMaskContainerId) {
       setEditor({ isMaskControlHovered: false });
     }
-  }, [activePanel, activeMaskContainerId, activeAiPatchContainerId, setEditor]);
+  }, [activePanel, activeMaskContainerId, setEditor]);
 
   useEffect(() => {
     setEditor({
@@ -399,7 +394,6 @@ function App() {
       isStraightenActive: false,
       isGuidedPerspectiveActive: false,
       activeMaskId: null,
-      activeAiSubMaskId: null,
     });
   }, [activePanel, activeView, setEditor]);
 
@@ -548,8 +542,6 @@ function App() {
           return <CropPanel />;
         case Panel.Masks:
           return <MasksPanel />;
-        case Panel.Ai:
-          return null;
         default:
           return null;
       }
@@ -575,11 +567,7 @@ function App() {
   const hasMainContent =
     hasRoots || !!currentFolderPath || isCatalogMode || (activeView === 'editor' && !!selectedImage);
 
-  const isWgpuActive =
-    activeView === 'editor' &&
-    appSettings?.useWgpuRenderer !== false &&
-    selectedImage?.isReady &&
-    hasRenderedFirstFrame;
+  const isWgpuActive = activeView === 'editor' && selectedImage?.isReady && hasRenderedFirstFrame;
   const useMacWindowShell = osPlatform === 'macos' && !appSettings?.decorations && !isWindowFullScreen && !isFullScreen;
 
   const layoutSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));

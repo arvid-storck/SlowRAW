@@ -26,7 +26,6 @@ import {
   FileEdit,
   Folder as FolderIcon,
   FolderOpen,
-  Loader2,
   Minus,
   Plus,
   PlusSquare,
@@ -45,7 +44,6 @@ import DetailsPanel from '../../adjustments/Details';
 import EffectsPanel from '../../adjustments/Effects';
 import Waveform from '../editor/Waveform';
 import Resizer from '../../ui/Resizer';
-import { DepthRangePicker } from '../../ui/DepthRangePicker';
 
 import {
   Mask,
@@ -76,7 +74,6 @@ import Text from '../../ui/Text';
 import { TEXT_COLOR_KEYS, TextColors, TextVariants, TextWeights } from '../../../types/typography';
 import { useEditorStore } from '../../../store/useEditorStore';
 import { useSettingsStore } from '../../../store/useSettingsStore';
-import { useProcessStore } from '../../../store/useProcessStore';
 import { useEditorActions } from '../../../hooks/useEditorActions';
 import { useUIStore } from '../../../store/useUIStore';
 import { useWaveformControls } from '../../../hooks/useWaveformControls';
@@ -112,28 +109,6 @@ const SUB_MASK_CONFIG: Partial<Record<Mask, any>> = {
     ],
   },
   [Mask.All]: { parameters: [] },
-  [Mask.AiDepth]: {
-    parameters: [{ key: 'feather', min: 0, max: 100, step: 1, defaultValue: 15 }],
-  },
-  [Mask.AiSubject]: {
-    parameters: [
-      { key: 'grow', min: -100, max: 100, step: 1, defaultValue: 0 },
-      { key: 'feather', min: 0, max: 100, step: 1, defaultValue: 0 },
-    ],
-  },
-  [Mask.AiForeground]: {
-    parameters: [
-      { key: 'grow', min: -100, max: 100, step: 1, defaultValue: 0 },
-      { key: 'feather', min: 0, max: 100, step: 1, defaultValue: 0 },
-    ],
-  },
-  [Mask.AiSky]: {
-    parameters: [
-      { key: 'grow', min: -100, max: 100, step: 1, defaultValue: 0 },
-      { key: 'feather', min: 0, max: 100, step: 1, defaultValue: 0 },
-    ],
-  },
-  [Mask.QuickEraser]: { parameters: [] },
 };
 
 const BrushTools = ({
@@ -267,12 +242,6 @@ export default function MasksPanel() {
     })),
   );
 
-  const { aiModelDownloadStatus } = useProcessStore(
-    useShallow((state) => ({
-      aiModelDownloadStatus: state.aiModelDownloadStatus,
-    })),
-  );
-
   const {
     activeMaskContainerId,
     activeMaskId,
@@ -280,7 +249,6 @@ export default function MasksPanel() {
     brushSettings,
     copiedMask,
     histogram,
-    isGeneratingAiMask,
     selectedImage,
     isWaveformVisible,
     waveform,
@@ -295,7 +263,6 @@ export default function MasksPanel() {
       brushSettings: state.brushSettings,
       copiedMask: state.copiedMask,
       histogram: state.histogram,
-      isGeneratingAiMask: state.isGeneratingAiMask,
       selectedImage: state.selectedImage,
       isWaveformVisible: state.isWaveformVisible,
       waveform: state.waveform,
@@ -352,29 +319,11 @@ export default function MasksPanel() {
   const [isSettingsPanelEverOpened, setIsSettingsPanelEverOpened] = useState(false);
   const hasPerformedInitialSelection = useRef(false);
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
-  const [analyzingSubMaskId, setAnalyzingSubMaskId] = useState<string | null>(null);
 
   const { showContextMenu } = useContextMenu();
 
   const activeContainer = adjustments.masks?.find((m) => m.id === activeMaskContainerId);
   const activeSubMaskData = activeContainer?.subMasks?.find((sm) => sm.id === activeMaskId);
-  const isAiMask =
-    activeSubMaskData && [Mask.AiSubject, Mask.AiForeground, Mask.AiSky, Mask.AiDepth].includes(activeSubMaskData.type);
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    if (isGeneratingAiMask && isAiMask) {
-      timer = setTimeout(() => {
-        setAnalyzingSubMaskId(activeMaskId);
-      }, 200);
-    } else {
-      setAnalyzingSubMaskId(null);
-    }
-    return () => {
-      if (timer) clearTimeout(timer);
-    };
-  }, [isGeneratingAiMask, isAiMask, activeMaskId]);
-
   useEffect(() => {
     if (activeMaskContainerId) {
       const containerExists = adjustments.masks?.some((m) => m.id === activeMaskContainerId);
@@ -1098,7 +1047,6 @@ export default function MasksPanel() {
                           handlePasteSubMask={handlePasteSubMask}
                           copySubMaskToClipboard={copySubMaskToClipboard}
                           copiedSubMask={copiedSubMask}
-                          analyzingSubMaskId={analyzingSubMaskId}
                           setIsMaskControlHovered={setIsMaskControlHovered}
                           onAddComponent={(e: React.MouseEvent) => handleAddMaskContextMenu(e, container.id)}
                         />
@@ -1144,14 +1092,12 @@ export default function MasksPanel() {
                     <SettingsPanel
                       container={activeContainer}
                       activeSubMask={activeSubMaskData || null}
-                      aiModelDownloadStatus={aiModelDownloadStatus}
                       brushSettings={brushSettings}
                       setBrushSettings={setBrushSettings}
                       updateContainer={updateContainer}
                       updateSubMask={updateSubMask}
                       histogram={histogram}
                       appSettings={appSettings}
-                      isGeneratingAiMask={isGeneratingAiMask}
                       setIsMaskControlHovered={setIsMaskControlHovered}
                       collapsibleState={collapsibleState}
                       setCollapsibleState={setCollapsibleState}
@@ -1173,7 +1119,7 @@ export default function MasksPanel() {
                 weight={TextWeights.normal}
                 className="text-center"
               >
-                {t('editor.ai.noImageSelected')}
+                {t('editor.noImageSelected')}
               </Text>
             </div>
           )}
@@ -1317,7 +1263,6 @@ function ContainerRow({
   handlePasteSubMask,
   copySubMaskToClipboard,
   copiedSubMask,
-  analyzingSubMaskId,
   setIsMaskControlHovered,
   onAddComponent,
 }: any) {
@@ -1526,7 +1471,6 @@ function ContainerRow({
                   handlePaste={() => handlePasteSubMask(container.id, index + 1)}
                   handleCopy={() => copySubMaskToClipboard(subMask)}
                   hasCopiedSubMask={!!copiedSubMask}
-                  analyzingSubMaskId={analyzingSubMaskId}
                   renamingId={renamingId}
                   setRenamingId={setRenamingId}
                   tempName={tempName}
@@ -1586,7 +1530,6 @@ function SubMaskRow({
   handleCopy,
   hasCopiedSubMask,
   activeDragItem,
-  analyzingSubMaskId,
   renamingId,
   setRenamingId,
   tempName,
@@ -1612,7 +1555,6 @@ function SubMaskRow({
   const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isDraggingContainer = activeDragItem?.type === 'Container';
-  const isAnalyzing = subMask.id === analyzingSubMaskId;
 
   const handleMouseEnter = () => {
     if (hoverTimeoutRef.current) {
@@ -1705,18 +1647,7 @@ function SubMaskRow({
         className="relative w-4 h-4 ml-1 shrink-0 flex items-center justify-center"
       >
         <AnimatePresence mode="wait" initial={false}>
-          {isAnalyzing ? (
-            <motion.div
-              key="analyzing"
-              initial={{ opacity: 0, scale: 0.5 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.5 }}
-              transition={{ duration: 0.15 }}
-              className="absolute"
-            >
-              <Loader2 size={16} className="animate-spin" />
-            </motion.div>
-          ) : showNumber ? (
+          {showNumber ? (
             <motion.span
               key="number"
               initial={{ opacity: 0, scale: 0.5 }}
@@ -1804,7 +1735,7 @@ function SubMaskRow({
         </button>
         <button
           className="p-1 hover:text-red-500 text-text-secondary"
-          data-tooltip={t('editor.ai.actions.deleteComponent')}
+          data-tooltip={t('editor.masks.actions.deleteComponent')}
           onClick={(e) => {
             e.stopPropagation();
             handleDelete();
@@ -1820,7 +1751,6 @@ function SubMaskRow({
 function SettingsPanel({
   container,
   activeSubMask,
-  aiModelDownloadStatus,
   brushSettings,
   setBrushSettings,
   updateContainer,
@@ -1857,22 +1787,7 @@ function SettingsPanel({
     updateSubMask(activeSubMask.id, { parameters: newParams });
   };
 
-  const handleDepthRangeChange = (values: { minDepth: number; maxDepth: number; minFade: number; maxFade: number }) => {
-    if (!isActive || !activeSubMask) return;
-
-    const newParams = {
-      ...activeSubMask.parameters,
-      minDepth: 100 - values.maxDepth,
-      maxDepth: 100 - values.minDepth,
-      minFade: values.maxFade,
-      maxFade: values.minFade,
-    };
-    updateSubMask(activeSubMask.id, { parameters: newParams });
-  };
-
   const subMaskConfig = activeSubMask ? SUB_MASK_CONFIG[activeSubMask.type as Mask] || {} : {};
-  const isAiMask =
-    activeSubMask && [Mask.AiSubject, Mask.AiForeground, Mask.AiSky, Mask.AiDepth].includes(activeSubMask.type);
   const isComponentMode = !!activeSubMask;
 
   const setMaskContainerAdjustments = (updater: any) => {
@@ -2036,45 +1951,10 @@ function SettingsPanel({
 
           {isComponentMode && (
             <>
-              {isAiMask && aiModelDownloadStatus && (
-                <Text
-                  as="div"
-                  variant={TextVariants.small}
-                  color={TextColors.accent}
-                  weight={TextWeights.medium}
-                  className="p-3 bg-card-active rounded-md border border-surface flex items-center gap-3"
-                >
-                  <Loader2 size={16} className="animate-spin shrink-0" />
-                  <div className="leading-relaxed">
-                    <Text variant={TextVariants.small}>{t('editor.masks.settings.aiModelDownloading')}</Text>
-                    <span>{aiModelDownloadStatus}</span>
-                  </div>
-                </Text>
-              )}
-
-              {activeSubMask.type === Mask.AiDepth && (
-                <DepthRangePicker
-                  minDepth={100 - (activeSubMask.parameters?.maxDepth ?? 100)}
-                  maxDepth={100 - (activeSubMask.parameters?.minDepth ?? 0)}
-                  minFade={activeSubMask.parameters?.maxFade ?? 15}
-                  maxFade={activeSubMask.parameters?.minFade ?? 15}
-                  defaultMinDepth={20}
-                  defaultMaxDepth={80}
-                  defaultMinFade={15}
-                  defaultMaxFade={15}
-                  onChange={handleDepthRangeChange}
-                  onDragStateChange={onDragStateChange}
-                />
-              )}
-
               {subMaskConfig.parameters?.map((param: any) => (
                 <Slider
                   key={param.key}
-                  label={
-                    param.key === 'feather' && activeSubMask.type === Mask.AiDepth
-                      ? t('editor.masks.params.globalFeather')
-                      : String(t(('editor.masks.params.' + param.key) as any))
-                  }
+                  label={String(t(('editor.masks.params.' + param.key) as any))}
                   min={param.min}
                   max={param.max}
                   step={param.step}

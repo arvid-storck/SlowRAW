@@ -36,6 +36,7 @@ export interface ExportSettings {
   jpegQuality: number;
   tiffBitDepth: TiffBitDepth;
   pngBitDepth: PngBitDepth;
+  colorSpace: import('../../utils/colorSpaces').ColorSpace;
   keepMetadata: boolean;
   preserveTimestamps: boolean;
   resize: {
@@ -107,6 +108,7 @@ export interface ExportPreset {
   jpegQuality: number;
   tiffBitDepth?: TiffBitDepth;
   pngBitDepth?: PngBitDepth;
+  colorSpace?: import('../../utils/colorSpaces').ColorSpace;
   enableResize: boolean;
   resizeMode: string;
   resizeValue: number;

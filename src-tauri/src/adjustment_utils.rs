@@ -1,94 +1,10 @@
 use image::DynamicImage;
 use std::borrow::Cow;
-use std::collections::HashMap;
 
-use crate::app_state::AppState;
 use crate::image_processing::{
     Crop, IntoCowImage, apply_coarse_rotation, apply_crop, apply_flip, apply_geometry_warp,
     apply_rotation,
 };
-
-pub fn hydrate_sub_masks(
-    sub_masks: &mut Vec<serde_json::Value>,
-    cache: &mut HashMap<String, serde_json::Value>,
-) {
-    for sub_mask in sub_masks {
-        let id = sub_mask
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        if id.is_empty() {
-            continue;
-        }
-
-        if let Some(params) = sub_mask
-            .get_mut("parameters")
-            .and_then(|p| p.as_object_mut())
-        {
-            let keys_to_check = ["mask_data_base64", "maskDataBase64"];
-            for key in keys_to_check {
-                if params.contains_key(key) {
-                    let val = params.get(key).unwrap();
-                    if !val.is_null() {
-                        cache.insert(id.clone(), val.clone());
-                    } else {
-                        if let Some(cached_data) = cache.get(&id) {
-                            params.insert(key.to_string(), cached_data.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-pub fn hydrate_adjustments(state: &tauri::State<AppState>, adjustments: &mut serde_json::Value) {
-    let mut cache = state.patch_cache.lock().unwrap();
-
-    if let Some(patches) = adjustments
-        .get_mut("aiPatches")
-        .and_then(|v| v.as_array_mut())
-    {
-        for patch in patches {
-            let id = patch
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default()
-                .to_string();
-
-            if !id.is_empty() {
-                let has_data = patch.get("patchData").is_some_and(|v| !v.is_null());
-
-                if has_data {
-                    if let Some(data) = patch.get("patchData") {
-                        cache.insert(id.clone(), data.clone());
-                    }
-                } else {
-                    if let Some(cached_data) = cache.get(&id) {
-                        patch["patchData"] = cached_data.clone();
-                    }
-                }
-            }
-
-            if let Some(sub_masks) = patch.get_mut("subMasks").and_then(|v| v.as_array_mut()) {
-                hydrate_sub_masks(sub_masks, &mut cache);
-            }
-        }
-    }
-
-    if let Some(masks) = adjustments.get_mut("masks").and_then(|v| v.as_array_mut()) {
-        for mask_container in masks {
-            if let Some(sub_masks) = mask_container
-                .get_mut("subMasks")
-                .and_then(|v| v.as_array_mut())
-            {
-                hydrate_sub_masks(sub_masks, &mut cache);
-            }
-        }
-    }
-}
 
 pub fn apply_all_transformations<'a, I: IntoCowImage<'a>>(
     image: I,

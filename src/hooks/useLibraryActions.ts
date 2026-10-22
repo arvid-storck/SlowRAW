@@ -177,8 +177,6 @@ export function useLibraryActions(handleImageSelect?: (path: string, openInEdito
         waveform: null,
         activeMaskId: null,
         activeMaskContainerId: null,
-        activeAiPatchContainerId: null,
-        activeAiSubMaskId: null,
         isWbPickerActive: false,
       });
     }

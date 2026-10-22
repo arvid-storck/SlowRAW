@@ -39,17 +39,13 @@ Set-Content -LiteralPath (Join-Path $portableDirectory "portable.flag") -Value "
 Copy-Item -LiteralPath $executable -Destination (Join-Path $portableDirectory "SlowRAW.exe") -Force
 $resourceDestination = Join-Path $portableDirectory "resources"
 New-Item -ItemType Directory -Path $resourceDestination | Out-Null
-# A workspace used for multiple desktop targets can contain all three runtimes.
-# Windows needs only onnxruntime.dll; preserve every other resource and license.
 Get-ChildItem -LiteralPath (Join-Path $tauriDirectory "resources") |
-    Where-Object { $_.Name -notin @("libonnxruntime.so", "libonnxruntime.dylib") } |
     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $resourceDestination -Recurse -Force }
 Copy-Item -LiteralPath (Join-Path $tauriDirectory "lensfun_db") -Destination $portableDirectory -Recurse -Force
 $readme = @"
 SlowRAW portable
 
-Start SlowRAW.exe directly. Settings, albums, imported LUTs, and
-downloaded models are stored in the data folder beside the executable.
+Start SlowRAW.exe directly. Settings and albums are stored in the data folder beside the executable.
 The rebuildable image index is rapidraw.db beside the executable.
 Original images and SlowRAW sidecars remain in their original locations.
 

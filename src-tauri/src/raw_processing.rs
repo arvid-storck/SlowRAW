@@ -288,9 +288,9 @@ fn develop_internal(
                     b = srgb_to_linear(b.clamp(0.0, 1.0));
                 }
 
-                p[0] = r.clamp(0.0, clamp_limit);
-                p[1] = g.clamp(0.0, clamp_limit);
-                p[2] = b.clamp(0.0, clamp_limit);
+                p[0] = r.clamp(-clamp_limit, clamp_limit);
+                p[1] = g.clamp(-clamp_limit, clamp_limit);
+                p[2] = b.clamp(-clamp_limit, clamp_limit);
             });
         }
         Intermediate::FourColor(pixels) => {

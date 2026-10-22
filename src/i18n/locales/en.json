@@ -195,6 +195,16 @@
     "total_other": "{{count}} images total",
     "unflagged": "Unflagged"
   },
+  "colorManagement": {
+    "exportSpace": "Export color space",
+    "jxlLossless": "Wide-gamut JPEG XL is exported losslessly at 16-bit precision.",
+    "nativeDisplayError": "Native GPU preview unavailable",
+    "nativeDisplayLost": "Native GPU display was lost. Restart SlowRAW.",
+    "nativeDisplayProfileInvalid": "The monitor ICC profile is unreadable or unsupported. Assign a valid RGB matrix/TRC monitor profile in the operating system, then reopen the image.",
+    "nativeDisplayUnavailable": "Native Vulkan display is unavailable. Check the graphics driver and restart SlowRAW. Linux editing requires Wayland; macOS uses bundled MoltenVK.",
+    "nativeDisplayUnsupported": "The Vulkan surface has no supported display format. Check the driver/compositor configuration.",
+    "srgbOnly": "This format currently supports sRGB output only. Choose JPEG, PNG, TIFF or JPEG XL for other color spaces."
+  },
   "contextMenus": {
     "album": {
       "emptyGroup": "(Empty Group)"
@@ -380,119 +390,6 @@
         "toggleAnalytics": "Toggle Analytics Display"
       }
     },
-    "ai": {
-      "actions": {
-        "addNewComponent": "Add New Component",
-        "copyComponent": "Copy Component",
-        "copyEdit": "Copy Edit",
-        "deleteComponent": "Delete Component",
-        "deleteEdit": "Delete Edit",
-        "duplicateAndInvertComponent": "Duplicate and Invert Component",
-        "duplicateAndInvertEdit": "Duplicate and Invert Edit",
-        "duplicateComponent": "Duplicate Component",
-        "duplicateEdit": "Duplicate Edit",
-        "hideEdit": "Hide Edit",
-        "intersectEditWith": "Intersect Edit with",
-        "pasteComponent": "Paste Component",
-        "pasteEdit": "Paste Edit",
-        "rename": "Rename",
-        "resetSelection": "Reset Selection",
-        "showEdit": "Show Edit",
-        "subtractFromEdit": "Subtract from Edit",
-        "switchToAdd": "Switch to Add",
-        "switchToIntersect": "Switch to Intersect",
-        "switchToSubtract": "Switch to Subtract"
-      },
-      "addNewEdit": "Add New Edit",
-      "brush": {
-        "add": "Add",
-        "erase": "Erase",
-        "feather": "Brush Feather",
-        "size": "Brush Size"
-      },
-      "comingSoon": "Coming Soon",
-      "connection": {
-        "backendLabel": "AI Backend:",
-        "builtinDesc": "Using basic local CPU. Select Cloud or AI Connector in settings for generative replace.",
-        "builtinLabel": "Built-in AI:",
-        "cloudLabel": "Cloud AI:",
-        "connectorConnectedDesc": "Connected to local generative backend.",
-        "connectorDisconnectedDesc": "Only simple inpainting available. Start your local backend.",
-        "connectorLabel": "AI Connector:",
-        "loginRequiredDesc": "Log in via Settings to use Cloud AI.",
-        "monthlyUsage": "Monthly Usage",
-        "notDetected": "Not Detected",
-        "notLoggedIn": "Not Logged In",
-        "proRequiredDesc": "Pro subscription required. Upgrade in Settings.",
-        "ready": "Ready",
-        "upgradeRequired": "Upgrade Required"
-      },
-      "createNewTitle": "Create New Generative Edit",
-      "createNewTooltip": "Create New {{name}} Edit",
-      "dropzoneText": "Drop here to create a new edit",
-      "editSettingsTitle": "Edit Settings",
-      "editsTitle": "Edits",
-      "generatingDepthMap": "Calculating AI Depth Map...",
-      "generativeEditTitle": "Generative Edit",
-      "inpaintingTitle": "Inpainting",
-      "liquify": {
-        "mode": "Liquify Mode",
-        "modes": {
-          "expand": "Expand",
-          "pinch": "Pinch",
-          "push": "Push",
-          "twirl": "Twirl"
-        }
-      },
-      "manualCleanupTitle": "Manual Cleanup",
-      "noImageSelected": "No image selected.",
-      "params": {
-        "feather": "Feather",
-        "grow": "Grow",
-        "intensity": "Intensity",
-        "pressure": "Pressure"
-      },
-      "patches": {
-        "aiEdit": "AI Edit {{count}}",
-        "aiEdit_one": "AI Edit {{count}}",
-        "aiEdit_other": "AI Edit {{count}}",
-        "clone": "Clone {{count}}",
-        "clone_one": "Clone {{count}}",
-        "clone_other": "Clone {{count}}",
-        "heal": "Heal {{count}}",
-        "heal_one": "Heal {{count}}",
-        "heal_other": "Heal {{count}}",
-        "invertedName": "{{name}} Inverted",
-        "liquify": "Liquify {{count}}",
-        "liquify_one": "Liquify {{count}}",
-        "liquify_other": "Liquify {{count}}",
-        "quickErase": "Quick Erase {{count}}",
-        "quickErase_one": "Quick Erase {{count}}",
-        "quickErase_other": "Quick Erase {{count}}",
-        "retouch": "Retouch {{count}}"
-      },
-      "resetInpaintingTooltip": "Reset Inpainting",
-      "settings": {
-        "aiModelDownloading": "AI Model Downloading: ",
-        "basicInpaintTooltipDisabled": "Generative backend not available or not configured. Basic inpainting is required.",
-        "basicInpaintTooltipEnabled": "Basic inpainting is quicker but not generative. Uncheck to use Generative AI with a text prompt.",
-        "componentPropertiesTitle": "{{name}} Properties",
-        "downloading": "Downloading: ",
-        "fastInpaintDesc": "Fill selection based on surrounding pixels.",
-        "generateWithAiButton": "Generate with AI",
-        "generating": "Generating...",
-        "generativeDesc": "Describe what you want to generate in the selected area.",
-        "generativeReplaceTitle": "Generative Replace",
-        "inpaintSelectionButton": "Inpaint Selection",
-        "invertComponent": "Invert Component",
-        "invertSelection": "Invert Selection",
-        "placeholder": "e.g., a field of flowers",
-        "quickEraseDesc": "Fill selection to remove the object.",
-        "selectionPropertiesTitle": "Selection Properties",
-        "useBasicInpaint": "Use basic inpainting"
-      },
-      "touchUpTitle": "Touch Up"
-    },
     "crop": {
       "aspectRatioHeading": "Aspect Ratio",
       "custom": {
@@ -625,7 +522,6 @@
         "switchToSubtract": "Switch to Subtract"
       },
       "addNewMask": "Add New Mask",
-      "aiTitle": "AI Selections",
       "basicTitle": "Basic Tools",
       "brush": {
         "brush": "Brush",
@@ -635,12 +531,6 @@
         "size": "Brush Size"
       },
       "comingSoon": "Coming Soon",
-      "depthRange": {
-        "far": "Far",
-        "near": "Near",
-        "reset": "Reset",
-        "title": "Depth Range"
-      },
       "dropzoneText": "Drop here to create a new mask",
       "maskAdjustmentsTitle": "Mask Adjustments",
       "maskingTitle": "Masking",
@@ -661,7 +551,6 @@
       "rangeTitle": "Ranges & Global",
       "resetMaskingTooltip": "Reset Masking",
       "settings": {
-        "aiModelDownloading": "AI Model Downloading: ",
         "componentPropertiesTitle": "{{name}} Properties",
         "copySectionSettings": "Copy {{section}} Settings",
         "invertComponent": "Invert Component",
@@ -725,13 +614,13 @@
       },
       "title": "Metadata"
     },
+    "noImageSelected": "No image selected.",
     "switcher": {
       "tooltips": {
         "adjust": "Adjust",
         "crop": "Crop",
         "export": "Export",
         "info": "Info",
-        "inpaint": "Inpaint",
         "masks": "Masks"
       }
     },
@@ -985,20 +874,12 @@
       "brush": "Brush",
       "clone": "Clone",
       "color": "Color",
-      "depth": "Depth",
       "flow": "Flow",
-      "foreground": "Foreground",
       "heal": "Heal",
       "linear": "Linear",
-      "liquify": "Liquify",
       "luminance": "Luminance",
       "others": "Others",
-      "quickErase": "Quick Erase",
-      "quickEraser": "Quick Eraser",
-      "radial": "Radial",
-      "retouch": "Retouch",
-      "sky": "Sky",
-      "subject": "Subject"
+      "radial": "Radial"
     }
   },
   "menus": {
@@ -1176,18 +1057,12 @@
       "close": "Close",
       "denoised": "Denoised",
       "denoisingProgress": "Denoising in Progress",
-      "description": "Remove noise from your image using AI-powered or traditional denoising.",
-      "downloadingText": "Downloading {{status}}...",
-      "gpuWarningTooltip": "NIND Denoise does not yet support GPU acceleration due to dependency limitations.",
+      "description": "Remove noise from your image using traditional BM3D denoising.",
       "initializing": "Initializing...",
-      "methodAi": "NIND (AI - Best for RAW)",
-      "methodBm3d": "BM3D (Traditional - All formats)",
-      "methodLabel": "Method",
       "openInEditor": "Open in Editor",
       "original": "Original",
       "panZoomEnabled": "Pan & Zoom enabled",
       "processingFailed": "Processing Failed",
-      "qualityTileSizeLabel": "Quality / Tile Size",
       "reset": "Reset",
       "saveSuccess": "Image Saved Successfully!",
       "speedNotice": "This may take a few minutes depending on image size and selected method.",
@@ -1261,7 +1136,7 @@
       "lensProfileNotFound": "Lens profile not found",
       "manageLensesPlaceholder": "Manage your lenses in Settings",
       "manualSelection": "Manual Selection",
-      "maskWarning": "Lens correction updates base geometry. Existing masks may shift, and AI masks must be regenerated.",
+      "maskWarning": "This changes the base geometry. Existing masks may shift.",
       "modeAuto": "Auto",
       "modeManual": "Manual",
       "notFound": "Not Found",
@@ -1351,7 +1226,7 @@
       "guided": "Guided Perspective",
       "horizontal": "Horizontal",
       "manual": "Manual Transform",
-      "maskWarning": "Transforming updates base geometry. Existing masks may shift, and AI masks must be regenerated.",
+      "maskWarning": "This changes the base geometry. Existing masks may shift.",
       "offset": "Offset",
       "original": "Original",
       "perspective": "Perspective",
@@ -1410,14 +1285,10 @@
       "clearThumbnailButton": "Clear",
       "clearThumbnailDesc": "This will delete all cached thumbnail images. They will be regenerated automatically as you browse your library.",
       "modals": {
-        "aiMessage": "Are you sure you want to remove all AI-generated tags from all images in all active root folders?\n\nThis will not affect user-added tags. This action cannot be undone.",
-        "allMessage": "Are you sure you want to remove all AI-generated and user-added tags from all images in all active root folders?\n\nThis action cannot be undone.",
         "cacheMessage": "Are you sure you want to clear the thumbnail cache?\n\nAll thumbnails will need to be regenerated, which may be slow for large folders.",
-        "confirmAiTitle": "Confirm AI Tag Deletion",
         "confirmAllTitle": "Confirm All Tag Deletion",
         "confirmCacheTitle": "Confirm Cache Deletion",
         "confirmClear": "Clear",
-        "confirmClearAi": "Clear AI Tags",
         "confirmClearAll": "Clear All Tags",
         "confirmClearCache": "Clear Cache",
         "confirmDeleteAllEdits": "Delete All Edits",
@@ -1432,14 +1303,10 @@
       "resetLayoutDesc": "Restore panel docks, side splitters, heights, and panel switchers to the default layout.",
       "resetLayoutTitle": "Reset Workspace Layout",
       "statuses": {
-        "aiSuccess": "{{count}} files updated. AI tags removed.",
-        "aiSuccess_one": "{{count}} file updated. AI tags removed.",
-        "aiSuccess_other": "{{count}} files updated. AI tags removed.",
         "allSuccess": "{{count}} files updated. All non-color tags removed.",
         "allSuccess_one": "{{count}} file updated. All non-color tags removed.",
         "allSuccess_other": "{{count}} files updated. All non-color tags removed.",
         "cacheSuccess": "Thumbnail cache cleared successfully.",
-        "clearingAi": "Clearing AI tags from all sidecar files...",
         "clearingAll": "Clearing all tags from sidecar files...",
         "clearingCache": "Clearing thumbnail cache...",
         "deleting": "Deleting sidecar files, please wait...",
@@ -1517,7 +1384,6 @@
         "select_all": "Select all images",
         "show_original": "Show original (before/after)",
         "toggle_adjustments": "Toggle Adjustments panel",
-        "toggle_ai": "Toggle AI panel",
         "toggle_analytics": "Toggle Analytics display",
         "toggle_bottom_panel": "Toggle Filmstrip",
         "toggle_crop": "Toggle Crop / Straighten",
@@ -1565,68 +1431,9 @@
       "updated": "Lensfun updated ({{version}})."
     },
     "processing": {
-      "ai": {
-        "cloud": {
-          "description": "For those who want a simpler solution, an optional subscription provides the same high-quality results as self-hosting without any hassle. This is the most convenient option and the best way to support the project.",
-          "feature1": "Maximum convenience, no setup",
-          "feature2": "Same results as self-hosting",
-          "feature3": "No powerful hardware required",
-          "signedIn": {
-            "active": "Cloud Subscription Active",
-            "inactive": "No Active Subscription",
-            "logout": "Log Out",
-            "manage": "Manage",
-            "usage": "Monthly Usage",
-            "usageStats": "{{requests}} / {{limit}} requests"
-          },
-          "signedOut": {
-            "noAccount": "Don't have an account?",
-            "signup": "Sign up on the website",
-            "upgradeBtn": "Upgrade on Website",
-            "upgradeDesc": "To use Cloud AI features, you need a Cloud subscription."
-          },
-          "title": "Cloud Service"
-        },
-        "connector": {
-          "address": "AI Connector Address",
-          "addressDesc": "Enter the address and port of your running AI Connector instance. Required for generative AI features.",
-          "description": "For users with a capable GPU who want maximum control, connect SlowRAW to your own Connector server. This gives you full control for technical workflows.",
-          "failed": "Connection failed.",
-          "feature1": "Use your own ComfyUI instance",
-          "feature2": "Cost-free advanced generative edits",
-          "feature3": "Custom workflow selection",
-          "success": "Connection successful!",
-          "test": "Test",
-          "testing": "Testing...",
-          "title": "Self-Hosted (SlowRAW AI Connector)"
-        },
-        "cpu": {
-          "description": "Integrated directly into SlowRAW, these features run entirely on your computer. They are fast, free, and require no setup, making them ideal for everyday workflow acceleration.",
-          "feature1": "AI Masking (Subject, Sky, Foreground)",
-          "feature2": "Automatic Image Tagging",
-          "feature3": "Simple CPU-based Generative Replace",
-          "title": "Built-in AI (CPU)"
-        },
-        "description": "SlowRAW's AI is built for flexibility. Choose your ideal workflow, from fast local tools to powerful self-hosting.",
-        "providers": {
-          "aiConnector": "AI Connector",
-          "cloud": "Cloud",
-          "cpu": "CPU"
-        },
-        "title": "Generative AI"
-      },
       "alwaysDecodeRaw": "Always Decode RAW",
       "alwaysDecodeRawDesc": "Force full RAW decoding for thumbnails instead of using embedded JPEG previews. Enable this if your thumbnails look different in color or contrast compared to the opened image.",
       "alwaysDecodeRawLabel": "Always decode RAW for thumbnails",
-      "backend": "Processing Backend",
-      "backendDesc": "Select the graphics API. 'Auto' is recommended. May fix crashes on some systems.",
-      "backends": {
-        "auto": "Auto",
-        "dx12": "DirectX 12",
-        "gl": "OpenGL",
-        "metal": "Metal",
-        "vulkan": "Vulkan"
-      },
       "dynamicDesc": "The editor renders the preview to match your display's actual pixel density. This ensures that every detail is represented with 1:1 pixel accuracy, providing maximum clarity when zooming and checking focus.",
       "enableLivePreviews": "Enable Live Previews",
       "highDpi": "High-DPI Rendering",
@@ -1635,9 +1442,6 @@
       "imageCache": "Decoded Image Cache",
       "imageCacheDesc": "Maximum number of full-resolution images kept in RAM. Higher values make switching between recently edited images instant, but use significantly more memory.",
       "images": "Images",
-      "linuxCompat": "Linux Compatibility Mode",
-      "linuxCompatDesc": "Force software compositing to work around GPU driver crashes. Nvidia GPUs already get a lighter, automatic workaround, so only enable this if you still experience crashes on launch or when opening images.",
-      "linuxCompatLabel": "Enable Compatibility Mode",
       "livePreviewQuality": "Live Preview Quality",
       "livePreviewQualityDesc": "Controls the resolution and compression of the image while dragging sliders. Lower quality significantly improves responsiveness.",
       "livePreviews": "Live Interactive Previews",
@@ -1699,37 +1503,15 @@
       "thumbnailRes": "Thumbnail Resolution",
       "thumbnailResDesc": "Determines the resolution of generated library thumbnails. Higher values produce sharper images during loading.",
       "title": "Processing Engine",
-      "wgpu": "WGPU Direct Rendering",
-      "wgpuDescAndroid": "Bypasses browser encoding for instantly responsive live previews. (Disabled on Android: Native WGPU surface creation is currently not supported alongside the mobile webview.)",
-      "wgpuDescLinux": "Bypasses browser encoding for instantly responsive live previews. (Disabled on Linux: Tauri uses GTK for webviews, which conflicts with WGPU on the same X11 surface and causes flickering.)",
-      "wgpuDescRecommended": "Bypasses browser encoding for instantly responsive live previews. Highly recommended for performance.",
-      "wgpuLabel": "Enable Direct WGPU Render",
       "workerThreads": "Thumbnail Worker Threads",
       "workerThreadsDesc": "Number of parallel threads used to generate thumbnails. Higher values speed up library loading but use more CPU & RAM."
     },
     "tagging": {
-      "addCustomPlaceholder": "Add custom AI tags (comma separated)...",
-      "addCustomTooltip": "Add AI tag",
       "addShortcutsPlaceholder": "Add shortcuts (comma separated)...",
       "addShortcutTooltip": "Add Shortcut",
-      "aiTagging": "AI Tagging",
-      "aiTaggingDesc": "Enables automatic image tagging using an AI (CLIP) model. This will download an additional model and impact performance while browsing folders. Tags are used for searching a folder.",
       "amount": "Amount",
-      "automaticAiTagging": "Automatic AI Tagging",
-      "clearAiTagsButton": "Clear",
-      "clearAiTagsDesc": "This will remove all AI-generated tags from your .rrdata files in all active root folders. User-added tags will be kept.",
-      "clearAiTagsTitle": "Clear AI Tags",
-      "clearAllTagsDesc": "This will remove all AI-generated and user-added tags from your .rrdata files in all active root folders. Color labels will be kept.",
-      "clearAllTagsTitle": "Clear All Tags",
-      "clearCustomTooltip": "Clear AI Tag List",
       "clearShortcutsTooltip": "Clear Shortcuts Tag List",
-      "customList": "Custom AI Tag List",
-      "customListDesc": "If provided, the AI will ONLY use tags from this list, overriding SlowRAW’s built-in list. Tagging works only in English.",
-      "maxAiTags": "Maximum AI Tags",
-      "maxAiTagsDesc": "The maximum number of tags to generate per image.",
-      "noCustomTags": "No custom AI tags (Using built-in list)",
       "noShortcuts": "No shortcuts added",
-      "removeCustomTooltip": "Remove tag \"{{tag}}\"",
       "removeShortcutTooltip": "Remove shortcut \"{{shortcut}}\"",
       "shortcuts": "Tagging Shortcuts",
       "shortcutsDesc": "A list of tags that will appear as shortcuts in the tagging context menu.",
@@ -1741,7 +1523,6 @@
         "darktable": "For some reference implementations that guided parts of this work.",
         "lensfun": "For its invaluable open-source library and comprehensive database for automatic lens correction.",
         "negpy": "For the inspiration behind the negative conversion logic.",
-        "nind": "For providing AI models that power the AI noise reduction capabilities in SlowRAW.",
         "rawler": "For the excellent Rust crate that provides the foundation for RAW file processing in this project.",
         "you": "For using and supporting SlowRAW. Your interest keeps this project alive and evolving.",
         "youLabel": "You"
@@ -1903,7 +1684,6 @@
       "maximum_zoom": "Maximum zoom",
       "minimum_zoom_is_always_fit_to_screen": "Minimum zoom is always Fit to Screen.",
       "negpy": "NegPy",
-      "nind_denoise": "nind-denoise",
       "rawler": "rawler",
       "update_lensfun": "Update Lensfun"
     },

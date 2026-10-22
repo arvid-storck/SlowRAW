@@ -17,8 +17,19 @@
 
   --shadow-shiny: 0 0 24px rgba(255, 255, 255, 0.12);
 
-  --radius-md: 8px;
-  --radius-lg: 15px;
+  --radius-md: 0;
+  --radius-lg: 0;
+}
+
+/* Keep workspace controls and popovers square; switches and slider handles are rounded below. */
+*,
+::before,
+::after {
+  border-radius: 0 !important;
+}
+
+.switch-round {
+  border-radius: 9999px !important;
 }
 
 @layer base {
@@ -33,14 +44,16 @@
 
 @utility slider-input {
   &::-webkit-slider-thumb {
-    @apply h-4 w-4 appearance-none rounded-full bg-accent;
+    @apply h-4 w-4 appearance-none bg-accent;
+    border-radius: 50% !important;
     transition:
       transform 150ms ease-in-out,
       background-color 400ms ease-in-out;
   }
 
   &::-moz-range-thumb {
-    @apply h-4 w-4 rounded-full bg-accent border-none;
+    @apply h-4 w-4 bg-accent border-none;
+    border-radius: 50% !important;
     transition:
       transform 150ms ease-in-out,
       background-color 400ms ease-in-out;
@@ -137,7 +150,7 @@
   }
   ::-webkit-scrollbar-thumb {
     background-color: var(--color-text-secondary);
-    border-radius: 10px;
+    border-radius: 0;
     border: 2px solid transparent;
     background-clip: padding-box;
   }
@@ -146,21 +159,23 @@
   }
 
   .macos-window-shell {
-    border-radius: 14px;
+    border-radius: 0;
     overflow: hidden;
   }
 }
 
 @layer components {
   .slider-input::-webkit-slider-thumb {
-    @apply h-4 w-4 appearance-none rounded-full bg-accent;
+    @apply h-4 w-4 appearance-none bg-accent;
+    border-radius: 50% !important;
     transition:
       transform 150ms ease-in-out,
       background-color 400ms ease-in-out;
   }
 
   .slider-input::-moz-range-thumb {
-    @apply h-4 w-4 rounded-full bg-accent border-none;
+    @apply h-4 w-4 bg-accent border-none;
+    border-radius: 50% !important;
     transition:
       transform 150ms ease-in-out,
       background-color 400ms ease-in-out;

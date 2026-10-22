@@ -6,14 +6,6 @@ import { ImageDimensions } from '../hooks/useImageRenderSize';
 import { ToolType } from '../components/panel/right/Masks';
 import { OverlayMode } from '../components/panel/right/CropPanel';
 
-interface InteractivePatch {
-  url: string;
-  normX: number;
-  normY: number;
-  normW: number;
-  normH: number;
-}
-
 interface BaseRenderSize extends ImageDimensions {
   containerHeight: number;
   containerWidth: number;
@@ -34,7 +26,6 @@ interface EditorState {
   // Previews & Overlays
   finalPreviewUrl: string | null;
   uncroppedAdjustedPreviewUrl: string | null;
-  interactivePatch: InteractivePatch | null;
   showOriginal: boolean;
 
   // Analytics
@@ -60,17 +51,12 @@ interface EditorState {
   liveRotation: number | null;
   brushSettings: BrushSettings | null;
 
-  // Masks & AI
+  // Masks
   activeMaskContainerId: string | null;
   activeMaskId: string | null;
-  activeAiPatchContainerId: string | null;
-  activeAiSubMaskId: string | null;
   isMaskControlHovered: boolean;
-  isGeneratingAiMask: boolean;
-  isGeneratingAi: boolean;
-  isAIConnectorConnected: boolean;
   hasRenderedFirstFrame: boolean;
-  patchesSentToBackend: Set<string>;
+  previewError: string | null;
 
   // Clipboard
   copiedSectionAdjustments: any | null;
@@ -103,11 +89,8 @@ export const useEditorStore = create<EditorState>((set) => ({
   waveformHeight: 220,
 
   isSliderDragging: false,
-  interactivePatch: null,
   activeMaskContainerId: null,
   activeMaskId: null,
-  activeAiPatchContainerId: null,
-  activeAiSubMaskId: null,
 
   zoom: 1,
   displaySize: { width: 0, height: 0 },
@@ -126,12 +109,9 @@ export const useEditorStore = create<EditorState>((set) => ({
   brushSettings: { size: 50, feather: 50, tool: ToolType.Brush },
   copiedAdjustments: null,
 
-  isGeneratingAiMask: false,
-  isAIConnectorConnected: false,
-  isGeneratingAi: false,
   isMaskControlHovered: false,
   hasRenderedFirstFrame: false,
-  patchesSentToBackend: new Set<string>(),
+  previewError: null,
 
   setEditor: (updater) => set((state) => (typeof updater === 'function' ? updater(state) : updater)),
 

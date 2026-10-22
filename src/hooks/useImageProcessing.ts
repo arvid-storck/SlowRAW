@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { useTranslation } from 'react-i18next';
 import debounce from 'lodash.debounce';
 import { useEditorStore } from '../store/useEditorStore';
 import { useUIStore } from '../store/useUIStore';
@@ -20,6 +22,7 @@ export function useImageProcessing(
   },
 ) {
   const { previewJobIdRef, latestRenderedJobIdRef, currentResRef } = renderRefs;
+  const { t } = useTranslation();
 
   const selectedImage = useEditorStore((state) => state.selectedImage);
   const adjustments = useEditorStore((state) => state.adjustments);
@@ -43,11 +46,24 @@ export function useImageProcessing(
   const inFlightCountRef = useRef(0);
   const lastAnalyticsTimeRef = useRef<number>(0);
   const pendingApplyRef = useRef<{ adjustments: Adjustments; targetRes?: number } | null>(null);
+  const displayErrorText = useCallback((code: string) => {
+    const errors: Record<string, string> = {
+      NATIVE_DISPLAY_UNAVAILABLE: t('colorManagement.nativeDisplayUnavailable'),
+      NATIVE_DISPLAY_COLOR_SPACE_UNSUPPORTED: t('colorManagement.nativeDisplayUnsupported'),
+      NATIVE_DISPLAY_LOST: t('colorManagement.nativeDisplayLost'),
+      NATIVE_DISPLAY_PROFILE_INVALID: t('colorManagement.nativeDisplayProfileInvalid'),
+    };
+    return errors[code] || code;
+  }, [t]);
+
   const dragIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeWaveformChannelRef = useRef(activeWaveformChannel);
   activeWaveformChannelRef.current = activeWaveformChannel;
 
   const selectedImagePathRef = useRef<string | null>(null);
+  useEffect(() => {
+    setEditor({ hasRenderedFirstFrame: false, previewError: null });
+  }, [selectedImage?.path, setEditor]);
   useEffect(() => {
     selectedImagePathRef.current = selectedImage?.path ?? null;
   }, [selectedImage?.path]);
@@ -128,55 +144,12 @@ export function useImageProcessing(
       }
 
       const payload = structuredClone(currentAdjustments);
-      const { patchesSentToBackend } = useEditorStore.getState();
-      const newlySentPatches = new Set<string>();
-
-      const processSubMasks = (subMasks: any[]) => {
-        if (!Array.isArray(subMasks)) return;
-        subMasks.forEach((sm: any) => {
-          if (sm.id && sm.parameters) {
-            const keys = ['mask_data_base64', 'maskDataBase64'];
-            let foundMaskData = false;
-
-            for (const key of keys) {
-              if (sm.parameters[key] !== undefined && sm.parameters[key] !== null) {
-                foundMaskData = true;
-                if (patchesSentToBackend.has(sm.id)) {
-                  sm.parameters[key] = null;
-                }
-              }
-            }
-            if (foundMaskData && !patchesSentToBackend.has(sm.id)) {
-              newlySentPatches.add(sm.id);
-            }
-          }
-        });
-      };
-
-      if (payload.aiPatches && Array.isArray(payload.aiPatches)) {
-        payload.aiPatches.forEach((p: any) => {
-          if (p.id && p.patchData && !p.isLoading) {
-            if (patchesSentToBackend.has(p.id)) {
-              p.patchData = null;
-            } else {
-              newlySentPatches.add(p.id);
-            }
-          }
-          if (p.subMasks) processSubMasks(p.subMasks);
-        });
-      }
-
-      if (payload.masks && Array.isArray(payload.masks)) {
-        payload.masks.forEach((container: any) => {
-          if (container.subMasks) processSubMasks(container.subMasks);
-        });
-      }
-
+      if (currentPath !== selectedImagePathRef.current) return;
       const jobId = ++previewJobIdRef.current;
       const roi = calculateROI();
 
       try {
-        const buffer: ArrayBuffer = await invoke(Invokes.ApplyAdjustments, {
+        await invoke(Invokes.ApplyAdjustments, {
           jsAdjustments: payload,
           isInteractive: dragging,
           targetResolution: targetRes || null,
@@ -186,92 +159,24 @@ export function useImageProcessing(
           activeWaveformChannel: activeWaveformChannelRef.current || null,
         });
 
-        if (newlySentPatches.size > 0) {
-          newlySentPatches.forEach((id) => patchesSentToBackend.add(id));
-        }
-
         if (currentPath !== selectedImagePathRef.current) return;
 
-        if (buffer && buffer.byteLength > 0 && jobId >= latestRenderedJobIdRef.current) {
+        if (jobId >= latestRenderedJobIdRef.current) {
           latestRenderedJobIdRef.current = jobId;
-
-          const textDecoder = new TextDecoder();
-          const prefix = textDecoder.decode(buffer.slice(0, 11));
-          if (prefix === 'WGPU_RENDER') {
-            setEditor((state) => {
-              if (state.interactivePatch && state.interactivePatch.url) URL.revokeObjectURL(state.interactivePatch.url);
-              return { interactivePatch: null };
-            });
-            return;
-          }
-
-          if (dragging) {
-            const view = new DataView(buffer);
-            const patchX = view.getUint32(0, true);
-            const patchY = view.getUint32(4, true);
-            const patchW = view.getUint32(8, true);
-            const patchH = view.getUint32(12, true);
-            const fullW = view.getUint32(16, true);
-            const fullH = view.getUint32(20, true);
-
-            const imageBuffer = buffer.slice(24);
-            const blob = new Blob([imageBuffer], { type: 'image/jpeg' });
-            const url = URL.createObjectURL(blob);
-
-            setEditor((state) => {
-              const previousPatchUrl = state.interactivePatch?.url;
-              if (previousPatchUrl) setTimeout(() => URL.revokeObjectURL(previousPatchUrl), 100);
-              return {
-                interactivePatch: {
-                  url,
-                  normX: patchX / fullW,
-                  normY: patchY / fullH,
-                  normW: patchW / fullW,
-                  normH: patchH / fullH,
-                },
-              };
-            });
-          } else {
-            const blob = new Blob([buffer], { type: 'image/jpeg' });
-            const url = URL.createObjectURL(blob);
-
-            if (currentPath !== selectedImagePathRef.current || jobId < latestRenderedJobIdRef.current) {
-              URL.revokeObjectURL(url);
-              return;
-            }
-
-            setEditor((state) => {
-              const prevUrl = state.finalPreviewUrl;
-              if (prevUrl && prevUrl.startsWith('blob:') && !globalImageCache.isProtected(prevUrl)) {
-                setTimeout(() => {
-                  if (!globalImageCache.isProtected(prevUrl)) {
-                    URL.revokeObjectURL(prevUrl);
-                  }
-                }, 250);
-              }
-              return { finalPreviewUrl: url };
-            });
-
-            setEditor((state) => {
-              const previousPatchUrl = state.interactivePatch?.url;
-              if (previousPatchUrl) setTimeout(() => URL.revokeObjectURL(previousPatchUrl), 500);
-              return { interactivePatch: null };
-            });
-          }
+          setEditor({ previewError: null });
         }
       } catch (err) {
-        if (err !== 'Superseded or worker failed') {
-          console.error('Failed to apply adjustments:', err);
-        }
-        if (!dragging) {
-          setEditor((state) => {
-            if (state.interactivePatch && state.interactivePatch.url) URL.revokeObjectURL(state.interactivePatch.url);
-            return { interactivePatch: null };
-          });
+        if (
+          err !== 'Superseded or worker failed' &&
+          currentPath === selectedImagePathRef.current &&
+          jobId >= latestRenderedJobIdRef.current
+        ) {
+          latestRenderedJobIdRef.current = jobId;
+          setEditor({ previewError: displayErrorText(String(err)), hasRenderedFirstFrame: false });
         }
       }
     },
-    [selectedImage?.path, calculateROI, isWaveformVisible, setEditor, previewJobIdRef, latestRenderedJobIdRef],
+    [selectedImage?.path, calculateROI, isWaveformVisible, setEditor, previewJobIdRef, latestRenderedJobIdRef, displayErrorText],
   );
 
   const flushPipeline = useCallback(() => {
@@ -305,6 +210,18 @@ export function useImageProcessing(
     },
     [selectedImage?.isReady, flushPipeline, executeApplyAdjustments],
   );
+
+  useEffect(() => {
+    let active = true;
+    const unlisten = listen<string | null>('wgpu-display-unavailable', ({ payload }) => {
+      if (!active) return;
+      setEditor({ hasRenderedFirstFrame: false, previewError: displayErrorText(payload || 'NATIVE_DISPLAY_LOST') });
+    });
+    return () => {
+      active = false;
+      unlisten.then((stop) => stop());
+    };
+  }, [setEditor, displayErrorText]);
 
   const throttledUncroppedPreview = useMemo(
     () =>

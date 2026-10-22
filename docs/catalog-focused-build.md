@@ -38,15 +38,6 @@ and skips unchanged image/sidecar timestamps. Removing a catalog folder leaves
 the actual files untouched. Import offers its own destination selection because
 there is no longer an active filesystem folder in the library.
 
-## Size reduction
-
-Unused automatic tagging/tokenizer, semantic AI masking, and generative-inpaint
-code are no longer compiled. Noise reduction and sidecar mask parameter types
-are retained. Splash-image references and the unused editing preset/community
-and tethering components have been removed from the source tree.
-The hidden cloud-AI settings and startup login framework are no longer bundled.
-Compatibility source files may remain in the repository without being shipped.
-
 ## Validation
 
 ```powershell

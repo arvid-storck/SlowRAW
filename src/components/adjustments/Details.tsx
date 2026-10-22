@@ -25,7 +25,6 @@ export default function DetailsPanel({
   onDragStateChange,
 }: DetailsPanelProps) {
   const { t } = useTranslation();
-
   const handleAdjustmentChange = (key: string, value: string) => {
     const numericValue = parseInt(value, 10);
     setAdjustments((prev: Partial<Adjustments>) => ({

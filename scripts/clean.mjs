@@ -11,17 +11,11 @@ if (packageJson.name !== 'slowraw' || !existsSync(join(projectRoot, 'src-tauri',
 
 const dryRun = process.argv.includes('--dry-run');
 const generatedDirectories = ['dist', 'dist-ssr', join('src-tauri', 'target'), join('src-tauri', 'rcd', 'target')];
-const generatedFiles = [];
 if (process.argv.includes('--dependencies')) {
-  generatedDirectories.push('node_modules');
-  generatedFiles.push(
-    join('src-tauri', 'resources', 'onnxruntime.dll'),
-    join('src-tauri', 'resources', 'libonnxruntime.so'),
-    join('src-tauri', 'resources', 'libonnxruntime.dylib'),
-  );
+  generatedDirectories.push('node_modules', join('src-tauri', 'resources', 'macos'));
 }
 
-for (const relativePath of [...generatedDirectories, ...generatedFiles]) {
+for (const relativePath of generatedDirectories) {
   const target = resolve(projectRoot, relativePath);
   if (!target.startsWith(projectRoot + sep)) {
     throw new Error(`Refusing to clean path outside the project: ${target}`);
@@ -33,12 +27,8 @@ for (const relativePath of [...generatedDirectories, ...generatedFiles]) {
   if (!realpathSync(target).startsWith(realpathSync(projectRoot) + sep)) {
     throw new Error(`Refusing to clean resolved path outside the project: ${target}`);
   }
-  const isDirectory = generatedDirectories.includes(relativePath);
-  if (!isDirectory && !lstatSync(target).isFile()) {
-    throw new Error(`Refusing to clean unexpected non-file: ${target}`);
-  }
   console.log(`${dryRun ? 'Would remove' : 'Removing'} ${relativePath}`);
-  if (!dryRun) rmSync(target, { recursive: isDirectory, force: true });
+  if (!dryRun) rmSync(target, { recursive: true, force: true });
 }
 
 console.log(dryRun ? 'Dry run complete.' : 'Clean complete.');

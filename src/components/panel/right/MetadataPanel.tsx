@@ -724,7 +724,7 @@ export default function MetadataPanel() {
               weight={TextWeights.normal}
               className="text-center"
             >
-              {t('editor.ai.noImageSelected')}
+              {t('editor.noImageSelected')}
             </Text>
           </div>
         )}

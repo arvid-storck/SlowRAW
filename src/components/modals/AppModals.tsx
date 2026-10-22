@@ -30,8 +30,8 @@ export interface AppModalsProps {
   handleStartFocusStack: (paths: string[]) => void;
   handleSaveFocusStack: () => Promise<string>;
   refreshImageList: () => Promise<void>;
-  handleApplyDenoise: (intensity: number, method: 'ai' | 'bm3d') => Promise<void>;
-  handleBatchDenoise: (intensity: number, method: 'ai' | 'bm3d', paths: string[]) => Promise<string[]>;
+  handleApplyDenoise: (intensity: number) => Promise<void>;
+  handleBatchDenoise: (intensity: number, paths: string[]) => Promise<string[]>;
   handleSaveDenoisedImage: () => Promise<string>;
   handleSaveRename: (nameTemplate: string) => Promise<void>;
   handleStartImport: (settings: any) => Promise<void>;
@@ -94,10 +94,9 @@ export default function AppModals(props: AppModalsProps) {
     })),
   );
 
-  const { thumbnails, aiModelDownloadStatus } = useProcessStore(
+  const { thumbnails } = useProcessStore(
     useShallow((state) => ({
       thumbnails: state.thumbnails,
-      aiModelDownloadStatus: state.aiModelDownloadStatus,
     })),
   );
 
@@ -256,8 +255,6 @@ export default function AppModals(props: AppModalsProps) {
         isProcessing={denoiseModalState.isProcessing}
         error={denoiseModalState.error}
         progressMessage={denoiseModalState.progressMessage}
-        aiModelDownloadStatus={aiModelDownloadStatus}
-        isRaw={denoiseModalState.isRaw}
         targetPaths={denoiseModalState.targetPaths}
         loadingImageUrl={
           denoiseModalState.targetPaths.length > 0

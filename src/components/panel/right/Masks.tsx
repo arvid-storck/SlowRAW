@@ -1,20 +1,13 @@
 import {
   Brush,
-  BringToFront,
   Circle,
-  Cloud,
   Droplet,
   Droplets,
-  Eraser,
-  SquareMousePointer,
   RectangleHorizontal,
   TriangleRight,
-  User,
   Sun,
   Stamp,
   Bandage,
-  Spline,
-  MopSparkles,
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
@@ -23,22 +16,15 @@ import { TextWeights } from '../../../types/typography';
 import i18n from 'i18next';
 
 export enum Mask {
-  AiDepth = 'ai-depth',
-  AiForeground = 'ai-foreground',
-  AiSky = 'ai-sky',
-  AiSubject = 'ai-subject',
   All = 'all',
   Brush = 'brush',
   Flow = 'flow',
   Color = 'color',
   Linear = 'linear',
   Luminance = 'luminance',
-  QuickEraser = 'quick-eraser',
   Radial = 'radial',
   Clone = 'clone',
   Heal = 'heal',
-  Liquify = 'liquify',
-  Retouch = 'retouch',
 }
 
 export enum SubMaskMode {
@@ -48,11 +34,8 @@ export enum SubMaskMode {
 }
 
 export enum ToolType {
-  AiSeletor = 'ai-selector',
   Brush = 'brush',
   Eraser = 'eraser',
-  GenerativeReplace = 'generative-replace',
-  SelectSubject = 'select-subject',
 }
 
 export interface MaskType {
@@ -75,12 +58,7 @@ export interface SubMask {
 }
 
 export function formatMaskTypeName(type: string) {
-  if (type === Mask.AiDepth) return i18n.t('masks.types.depth');
-  if (type === Mask.AiSubject) return i18n.t('masks.types.subject');
-  if (type === Mask.AiForeground) return i18n.t('masks.types.foreground');
-  if (type === Mask.AiSky) return i18n.t('masks.types.sky');
   if (type === Mask.All) return i18n.t('masks.types.all');
-  if (type === Mask.QuickEraser) return i18n.t('masks.types.quickEraser');
   if (type === Mask.Brush) return i18n.t('masks.types.brush');
   if (type === Mask.Flow) return i18n.t('masks.types.flow');
   if (type === Mask.Color) return i18n.t('masks.types.color');
@@ -89,16 +67,11 @@ export function formatMaskTypeName(type: string) {
   if (type === Mask.Radial) return i18n.t('masks.types.radial');
   if (type === Mask.Clone) return i18n.t('masks.types.clone');
   if (type === Mask.Heal) return i18n.t('masks.types.heal');
-  if (type === Mask.Liquify) return i18n.t('masks.types.liquify');
-  if (type === Mask.Retouch) return i18n.t('masks.types.retouch');
   return type.charAt(0).toUpperCase() + type.slice(1);
 }
 
 export function getMaskTypeName(mask: MaskType) {
   if (mask.id === 'others') return i18n.t('masks.types.others');
-  if (mask.type === Mask.QuickEraser && mask.name === 'Quick Erase') {
-    return i18n.t('masks.types.quickErase');
-  }
   return formatMaskTypeName(mask.type);
 }
 
@@ -107,22 +80,15 @@ export function getSubMaskName(subMask: Pick<SubMask, 'name' | 'type'>) {
 }
 
 export const MASK_ICON_MAP: Record<Mask, any> = {
-  [Mask.AiDepth]: BringToFront,
-  [Mask.AiForeground]: User,
-  [Mask.AiSky]: Cloud,
-  [Mask.AiSubject]: SquareMousePointer,
   [Mask.All]: RectangleHorizontal,
   [Mask.Brush]: Brush,
   [Mask.Flow]: Droplets,
   [Mask.Color]: Droplet,
   [Mask.Linear]: TriangleRight,
   [Mask.Luminance]: Sun,
-  [Mask.QuickEraser]: Eraser,
   [Mask.Radial]: Circle,
   [Mask.Clone]: Stamp,
   [Mask.Heal]: Bandage,
-  [Mask.Liquify]: Spline,
-  [Mask.Retouch]: MopSparkles,
 };
 
 export const MASK_BASIC_TYPES: Array<MaskType> = [
