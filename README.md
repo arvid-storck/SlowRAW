@@ -204,6 +204,7 @@ This project is based on and builds upon the following open-source projects:
 * **[NegPy](https://github.com/marcinz606/NegPy):** Inspiration for film-negative conversion.
 * **[pixls.us](https://discuss.pixls.us/):** Open-source photography community and technical reference.
 * **[darktable](https://github.com/darktable-org/darktable):** Reference implementations for parts of the image-processing workflow.
+* **[vldk](https://github.com/hanatos/vkdt):** Refrence image to display method, with support for HDR and wide color space.
 
 ## License & Philosophy
 
@@ -212,3 +213,5 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 See the [LICENSE](LICENSE) file for the complete license text.
 
 This repository is based on RapidRAW by CyberTimon and contains substantial modifications.
+
+If there is any issues with a lack of license or its done wrong, please send a message and i will correct it.
