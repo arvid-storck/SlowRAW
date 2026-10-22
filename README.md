@@ -154,22 +154,6 @@ Editing requires a supported native GPU and a current graphics driver.
 | macOS | macOS 13 Ventura or newer; Metal-capable GPU | Vulkan through bundled MoltenVK |
 | Linux | Modern 64-bit distribution with Wayland, Vulkan drivers, GTK 3 and WebKitGTK 4.1 | Vulkan |
 
-Windows 11 is recommended. WebView2 is normally already installed on Windows.
-Use a build matching your operating system and CPU architecture. Linux editing
-requires a Wayland session; X11 and OpenGL are not supported.
-
-Screen color conversion is automatic. On a legacy SDR Windows desktop, SlowRAW
-uses the current monitor's assigned RGB matrix/TRC ICC profile. On color-managed
-desktops it uses a declared surface color space and lets the compositor handle
-the screen conversion. Correct wide-gamut display requires a correctly configured
-monitor/profile, driver and compositor. Windows Advanced Color and Wayland support
-vary; Linux/macOS physical color output still requires validation.
-Export color spaces are selected independently.
-
-[vkdt's display documentation](https://github.com/hanatos/vkdt/blob/master/doc/howto/colour-display/readme.md#high-dynamic-range)
-reports incorrect image appearance with HDR10/PQ framebuffers on Windows and
-therefore disables HDR framebuffers by default on all platforms.
-
 ## Maintainer Documentation
 
 Build, maintenance and implementation details are in [docs/CODEMAP.md](docs/CODEMAP.md).
