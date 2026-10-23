@@ -37,7 +37,7 @@
 
 - Test SlowRAW on linux
 - Test SlowRAW on mac
-- More file formats
+- Test more file formats for compatability
 
 ### Need to figure out
 
