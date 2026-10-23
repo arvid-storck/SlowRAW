@@ -41,4 +41,4 @@
 
 ### Need to figure out
 
- - None that i am aware of
+ - Is the rendering path realy with zero noise reduction and sharpening?
