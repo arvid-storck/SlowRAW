@@ -9,11 +9,15 @@
 - Restrict prophoto rgb to lossless or max quality lossy only with appropiet bits per chanel (12-bit+)
 - Move Watermark under Advanced export settings
 - Add compiling help and common libaries update on README.md
-- Update dev guide with new files on docs/
+- Update dev guide with better separation of responsability
 
-  docs/CODEMAP.md : How the code currently works
+  docs/CODEMAP.md : How the code currently works, but not things clear in the UI itself when using it
+  
   docs/CHANGELOG.md : Changelog, but if a change is reverted within the same day it does not need to be written down
+  
   docs/PLANNING.md : AI is only ever allowd to write new bugs, but it should always ask to remove it if its fixed the bug.
+
+  
 - Write basic dev tools on README.md, compiling, uppdating raw fil handler
 
 
