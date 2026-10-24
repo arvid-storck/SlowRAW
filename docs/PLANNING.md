@@ -6,7 +6,7 @@
 ### Things to change
 
 - For every export file format, separate the following settings that is supported: color space, bits per chanel, lossy/lossless, quality (slider, not up to lossless!), effort (or eqvivalent)
-- Restrict prophoto rgb to lossless or max quality lossy only with appropiet bits per chanel (12-bit+)
+- Restrict prophoto rgb to (lossless or max quality lossy), 12+ bit/channel, high effort
 - Move Watermark under Advanced export settings
 - Add compiling help and common libaries update on README.md
 - Update dev guide with better separation of responsability
