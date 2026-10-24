@@ -21,7 +21,7 @@
 - Write basic dev tools on README.md, compiling, uppdating raw fil handler
 
 
-### Things to maybe change
+### Things to maybe consider
 
 - Job Queue with Cancellation Tokens to Stop CPU Spikes
 
