@@ -12,8 +12,6 @@ But all i found had atleast one of the following:
 
 ## What This Version Is
 
-Author: Arvid Storck, chatgpt.
-
 This version focuses on the core photographic workflow:
 
 - **Local SQLite catalog** for large photo libraries
