@@ -20,6 +20,7 @@
   README.md : Write basic dev tools, compiling, uppdating raw fil handler package. And about the project itself
 - When exporting without metadata option on, add an option to keep the author/maker or whatever its called in the same place "Remove GPS Data" is placed
 - Make on/off switches clearer by making "on" with an vertical line inside the circle and "off" with an circular ring within the circle.
+- When exporting without metadata, is the AI tag from ai images kept or removed? It should be kept regardless of settings. No need to note this in the UI.
   
 ### Things to consider
 
@@ -52,5 +53,3 @@
 ### Need to figure out how the code works
 
 - Is the rendering path realy with zero noise reduction and sharpening?
-- When exporting without metadata, is the AI tag from ai images kept or removed? It should be kept regardless of settings. No need to note this in the UI.
-
