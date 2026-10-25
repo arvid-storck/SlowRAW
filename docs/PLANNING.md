@@ -15,10 +15,9 @@
   
   docs/CHANGELOG.md : Changelog, but if a change is reverted within the same day it does not need to be written down
   
-  docs/PLANNING.md : AI is only ever allowd to write new bugs, but it should always ask to remove it if its fixed the bug.
+  docs/PLANNING.md : AI is only ever allowd to write new bugs, But please note if its fixed so the dev can later check if its fixed
 
-  
-- Write basic dev tools on README.md, compiling, uppdating raw fil handler
+  README.md : Write basic dev tools, compiling, uppdating raw fil handler package. And about the project itself
 
 
 ### Things to consider
