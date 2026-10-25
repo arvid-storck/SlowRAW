@@ -16,12 +16,9 @@ This version focuses on the core photographic workflow:
 
 - **Local SQLite catalog** for large photo libraries
 - **Simple RAW editing** with a focused, non-destructive workflow
-- **Local processing** of photos, metadata, thumbnails, and exports
 - **Built-in RAW support**
 - **Manual sharpening and blur controls**
-- **Color-managed export** in sRGB, Adobe RGB, Display P3, Rec. 2020 and ProPhoto RGB (JPEG, PNG, TIFF and lossless JPEG XL)
 - **Separately updateable Lensfun profiles**
-- **Traditional noise reduction**
 - **No AI image processing**
 - **No cloud-based photo processing**
 - **Original files remain under the user's control**
