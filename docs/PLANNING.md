@@ -49,7 +49,7 @@
 - Test SlowRAW on mac
 - Test more file formats for compatability
 
-### Need to figure out
+### Need to figure out how the code works
 
 - Is the rendering path realy with zero noise reduction and sharpening?
 - When exporting without metadata, is the AI tag from ai images kept or removed? It should be kept regardless of settings. No need to note this in the UI.
