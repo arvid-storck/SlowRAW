@@ -170,7 +170,7 @@ This project is based on and builds upon the following open-source projects:
 * **[NegPy](https://github.com/marcinz606/NegPy):** Inspiration for film-negative conversion.
 * **[pixls.us](https://discuss.pixls.us/):** Open-source photography community and technical reference.
 * **[darktable](https://github.com/darktable-org/darktable):** Reference implementations for parts of the image-processing workflow.
-* **[vldk](https://github.com/hanatos/vkdt):** Refrence image to display method, with support for HDR and wide color space.
+* **[vldk](https://github.com/hanatos/vkdt):** Refrence image to display method.
 
 ## License & Philosophy
 
