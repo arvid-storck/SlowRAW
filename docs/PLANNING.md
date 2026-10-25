@@ -21,6 +21,7 @@
 - When exporting without metadata option on, add an option to keep the author/maker or whatever its called in the same place "Remove GPS Data" is placed
 - Make on/off switches clearer by making "on" with an vertical line inside the circle and "off" with an circular ring within the circle. (IEC 60417)
 - When exporting without metadata, is the AI tag from ai images kept or removed? It should be kept regardless of settings. No need to note this in the UI.
+- Higher quality x-trans decoder, consider "Markesteijn 1-pass"?
   
 ### Things to consider
 
