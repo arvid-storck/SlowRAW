@@ -3,7 +3,42 @@
 This is a maintainer's map of the current source tree. It covers hand-maintained
 application files and their responsibilities. Read this alongside the
 user-facing [root README](../README.md) and the separate [changelog](CHANGELOG.md).
-This document describes the current implementation.
+This document describes the current implementation. Build and update commands
+belong in [README](../README.md); workflow and documentation ownership belong in
+[DEVELOPMENT](DEVELOPMENT.md); tracked bugs belong in [PLANNING](PLANNING.md).
+
+## Export data flow
+
+`useExportSettings.ts` owns session drafts and preset migration. Each format has
+its own quality, lossless mode, sample depth and effort record. PNG/TIFF depths
+retain their existing fields. The native ExportPreset uses serde flattening to
+preserve additional frontend fields through settings saves and reloads.
+
+`ExportPanel.tsx` assembles matching requests for estimates and real exports.
+ProPhoto availability is enforced in the UI only: 12+ bits/channel, lossless or
+maximum lossy quality, and high effort where the encoder offers it.
+
+`export_processing.rs` chooses render precision before resizing, watermarking and
+encoding. JPEG is 8-bit lossy; PNG is 8/16-bit lossless with fast/default/best
+compression; TIFF is uncompressed 8/16-bit RGB. WebP uses explicit libwebp modes
+and method 0–6. JPEG XL uses 8/16-bit RGBA, explicit modes, ICC and effort 1–10.
+Lossy quality 100 retains a nonzero distance. AVIF uses image's 8-bit encoder
+with explicit quality and inverse speed/effort 1–10. WebP/AVIF currently use sRGB.
+ICC writing is independent of optional camera metadata.
+
+`exif_processing.rs` retains the full EXIF path for JPEG/PNG/WebP.
+`export_metadata.rs` independently writes a minimal XMP packet containing the
+source's IPTC Digital Source Type and optional author/copyright. It reads
+decoder-provided XMP (including compressed PNG text), EXIF, RAW metadata and
+sidecar attribution overrides. Recognized source-type URIs in original bytes
+also cover uncompressed C2PA assertions. Source signatures are not copied onto
+modified image pixels.
+
+XMP uses JPEG APP1, PNG iTXt, WebP XMP, TIFF tag 700, JPEG XL xml boxes, or an
+AVIF MIME metadata item associated with the primary image by cdsc. TIFF
+relocates its first IFD; AVIF relocates meta while retaining absolute image
+offsets. Required-metadata write failures propagate to the export. This path
+runs after optional EXIF handling regardless of the metadata switch.
 
 ## Runtime diagnostics
 
@@ -122,7 +157,7 @@ the Linear RAW branch.
 
 librtprocess is an external source dependency statically linked into SlowRAW.
 The adapter passes pixel buffers within the same process. See
-[Updating the RCD library](#updating-the-rcd-library) for its pinned source revision
+[Updating the RCD library](../README.md#updating-the-rcd-library) for its pinned source revision
 and update command.
 
 #### 3. Camera color becomes working RGB
@@ -190,8 +225,9 @@ surface or presentation fails, the editor reports display loss and requests rest
 GPU readback remains available for exports, thumbnails and histogram/waveform
 analysis. Crop and before/after helper images and denoise-dialog images retain
 their existing encoding; they are separate UI assets, not an alternative editor
-preview renderer. preview_encoding.rs shares lossless PNG16/JPEG XL encoding
-between auxiliary images and export. Library thumbnails use their own cache.
+preview renderer. preview_encoding.rs owns lossless PNG16/JPEG XL encoding
+for auxiliary images; export_processing.rs configures export encoders separately.
+Library thumbnails use their own cache.
 
 ### Color spaces and ICC conversion
 
@@ -212,10 +248,10 @@ especially saturated colors; sidecar settings and source files are retained.
 Built-in output profiles cover sRGB, Adobe RGB (1998), Display P3, SDR Rec. 2020
 and ProPhoto RGB. The profile writer uses D50 PCS white and a proper Bradford
 white adaptation in chad, rather than a cone-response matrix. JPEG/PNG/TIFF and
-lossless JXL embed the actual output profile; wide outputs use EXIF ColorSpace
+JXL embeds the actual output profile; wide outputs use EXIF ColorSpace
 65535 rather than incorrectly claiming sRGB. Watermarks are converted to the
 export space before blending. WebP/AVIF remain sRGB-only and reject other spaces.
-Wide-gamut JXL export is lossless RGBA16; the existing sRGB lossy JXL option remains.
+JPEG XL uses explicit 8/16-bit lossy/lossless encoding with an ICC profile and selected effort.
 
 Preview processing has a fixed Rec. 2020 output encoding, independent of the screen
 and exports. The common display shader decodes that texture to linear Rec. 2020
@@ -334,10 +370,7 @@ The native `legacy_brush_tests` test verifies the same bitmap as an ordinary bru
 `useExportSettings.ts` stores export options in a session draft shared across panel
 mounts. PNG supports 8/16-bit RGB/RGBA output with the selected embedded output profile.
 PNG 16-bit uses the GPU's 16-bit render output.
-The metadata panel shows camera/exposure/file details and a collapsed, independently
-scrollable list of additional readable EXIF values. Binary EXIF fields are skipped
-during extraction.
-Read-only metadata values support normal text selection.
+EXIF extraction omits binary fields; readable values pass to the metadata panel.
 
 ### Workspace panel layout
 
@@ -622,6 +655,7 @@ are composited during image rendering; the source image remains intact.
 | `utils/mediaTypes.ts` | Recognizes video paths for frontend media dispatch. |
 | `utils/themes.ts` | Theme definitions. |
 | `utils/colorSpaces.ts` | Shared output-space list; display choices exclude ProPhoto. |
+| `utils/exportEncoding.ts` | Per-format encoder defaults and UI-only ProPhoto eligibility. |
 | `utils/zoom.ts` | Zoom constants and constraints. |
 | `utils/whiteBalance.ts` | Kelvin/tint types and limits, default resolution and logarithmic temperature slider scaling. |
 
@@ -650,7 +684,8 @@ are composited during image rendering; the source image remains intact.
 | `culling.rs` | Image culling analysis/actions. |
 | `denoising.rs` | Traditional noise reduction and standalone save/batch flows. |
 | `exif_processing.rs` | EXIF extraction and sidecar reading/writing. |
-| `export_processing.rs` | Export formats and output encoding, including true 8/16-bit TIFF. |
+| `export_processing.rs` | Export/batch/size-estimate flow, render precision and format encoders. |
+| `export_metadata.rs` | Selective source-type/attribution extraction and XMP container writing. |
 | `file_management.rs` | Filesystem operations, import/move/copy, sidecars, and path handling. |
 | `focus_stacking.rs` | Focus-stack processing. |
 | `formats.rs` | Supported image, RAW, and video-format recognition. |
@@ -691,51 +726,6 @@ are composited during image rendering; the source image remains intact.
 | `shaders/flare.wgsl` | GPU flare shader. |
 | `shaders/shader.wgsl` | Main GPU image-processing shader. |
 
-## Updating the RAW decoder and rawler metadata reader
-
-```powershell
-npm run update:rawler
-```
-
-`Cargo.toml` points to upstream rawler and `Cargo.lock` records the selected
-revision. Keep the updated lockfile. Rebuild SlowRAW normally afterward.
-If upstream changes its API, adapt `raw_processing.rs` (development/orientation)
-and `exif_processing.rs` (metadata). `image_loader.rs` receives decoded pixels
-directly in memory.
-`multi_exposure.rs` and `highlight_recovery.rs` provide additional processing.
-Linear RAW Processing and Highlight Recovery are persisted in `app_settings.rs`.
-
-## Update kamadak-exif
-
-```powershell
-npm run update:kamadak-exif
-```
-
-## Updating the RCD library
-
-```powershell
-npm run update:rcd
-```
-
-The command updates `src-tauri/rcd/upstream-revision` to librtprocess's current
-upstream HEAD. Keep this pinned revision with the source. The next native build
-fetches that commit and statically rebuilds the RCD library. Run the workspace tests
-after updating. An upstream API change is handled in `rcd/bridge.cpp`; Rawler remains
-the RAW decoder. The bundled library license is in `resources/licenses/librtprocess.txt`.
-
-## Push to github
-
-```powershell
-git init
-git remote add origin https://github.com/arvid-storck/SlowRAW.git
-git fetch origin
-git reset --mixed origin/main
-git branch -M main
-git add -A
-git commit -m "Text här"
-git push -u origin main
-```
-
 ### Desktop graphics backends
 
 wgpu defaults are disabled. Only the Vulkan backend is compiled on Windows, Linux
@@ -749,94 +739,122 @@ instance ownership to wgpu-hal. MoltenVK translates the common Vulkan shaders an
 commands to Metal. It is a platform runtime, not another application rendering path.
 The normal initialization and compute-only export/analysis retry use this factory.
 
-## Building and cleaning
-
-Runtime OS/API requirements are listed in README. Build prerequisites are Rust,
-Node.js/npm, Git and the platform-specific Tauri
-build dependencies. Linux native-display builds also need Wayland client development
-libraries (for example libwayland-dev on Debian/Ubuntu or wayland-devel on Fedora).
-On macOS install MoltenVK before building (for example, brew install molten-vk).
-Alternatively set SLOWRAW_MOLTENVK_PATH to the target-architecture dylib and
-SLOWRAW_MOLTENVK_NOTICES to its redistribution license directory. build.rs stages
-the runtime in src-tauri/target/moltenvk and notices in resources/macos/licenses;
-tauri.macos.conf.json embeds/signs the dylib in the app's Frameworks directory.
-Installed macOS builds need neither Homebrew nor a separate Vulkan SDK.
-For universal builds provide a universal MoltenVK dylib, not an architecture-only
-Homebrew library. Build and runtime verification on macOS remains required.
-
-Run these commands from the project root:
+### Clean up tool
 
 ```powershell
-npm ci
-npm start
-npm run tauri -- build
+npm run clean -- --dry-run
+npm run clean
 ```
 
-npm start runs the development app. The Tauri build embeds the frontend and writes
-release output under src-tauri/target/release. The first clean native build fetches
-the pinned librtprocess source over the network.
+```powershell
+npm run clean:deep -- --dry-run
+npm run clean:deep
+```
 
-For a Windows portable ZIP:
+### Updating common libraries
+
+Update one dependency or related group at a time, retain the lockfiles, rebuild
+and run the affected checks. Cargo update stays within Cargo.toml constraints;
+major-version upgrades also require reviewing the manifest and API changes.
+
+```powershell
+npm outdated
+npm update
+cargo update --manifest-path src-tauri/Cargo.toml -p image
+cargo update --manifest-path src-tauri/Cargo.toml -p moxcms
+cargo update --manifest-path src-tauri/Cargo.toml -p jxl-encoder -p jxl-oxide
+cargo update --manifest-path src-tauri/Cargo.toml -p webp
+```
+
+Review frontend/native dependencies together when upgrading Tauri. Lensfun
+profiles update separately through Settings and do not require a RAW rebuild.
+
+### Updating the RAW decoder
+
+```powershell
+npm run update:rawler
+```
+
+This updates the upstream Rawler revision in src-tauri/Cargo.lock. Keep the
+lockfile and rebuild the application. Rawler API changes may require adapting
+raw_processing.rs and exif_processing.rs. RAW support is linked into the app.
+
+### Updating the metadata reader
+
+```powershell
+npm run update:kamadak-exif
+```
+
+### Updating the RCD library
+
+```powershell
+npm run update:rcd
+```
+
+This updates src-tauri/rcd/upstream-revision to upstream librtprocess HEAD.
+Keep the pinned revision; the next native build fetches and statically rebuilds
+it. Run workspace tests after updates. API changes belong in rcd/bridge.cpp.
+Rawler remains responsible for RAW decoding and non-Bayer development.
+
+### Compiling the program
+
+You'll need to have [Rust](https://www.rust-lang.org/tools/install) and [Node.js](https://nodejs.org/) installed.
+
+### MacOS
+
+Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/). Then install MoltenVK.
+
+```bash
+# Install molten-vk
+brew install molten-vk
+```
+
+### Linux
+
+Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/) for your distribution. 
+
+### For all OS
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/arvid-storck/SlowRAW.git
+cd SlowRAW
+
+# 2. Install frontend dependencies
+npm install
+
+# 3. Build and run the application
+npm start
+```
+
+To build the release build:
+
+```bash
+# 1. Make the release build
+npm run tauri build
+
+# 2. Run the release build
+./src-tauri/target/release/SlowRAW
+```
+
+### Windows alternative for portable build
 
 ```powershell
 ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
 ```
 
-The portable builder uses the production Tauri build and bundles the executable,
-resources, Lensfun profiles and licenses. Use a fresh output directory to preserve
-any user data in an existing portable copy.
+## Push to github
 
 ```powershell
-npm run clean -- --dry-run
-npm run clean
-npm run clean:deep -- --dry-run
-npm run clean:deep
+git init
+git remote add origin https://github.com/arvid-storck/SlowRAW.git
+git fetch origin
+git reset --mixed origin/main
+git branch -M main
+git add -A
+git commit -m "Text här"
+git push -u origin main
 ```
-
-The clean script validates explicit output paths before removing them. Deep cleanup
-also removes node_modules and generated MoltenVK notices; run npm ci before building again. See
-[Dependency and distribution size](#dependency-and-distribution-size) for details.
-
-## Development checks
-
-```powershell
-npm run typecheck
-npm run lint
-npm run i18n:check
-npm run i18n:lint
-node scripts/test-catalog.mjs
-node scripts/test-desktop-workflow.mjs
-node scripts/test-color-workflow.mjs
-node scripts/test-logging.mjs
-node scripts/test-mask-compat.mjs
-node scripts/test-image-flags.mjs
-node scripts/test-white-balance.mjs
-npm run build
-cargo check --manifest-path src-tauri/Cargo.toml
-cargo test --manifest-path src-tauri/Cargo.toml --lib
-```
-
-Run `npm ci` first if dependencies were cleaned. Frontend build, TypeScript,
-translation validation and native tests are separate checks.
-
-The optimized debug profile disables incremental application codegen to avoid
-stale anonymous LLVM symbols in cross-crate `image_hasher` code when linking the
-Windows executable (`LNK2019` followed by `LNK1120`). Dependency artifacts remain
-cached. Keep `CARGO_INCREMENTAL=0` when reproducing the linker issue.
-Native library tests verify the library's test cases. Run
-`cargo build --manifest-path src-tauri/Cargo.toml --bin SlowRAW` to
-check debug linking, and `npm run tauri -- build --no-bundle` to verify the
-production executable with its embedded frontend. The Common Controls 6 dependency
-is embedded by the Windows linker for both the app and Rust unit-test harnesses.
-The optional live-desktop profile diagnostic reads the current Windows color mode
-and validates the assigned monitor profile:
-
-```powershell
-cargo test --manifest-path src-tauri/Cargo.toml --lib windows_display::tests -- --ignored --nocapture
-```
-
-The native app uses Windows/macOS/Linux icons referenced by Tauri and the
-Linux packaging icon.
 
 ### Dependency and distribution size
 
@@ -860,13 +878,3 @@ cleaning, and use a fresh output directory for portable builds.
 Package sizes depend on the toolchain, dependency versions and bundled resources.
 Use the portable script's size report for the build being distributed.
 Interactive UI and real-camera regression checks are separate from automated tests.
-
-### Native Linux display verification
-
-The Wayland path needs a Linux build and a live compositor for validation. In a
-Wayland/Vulkan session, verify image display, sliders, zoom/pan, window resize,
-monitor scale changes, native titlebars, masking overlays, crop view and catalog
-navigation. Check automatic transport selection and visible display-loss errors. Test Intel/AMD/NVIDIA Vulkan drivers, extended-sRGB and PQ
-surfaces where advertised, and PQ background/white consistency with OS HDR mode.
-Windows shader tests do not
-validate the GTK/Wayland bridge or physical wide-gamut output.

@@ -119,26 +119,6 @@ Download the latest build from this repository's [Releases](../../releases/lates
 
 See [System Requirements](#system-requirements) for supported desktop platforms.
 
-### Portable Windows version
-
-Download the portable ZIP, extract it and start SlowRAW.exe. Keep the whole
-folder together when moving the application; the portable data folder and catalog
-index belong to that copy. No compiler or development tools are needed to run it.
-
-## Your Files and Catalog
-
-Original files remain at their existing locations. Removing an entry from the catalog does not delete its source file, and the internal index can be rebuilt.
-
-## Non-Destructive Editing
-
-Editing operations do not overwrite the original source image.
-
-Adjustment information is stored in `.rrdata` sidecar files.
-
-Clone and Heal are also non-destructive and use adjustment/mask data rather than modifying the original source image.
-
-This allows the original image to remain independent of the editing state.
-
 ## System Requirements
 
 Editing requires a supported native GPU and a current graphics driver.
@@ -151,7 +131,82 @@ Editing requires a supported native GPU and a current graphics driver.
 
 ## Maintainer Documentation
 
-Build, maintenance and implementation details are in [docs/CODEMAP.md](docs/CODEMAP.md).
+Build and library-update help is below. Read [DEVELOPMENT](docs/DEVELOPMENT.md)
+for contributor workflow and documentation responsibilities,
+[CODEMAP](docs/CODEMAP.md) for implementation details,
+[CHANGELOG](docs/CHANGELOG.md) for completed changes and
+[PLANNING](docs/PLANNING.md) for bugs awaiting developer verification.
+
+## Compiling
+
+You'll need to have [Rust](https://www.rust-lang.org/tools/install) and [Node.js](https://nodejs.org/) installed.
+
+### MacOS
+
+Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/). Then install MoltenVK.
+
+```bash
+# Install molten-vk
+brew install molten-vk
+```
+
+### Linux
+
+Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/) for your distribution. 
+
+### For all OS
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/arvid-storck/SlowRAW.git
+cd SlowRAW
+
+# 2. Install frontend dependencies
+npm install
+
+# 3. Build and run the application
+npm start
+```
+
+To build the release build:
+
+```bash
+# 1. Make the release build
+npm run tauri build
+
+# 2. Run the release build
+./src-tauri/target/release/SlowRAW
+```
+
+### Windows alternative for portable build
+
+```powershell
+./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
+```
+
+## Developer tools
+
+### Clean up tool
+
+```powershell
+npm run clean -- --dry-run
+npm run clean
+```
+
+```powershell
+npm run clean:deep -- --dry-run
+npm run clean:deep
+```
+
+### Updating the RAW decoder
+
+```powershell
+npm run update:rawler
+```
+
+This updates the upstream Rawler revision in src-tauri/Cargo.lock. Keep the
+lockfile and rebuild the application. Rawler API changes may require adapting
+raw_processing.rs and exif_processing.rs. RAW support is linked into the app.
 
 ### RAW Format Issues
 

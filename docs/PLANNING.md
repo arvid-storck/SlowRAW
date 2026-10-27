@@ -1,29 +1,33 @@
-
 ### Bugs
 
-- None that i am aware of
+- Export presets lost settings after restart
+
+  Status: fix implemented; awaiting developer verification.
+
+  The native ExportPreset schema omitted bit depth, output profile, timestamps and destination fields, so frontend values could disappear after reloading. New codec and author fields would have had the same problem.
+
+  Fix: preserve additional preset fields through serde flattening. Frontend presets include per-format encoding settings and the author option.
+
+  Developer check: save PNG16 and wide-profile presets, timestamp preservation, an original-folder destination/subfolder, and explicit WebP/JXL modes. Restart the app and verify each preset and the resulting exported file.
+- Export discarded AI source-type assertions
+
+  Status: fix implemented for standard IPTC source-type assertions; awaiting developer verification.
+
+  The metadata-off path returned without transferring XMP. Other modes also did not transfer XMP source-type assertions.
+
+  Fix: independently preserve Digital Source Type in all six export containers, with author/copyright copied only when requested. Optional camera metadata remains controlled separately.
+
+  Developer check: export known AI-marked files to each format with metadata enabled and disabled. Inspect Digital Source Type with a metadata reader and check author/copyright and GPS behavior.
+- Highlights changed abruptly near zero
+- Camera calibration did not use the interpolated profile
+- Batch analysis could retain too many RAW decodes
+- Decoded cache could reuse externally changed files
 
 ### Things to change
 
-- For every export file format, separate the following settings that is supported: color space, bits per chanel, lossy/lossless, quality (slider, not up to lossless!), effort (or eqvivalent)
-- Restrict prophoto rgb to (lossless or max quality lossy), 12+ bit/channel, high effort
-- Move Watermark under Advanced export settings
-- Add compiling help and common libaries update on README.md
-- Update dev guide with better separation of responsability
+- Fix docs/DEVELOPMENT.md to show what it does, no need to write what is does not do.
 
-  docs/CODEMAP.md : How the code currently works, but not things clear in the UI itself when using it
-  
-  docs/CHANGELOG.md : Changelog, but if a change is reverted within the same day it does not need to be written down
-  
-  docs/PLANNING.md : AI is only ever allowd to write new bugs, But please note if its fixed so the dev can later check if its fixed
-
-  README.md : Write basic dev tools, compiling, uppdating raw fil handler package. And about the project itself
-- When exporting without metadata option on, add an option to keep the author/maker or whatever its called in the same place "Remove GPS Data" is placed
-- Make on/off switches clearer by making "on" with an vertical line inside the circle and "off" with an circular ring within the circle. (IEC 60417)
-- When exporting without metadata, is the AI tag from ai images kept or removed? It should be kept regardless of settings. No need to note this in the UI.
-- Higher quality x-trans decoder, consider "Markesteijn 1-pass"?
-  
-### Things to consider
+### Things to consider (Do not implelent unless you need to or want to do i and its benfits the program)
 
 - Job Queue with Cancellation Tokens to Stop CPU Spikes
 
@@ -44,6 +48,7 @@
   
   How to use it: Check how the streaming example registers protocol handlers to intercept custom urls and return raw byte vectors directly from an in-memory cache, bypassing IPC serialization.
 - Remove unnecessary validation tests
+- Higher quality x-trans decoder, consider "Markesteijn 1-pass"?
 
 ### Need to be investigate
 
@@ -51,6 +56,4 @@
 - Test SlowRAW on mac
 - Test more file formats for compatability
 
-### Need to figure out how the code works
-
-- Is the rendering path realy with zero noise reduction and sharpening?
+### Questions about the code

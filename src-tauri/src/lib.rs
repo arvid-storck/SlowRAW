@@ -15,6 +15,7 @@ mod component_updates;
 mod culling;
 mod denoising;
 mod exif_processing;
+mod export_metadata;
 mod export_processing;
 mod file_management;
 mod focus_stacking;

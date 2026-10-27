@@ -197,6 +197,9 @@ impl Default for CopyPasteSettings {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportPreset {
+    // Preserve codec options and future preset fields across native settings round-trips.
+    #[serde(flatten)]
+    pub extra: std::collections::HashMap<String, serde_json::Value>,
     pub id: String,
     pub name: String,
     pub file_format: String,
@@ -225,6 +228,7 @@ pub struct ExportPreset {
 pub fn default_export_presets() -> Vec<ExportPreset> {
     vec![
         ExportPreset {
+            extra: Default::default(),
             id: "default-hq".to_string(),
             name: "High Quality".to_string(),
             file_format: "jpeg".to_string(),
@@ -247,6 +251,7 @@ pub fn default_export_presets() -> Vec<ExportPreset> {
             last_export_path: None,
         },
         ExportPreset {
+            extra: Default::default(),
             id: "default-fast".to_string(),
             name: "Fast (Web)".to_string(),
             file_format: "jpeg".to_string(),

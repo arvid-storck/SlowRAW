@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { useId } from 'react';
 import { motion } from 'framer-motion';
 import Text from './Text';
 import { TextVariants } from '../../types/typography';
@@ -28,12 +29,14 @@ const Switch = ({
   checked,
   className = '',
   disabled = false,
+  id,
   label,
   onChange,
   tooltip,
   trackClassName,
 }: SwitchProps) => {
-  const uniqueId = `switch-${label.replace(/\s+/g, '-').toLowerCase()}`;
+  const generatedId = useId();
+  const uniqueId = id ?? generatedId;
 
   const spring = {
     type: 'spring',
@@ -57,14 +60,18 @@ const Switch = ({
       <div className="relative w-10 h-5">
         <input
           checked={checked}
-          className="sr-only"
+          className="sr-only peer"
           disabled={disabled}
           id={uniqueId}
           onChange={(e: any) => !disabled && onChange(e.target.checked)}
           type="checkbox"
+          role="switch"
         />
         <div
-          className={clsx('w-full h-full bg-card-active/50 rounded-full switch-round shadow-inner', trackClassName)}
+          className={clsx(
+            'w-full h-full bg-card-active/50 rounded-full switch-round shadow-inner peer-focus-visible:ring-2 peer-focus-visible:ring-accent',
+            trackClassName,
+          )}
         ></div>
         <motion.div
           className={clsx('absolute top-0.5 left-0.5 w-4 h-4 rounded-full switch-round transition-colors', {
@@ -74,7 +81,18 @@ const Switch = ({
           transition={spring}
           initial={false}
           animate={{ x: checked ? 20 : 0 }}
-        />
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 16 16"
+            className="w-4 h-4 text-surface"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.7"
+          >
+            {checked ? <path d="M8 4v8" /> : <circle cx="8" cy="8" r="3.3" />}
+          </svg>
+        </motion.div>
       </div>
     </label>
   );

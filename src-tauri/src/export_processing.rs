@@ -10,7 +10,7 @@ use image::ImageEncoder;
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, GenericImageView, GrayImage, ImageBuffer, ImageFormat, Luma, imageops};
 use jxl_encoder::{
-    LosslessConfig, LossyConfig, PixelLayout,
+    ImageMetadata, LosslessConfig, LossyConfig, PixelLayout,
     api::{calibrated_jxl_quality, quality_to_distance},
 };
 use serde::{Deserialize, Serialize};
@@ -93,6 +93,10 @@ fn default_png_bit_depth() -> u8 {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportSettings {
+    #[serde(default)]
+    pub encoding: Option<FormatEncoding>,
+    #[serde(default)]
+    pub keep_author: bool,
     pub jpeg_quality: u8,
     #[serde(default)]
     pub tiff_bit_depth: TiffBitDepth,
@@ -115,6 +119,49 @@ pub struct ExportSettings {
     pub destination_type: Option<String>,
     #[serde(default)]
     pub subfolder: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FormatEncoding {
+    pub quality: u8,
+    pub lossless: bool,
+    pub bit_depth: u8,
+    pub effort: u8,
+}
+
+fn encode_export_image(
+    image: &DynamicImage,
+    format: &str,
+    settings: &ExportSettings,
+) -> Result<Vec<u8>, String> {
+    let legacy = FormatEncoding {
+        quality: settings.jpeg_quality,
+        lossless: matches!(format, "png" | "tif" | "tiff")
+            || (format == "jxl"
+                && (settings.jpeg_quality == 100 || settings.color_space != ColorSpace::Srgb)),
+        bit_depth: if format == "jxl" { 16 } else { 8 },
+        effort: 7,
+    };
+    let options = settings.encoding.as_ref().unwrap_or(&legacy);
+    if !(1..=100).contains(&options.quality)
+        || options.effort > 10
+        || (format != "webp" && options.effort == 0)
+        || ![8, 16].contains(&options.bit_depth)
+    {
+        return Err("Invalid export encoding settings".into());
+    }
+    if matches!(format, "jpeg" | "jpg" | "avif") && options.lossless {
+        return Err("This encoder does not support lossless output".into());
+    }
+    encode_image_with_options(
+        image,
+        format,
+        settings.tiff_bit_depth,
+        settings.png_bit_depth,
+        settings.color_space,
+        options,
+    )
 }
 
 #[derive(Clone)]
@@ -593,14 +640,7 @@ fn save_image_with_metadata(
         .unwrap_or("")
         .to_lowercase();
 
-    let mut image_bytes = encode_image_to_bytes(
-        image,
-        &extension,
-        export_settings.jpeg_quality,
-        export_settings.tiff_bit_depth,
-        export_settings.png_bit_depth,
-        export_settings.color_space,
-    )?;
+    let mut image_bytes = encode_export_image(image, &extension, export_settings)?;
 
     exif_processing::write_image_with_metadata(
         &mut image_bytes,
@@ -609,6 +649,17 @@ fn save_image_with_metadata(
         export_settings.keep_metadata,
         export_settings.strip_gps,
         export_settings.color_space == ColorSpace::Srgb,
+    )?;
+
+    crate::export_metadata::preserve_required_metadata(
+        &mut image_bytes,
+        source_path_str,
+        &extension,
+        export_settings.keep_author
+            && (!export_settings.keep_metadata
+                || !matches!(extension.as_str(), "jpg" | "jpeg" | "png" | "webp")),
+        image.width(),
+        image.height(),
     )?;
 
     #[cfg(target_os = "android")]
@@ -703,6 +754,32 @@ pub(crate) fn encode_image_to_bytes(
     png_bit_depth: u8,
     color_space: ColorSpace,
 ) -> Result<Vec<u8>, String> {
+    let options = FormatEncoding {
+        quality: jpeg_quality,
+        lossless: matches!(output_format, "png" | "tif" | "tiff")
+            || (output_format == "jxl" && (jpeg_quality == 100 || color_space != ColorSpace::Srgb)),
+        bit_depth: 16,
+        effort: 7,
+    };
+    encode_image_with_options(
+        image,
+        output_format,
+        tiff_bit_depth,
+        png_bit_depth,
+        color_space,
+        &options,
+    )
+}
+
+fn encode_image_with_options(
+    image: &DynamicImage,
+    output_format: &str,
+    tiff_bit_depth: TiffBitDepth,
+    png_bit_depth: u8,
+    color_space: ColorSpace,
+    options: &FormatEncoding,
+) -> Result<Vec<u8>, String> {
+    let jpeg_quality = options.quality;
     if color_space != ColorSpace::Srgb
         && matches!(output_format.to_lowercase().as_str(), "webp" | "avif")
     {
@@ -714,48 +791,50 @@ pub(crate) fn encode_image_to_bytes(
 
     match output_format.to_lowercase().as_str() {
         "jxl" => {
-            if color_space != ColorSpace::Srgb || jpeg_quality == 100 {
-                return crate::preview_encoding::encode(image, color_space, true);
-            }
             let (width, height) = image.dimensions();
-            let has_alpha = image.color().has_alpha();
-
-            let jxl_data = if jpeg_quality == 100 {
-                if has_alpha {
-                    let rgba = image.to_rgba8();
-                    LosslessConfig::new()
-                        .encode(rgba.as_raw(), width, height, PixelLayout::Rgba8)
-                        .map_err(|e| format!("Failed to encode lossless JXL: {}", e))?
-                } else {
-                    let rgb = image.to_rgb8();
-                    LosslessConfig::new()
-                        .encode(rgb.as_raw(), width, height, PixelLayout::Rgb8)
-                        .map_err(|e| format!("Failed to encode lossless JXL: {}", e))?
-                }
+            let (pixels, layout) = if options.bit_depth == 16 {
+                (
+                    bytemuck::cast_slice(image.to_rgba16().as_raw()).to_vec(),
+                    PixelLayout::Rgba16,
+                )
             } else {
-                let jxl_quality = calibrated_jxl_quality(jpeg_quality as f32);
-                let distance = quality_to_distance(jxl_quality);
-
-                if has_alpha {
-                    let rgba = image.to_rgba8();
-                    LossyConfig::new(distance)
-                        .encode(rgba.as_raw(), width, height, PixelLayout::Rgba8)
-                        .map_err(|e| format!("Failed to encode lossy JXL: {}", e))?
-                } else {
-                    let rgb = image.to_rgb8();
-                    LossyConfig::new(distance)
-                        .encode(rgb.as_raw(), width, height, PixelLayout::Rgb8)
-                        .map_err(|e| format!("Failed to encode lossy JXL: {}", e))?
-                }
+                (image.to_rgba8().into_raw(), PixelLayout::Rgba8)
             };
-
-            return Ok(jxl_data);
+            let metadata = ImageMetadata::new().with_icc_profile(profile);
+            return if options.lossless {
+                LosslessConfig::new()
+                    .with_effort(options.effort)
+                    .encode_request(width, height, layout)
+                    .with_metadata(&metadata)
+                    .encode(&pixels)
+            } else {
+                // Maximum lossy quality remains lossy; lossless is a separate option.
+                let distance =
+                    quality_to_distance(calibrated_jxl_quality(jpeg_quality as f32)).max(0.01);
+                LossyConfig::new(distance)
+                    .with_effort(options.effort)
+                    .encode_request(width, height, layout)
+                    .with_metadata(&metadata)
+                    .encode(&pixels)
+            }
+            .map_err(|e| e.to_string());
         }
         "webp" => {
-            let encoder = webp::Encoder::from_image(image)
-                .map_err(|_| "Failed to create WebP encoder".to_string())?;
-            let webp_mem = encoder.encode(jpeg_quality as f32);
-            return Ok(webp_mem.to_vec());
+            let rgba = image.to_rgba8();
+            let encoder = webp::Encoder::from_rgba(rgba.as_raw(), rgba.width(), rgba.height());
+            let mut config = webp::WebPConfig::new().map_err(|_| "Invalid WebP configuration")?;
+            config.lossless = i32::from(options.lossless);
+            config.exact = i32::from(options.lossless);
+            config.quality = if options.lossless {
+                100.0
+            } else {
+                jpeg_quality as f32
+            };
+            config.method = options.effort.min(6) as i32;
+            return encoder
+                .encode_advanced(&config)
+                .map(|data| data.to_vec())
+                .map_err(|e| format!("{e:?}"));
         }
         "jpg" | "jpeg" => {
             let rgb_image = image.to_rgb8();
@@ -775,7 +854,16 @@ pub(crate) fn encode_image_to_bytes(
                 (16, true) => DynamicImage::ImageRgba16(image.to_rgba16()),
                 _ => return Err("PNG bit depth must be 8 or 16.".to_string()),
             };
-            let mut encoder = image::codecs::png::PngEncoder::new(&mut cursor);
+            let compression = match options.effort {
+                1..=3 => image::codecs::png::CompressionType::Fast,
+                4..=6 => image::codecs::png::CompressionType::Default,
+                _ => image::codecs::png::CompressionType::Best,
+            };
+            let mut encoder = image::codecs::png::PngEncoder::new_with_quality(
+                &mut cursor,
+                compression,
+                image::codecs::png::FilterType::Adaptive,
+            );
             encoder
                 .set_icc_profile(profile.to_vec())
                 .map_err(|e| e.to_string())?;
@@ -797,9 +885,13 @@ pub(crate) fn encode_image_to_bytes(
                 .map_err(|e| e.to_string())?;
         }
         "avif" => {
-            image
-                .write_to(&mut cursor, image::ImageFormat::Avif)
-                .map_err(|e| e.to_string())?;
+            let rgb = image.to_rgba8();
+            let encoder = image::codecs::avif::AvifEncoder::new_with_speed_quality(
+                &mut cursor,
+                11 - options.effort,
+                jpeg_quality,
+            );
+            rgb.write_with_encoder(encoder).map_err(|e| e.to_string())?;
         }
         _ => return Err(format!("Unsupported file format: {}", output_format)),
     };
@@ -1517,14 +1609,8 @@ pub async fn estimate_export_sizes(
             render_output_precision(&output_format, &export_settings),
         )?;
 
-        let preview_bytes = encode_image_to_bytes(
-            &processed_preview,
-            &output_format,
-            export_settings.jpeg_quality,
-            export_settings.tiff_bit_depth,
-            export_settings.png_bit_depth,
-            export_settings.color_space,
-        )?;
+        let preview_bytes =
+            encode_export_image(&processed_preview, &output_format, &export_settings)?;
         let preview_byte_size = preview_bytes.len();
 
         let (transformed_full_res, _) =
@@ -1657,14 +1743,8 @@ pub async fn estimate_export_sizes(
             render_output_precision(&output_format, &export_settings),
         )?;
 
-        let preview_bytes = encode_image_to_bytes(
-            &processed_preview,
-            &output_format,
-            export_settings.jpeg_quality,
-            export_settings.tiff_bit_depth,
-            export_settings.png_bit_depth,
-            export_settings.color_space,
-        )?;
+        let preview_bytes =
+            encode_export_image(&processed_preview, &output_format, &export_settings)?;
         let single_image_estimated_size = preview_bytes.len();
 
         let full_w = (shrunk_w as f32 / raw_scale_factor).round() as u32;
@@ -1693,6 +1773,122 @@ pub async fn estimate_export_sizes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_jxl_modes_preserve_depth_profile_and_lossless_samples() {
+        let source = DynamicImage::ImageRgba16(ImageBuffer::from_fn(32, 32, |x, y| {
+            image::Rgba([
+                (x * 1711) as u16,
+                (y * 1513) as u16,
+                ((x + y) * 901) as u16,
+                65535,
+            ])
+        }));
+        for lossless in [false, true] {
+            for bit_depth in [8, 16] {
+                let options = FormatEncoding {
+                    quality: 100,
+                    lossless,
+                    bit_depth,
+                    effort: 7,
+                };
+                let bytes = encode_image_with_options(
+                    &source,
+                    "jxl",
+                    TiffBitDepth::Sixteen,
+                    16,
+                    ColorSpace::AdobeRgb,
+                    &options,
+                )
+                .unwrap();
+                let image = jxl_oxide::JxlImage::read_with_defaults(Cursor::new(&bytes)).unwrap();
+                assert_eq!(image.original_icc().unwrap(), ColorSpace::AdobeRgb.icc());
+                let decoder = jxl_oxide::integration::JxlDecoder::new(Cursor::new(&bytes)).unwrap();
+                let decoded = DynamicImage::from_decoder(decoder).unwrap();
+                assert_eq!(decoded.dimensions(), source.dimensions());
+                if lossless {
+                    if bit_depth == 16 {
+                        assert_eq!(decoded.to_rgba16(), source.to_rgba16());
+                    } else {
+                        assert_eq!(decoded.to_rgba8(), source.to_rgba8());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn webp_lossless_and_avif_quality_are_explicit() {
+        let source = DynamicImage::ImageRgba8(ImageBuffer::from_fn(32, 32, |x, y| {
+            image::Rgba([(x * 7) as u8, (y * 7) as u8, ((x + y) * 3) as u8, 255])
+        }));
+        let options = FormatEncoding {
+            quality: 5,
+            lossless: true,
+            bit_depth: 8,
+            effort: 6,
+        };
+        let bytes = encode_image_with_options(
+            &source,
+            "webp",
+            TiffBitDepth::Sixteen,
+            8,
+            ColorSpace::Srgb,
+            &options,
+        )
+        .unwrap();
+        assert_eq!(
+            image::load_from_memory(&bytes).unwrap().to_rgba8(),
+            source.to_rgba8()
+        );
+        let low = FormatEncoding {
+            quality: 10,
+            lossless: false,
+            effort: 1,
+            ..options.clone()
+        };
+        let high = FormatEncoding {
+            quality: 100,
+            lossless: false,
+            effort: 1,
+            ..options
+        };
+        let low_bytes = encode_image_with_options(
+            &source,
+            "avif",
+            TiffBitDepth::Sixteen,
+            8,
+            ColorSpace::Srgb,
+            &low,
+        )
+        .unwrap();
+        let high_bytes = encode_image_with_options(
+            &source,
+            "avif",
+            TiffBitDepth::Sixteen,
+            8,
+            ColorSpace::Srgb,
+            &high,
+        )
+        .unwrap();
+        assert_ne!(low_bytes, high_bytes);
+    }
+
+    #[test]
+    fn export_preset_retains_extended_fields() {
+        let mut value =
+            serde_json::to_value(crate::app_settings::default_export_presets().remove(0)).unwrap();
+        value["colorSpace"] = serde_json::json!("prophoto-rgb");
+        value["pngBitDepth"] = serde_json::json!(16);
+        value["preserveTimestamps"] = serde_json::json!(true);
+        value["destinationType"] = serde_json::json!("originalFolder");
+        value["subfolder"] = serde_json::json!("exports");
+        value["keepAuthor"] = serde_json::json!(true);
+        value["formatEncodings"] = serde_json::json!({"jxl": {"quality": 100, "lossless": false, "bitDepth": 16, "effort": 9}});
+        let preset: crate::app_settings::ExportPreset =
+            serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(preset).unwrap(), value);
+    }
 
     #[test]
     fn wide_export_metadata_does_not_claim_srgb_or_replace_its_icc() {

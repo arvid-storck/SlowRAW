@@ -1,4 +1,5 @@
 import { COLOR_SPACES, type ColorSpace } from '../utils/colorSpaces';
+import { defaultFormatEncoding } from '../utils/exportEncoding';
 import { useState, useMemo, useCallback, type SetStateAction } from 'react';
 import {
   ExportPreset,
@@ -6,6 +7,7 @@ import {
   PngBitDepth,
   WatermarkAnchor,
   FILE_FORMATS,
+  FormatEncoding,
 } from '../components/ui/ExportImportProperties';
 
 // Session draft survives panel remounts and viewport/layout changes.
@@ -28,6 +30,17 @@ function useDraftState<T>(key: string, initial: T) {
 export function useExportSettings() {
   const [fileFormat, setFileFormat] = useDraftState('fileFormat', 'jpeg');
   const [jpegQuality, setJpegQuality] = useDraftState('jpegQuality', 90);
+  const [formatEncodings, setFormatEncodings] = useDraftState<Record<string, FormatEncoding>>('formatEncodings', {});
+  const [keepAuthor, setKeepAuthor] = useDraftState('keepAuthor', false);
+  const encoding = useMemo(
+    () => formatEncodings[fileFormat] ?? defaultFormatEncoding(fileFormat, jpegQuality),
+    [formatEncodings, fileFormat, jpegQuality],
+  );
+  const setEncoding = (next: Partial<FormatEncoding>) =>
+    setFormatEncodings((previous) => ({
+      ...previous,
+      [fileFormat]: { ...(previous[fileFormat] ?? encoding), ...next },
+    }));
   const [tiffBitDepth, setTiffBitDepth] = useDraftState<TiffBitDepth>('tiffBitDepth', 16);
   const [pngBitDepth, setPngBitDepth] = useDraftState<PngBitDepth>('pngBitDepth', 8);
   const [colorSpace, setColorSpace] = useDraftState<ColorSpace>('colorSpace', 'srgb');
@@ -56,6 +69,26 @@ export function useExportSettings() {
   const handleApplyPreset = useCallback((preset: ExportPreset) => {
     setFileFormat(FILE_FORMATS.some((format) => format.id === preset.fileFormat) ? preset.fileFormat : 'jpeg');
     setJpegQuality(preset.jpegQuality);
+    setKeepAuthor(preset.keepAuthor ?? false);
+    setFormatEncodings(
+      preset.formatEncodings ?? {
+        [preset.fileFormat]: {
+          quality: preset.jpegQuality,
+          lossless:
+            ['png', 'tiff'].includes(preset.fileFormat) ||
+            (preset.fileFormat === 'jxl' && (preset.jpegQuality === 100 || (preset.colorSpace ?? 'srgb') !== 'srgb')),
+          bitDepth:
+            preset.fileFormat === 'png'
+              ? (preset.pngBitDepth ?? 8)
+              : preset.fileFormat === 'tiff'
+                ? (preset.tiffBitDepth ?? 16)
+                : preset.fileFormat === 'jxl'
+                  ? 16
+                  : 8,
+          effort: 7,
+        },
+      },
+    );
     setTiffBitDepth(preset.tiffBitDepth ?? 16);
     setPngBitDepth(preset.pngBitDepth === 16 ? 16 : 8);
     setColorSpace(
@@ -85,6 +118,8 @@ export function useExportSettings() {
 
   const currentSettingsObject = useMemo(
     () => ({
+      formatEncodings,
+      keepAuthor,
       fileFormat,
       jpegQuality,
       tiffBitDepth,
@@ -110,6 +145,8 @@ export function useExportSettings() {
       subfolder,
     }),
     [
+      formatEncodings,
+      keepAuthor,
       fileFormat,
       jpegQuality,
       tiffBitDepth,
@@ -137,6 +174,10 @@ export function useExportSettings() {
   );
 
   return {
+    encoding,
+    setEncoding,
+    keepAuthor,
+    setKeepAuthor,
     fileFormat,
     setFileFormat,
     jpegQuality,

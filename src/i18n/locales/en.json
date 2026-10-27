@@ -668,8 +668,16 @@
       "selectFolderTitle_other": "Select Folder to Export {{count}} Images"
     },
     "file": {
+      "bitsPerChannel": "{{bits}} bits/channel",
+      "effort": "Encoding effort",
+      "effortBalanced": "Compression effort: Balanced",
+      "effortFast": "Compression effort: Fast",
+      "effortHigh": "Compression effort: High",
+      "lossless": "Lossless",
+      "lossy": "Lossy",
       "pngBitDepth": "PNG bit depth",
       "pngDepthOption": "{{bits}} bit — {{mode}}",
+      "proPhotoRequirements": "ProPhoto RGB requires at least 12 bits/channel, lossless or maximum lossy quality, and high encoding effort.",
       "quality": "Quality",
       "qualityLossless": "Quality (Lossless)",
       "rgb": "RGB color",
@@ -682,9 +690,10 @@
       "image_plural": "Images"
     },
     "metadata": {
+      "keepAuthor": "Keep author and copyright",
       "removeGps": "Remove GPS Data",
       "saveWithMetadata": "Save with Metadata",
-      "srgbProfile": "JPEG and PNG exports always include an sRGB ICC profile."
+      "srgbProfile": "Color profiles are embedded independently of metadata settings where supported."
     },
     "resize": {
       "dontEnlarge": "Don't Enlarge",

@@ -32,6 +32,8 @@ export type TiffBitDepth = 8 | 16;
 export type PngBitDepth = 8 | 16;
 
 export interface ExportSettings {
+  encoding?: FormatEncoding;
+  keepAuthor?: boolean;
   filenameTemplate: string | null;
   jpegQuality: number;
   tiffBitDepth: TiffBitDepth;
@@ -102,6 +104,8 @@ export enum Status {
 }
 
 export interface ExportPreset {
+  formatEncodings?: Record<string, FormatEncoding>;
+  keepAuthor?: boolean;
   id: string;
   name: string;
   fileFormat: string;
@@ -128,4 +132,11 @@ export interface ExportPreset {
   lastExportPath?: string;
   destinationType?: string;
   subfolder?: string;
+}
+
+export interface FormatEncoding {
+  quality: number;
+  lossless: boolean;
+  bitDepth: 8 | 16;
+  effort: number;
 }

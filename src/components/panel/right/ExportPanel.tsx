@@ -1,4 +1,5 @@
 import { COLOR_SPACES } from '../../../utils/colorSpaces';
+import { allowsProPhoto } from '../../../utils/exportEncoding';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -208,8 +209,10 @@ export default function ExportPanel({
   const {
     fileFormat,
     setFileFormat,
-    jpegQuality,
-    setJpegQuality,
+    encoding,
+    setEncoding,
+    keepAuthor,
+    setKeepAuthor,
     tiffBitDepth,
     pngBitDepth,
     colorSpace,
@@ -394,7 +397,9 @@ export default function ExportPanel({
 
     const exportSettings: ExportSettings = {
       filenameTemplate,
-      jpegQuality,
+      jpegQuality: encoding.quality,
+      encoding,
+      keepAuthor,
       tiffBitDepth,
       pngBitDepth,
       colorSpace,
@@ -441,7 +446,8 @@ export default function ExportPanel({
     pathsToExport,
     selectedImage?.path,
     fileFormat,
-    jpegQuality,
+    encoding,
+    keepAuthor,
     tiffBitDepth,
     pngBitDepth,
     colorSpace,
@@ -480,11 +486,13 @@ export default function ExportPanel({
   };
 
   const handleExport = async () => {
-    if (numImages === 0 || isExporting) return;
+    if (numImages === 0 || isExporting || !validColorSpace) return;
 
     const exportSettings: ExportSettings = {
       filenameTemplate,
-      jpegQuality,
+      jpegQuality: encoding.quality,
+      encoding,
+      keepAuthor,
       tiffBitDepth,
       pngBitDepth,
       colorSpace,
@@ -591,7 +599,11 @@ export default function ExportPanel({
     }
   };
 
-  const canExport = numImages > 0;
+  const bits = fileFormat === 'tiff' ? tiffBitDepth : fileFormat === 'png' ? pngBitDepth : encoding.bitDepth;
+  const supportsEffort = ['png', 'webp', 'jxl', 'avif'].includes(fileFormat);
+  const proPhotoAllowed = allowsProPhoto(fileFormat, bits, encoding);
+  const validColorSpace = colorSpace !== 'prophoto-rgb' || proPhotoAllowed;
+  const canExport = numImages > 0 && validColorSpace;
   const itemLabel = t('export.labels.image');
   const itemLabelPlural = t('export.labels.image_plural');
 
@@ -601,7 +613,7 @@ export default function ExportPanel({
         <Text variant={TextVariants.title}>{t('export.title')}</Text>
       </div>
       <div className="grow overflow-y-auto p-3 space-y-8">
-        {canExport ? (
+        {numImages > 0 ? (
           <>
             <div className={isExporting ? 'opacity-50 pointer-events-none' : ''}>
               <ExportPresetsList
@@ -625,35 +637,81 @@ export default function ExportPanel({
               />
               <Text variant={TextVariants.label}>{t('colorManagement.exportSpace')}</Text>
               <Dropdown
-                options={[...COLOR_SPACES]}
+                options={COLOR_SPACES.filter((space) => space.value !== 'prophoto-rgb' || proPhotoAllowed)}
                 value={colorSpace}
                 onChange={(value) => setColorSpace(value as typeof colorSpace)}
                 disabled={isExporting || ['webp', 'avif'].includes(fileFormat)}
                 className="w-full"
               />
               {['webp', 'avif'].includes(fileFormat) && <Text>{t('colorManagement.srgbOnly')}</Text>}
-              {fileFormat === FileFormats.Jxl && colorSpace !== 'srgb' && (
-                <Text>{t('colorManagement.jxlLossless')}</Text>
+              {!validColorSpace && <Text>{t('export.file.proPhotoRequirements')}</Text>}
+              {['webp', 'jxl'].includes(fileFormat) ? (
+                <Dropdown
+                  options={[
+                    { label: t('export.file.lossy'), value: 'lossy' },
+                    { label: t('export.file.lossless'), value: 'lossless' },
+                  ]}
+                  value={encoding.lossless ? 'lossless' : 'lossy'}
+                  onChange={(value) => setEncoding({ lossless: value === 'lossless' })}
+                  disabled={isExporting}
+                  className="w-full"
+                />
+              ) : (
+                <Text>{t(['png', 'tiff'].includes(fileFormat) ? 'export.file.lossless' : 'export.file.lossy')}</Text>
               )}
-              {[FileFormats.Jpeg, FileFormats.Webp, FileFormats.Jxl].includes(fileFormat as FileFormats) &&
-                !(fileFormat === FileFormats.Jxl && colorSpace !== 'srgb') && (
-                  <div className={isExporting ? 'opacity-50 pointer-events-none' : ''}>
-                    <Slider
-                      defaultValue={90}
-                      label={
-                        fileFormat === FileFormats.Jxl && jpegQuality === 100
-                          ? t('export.file.qualityLossless')
-                          : t('export.file.quality')
-                      }
-                      max={100}
-                      min={1}
-                      onChange={(e) => setJpegQuality(Number(e.target.value))}
-                      step={1}
-                      value={jpegQuality}
-                      fillOrigin="min"
-                    />
-                  </div>
+              {['jpeg', 'webp', 'jxl', 'avif'].includes(fileFormat) &&
+                (!encoding.lossless || ['jpeg', 'avif'].includes(fileFormat)) && (
+                  <Slider
+                    label={t('export.file.quality')}
+                    min={1}
+                    max={100}
+                    step={1}
+                    value={encoding.quality}
+                    defaultValue={90}
+                    disabled={isExporting}
+                    onChange={(e) => setEncoding({ quality: Number(e.target.value) })}
+                  />
                 )}
+              {fileFormat === 'png' && (
+                <Dropdown
+                  options={[
+                    { value: '3', label: t('export.file.effortFast') },
+                    { value: '6', label: t('export.file.effortBalanced') },
+                    { value: '9', label: t('export.file.effortHigh') },
+                  ]}
+                  value={String(encoding.effort <= 3 ? 3 : encoding.effort <= 6 ? 6 : 9)}
+                  onChange={(value) => setEncoding({ effort: Number(value) })}
+                  disabled={isExporting}
+                  className="w-full"
+                />
+              )}
+              {supportsEffort && fileFormat !== 'png' && (
+                <Slider
+                  label={t('export.file.effort')}
+                  min={fileFormat === 'webp' ? 0 : 1}
+                  max={fileFormat === 'webp' ? 6 : 10}
+                  step={1}
+                  value={Math.min(encoding.effort, fileFormat === 'webp' ? 6 : fileFormat === 'png' ? 9 : 10)}
+                  defaultValue={fileFormat === 'webp' ? 4 : 7}
+                  disabled={isExporting}
+                  onChange={(e) => setEncoding({ effort: Number(e.target.value) })}
+                />
+              )}
+              {fileFormat === 'jxl' && (
+                <Dropdown
+                  options={[8, 16].map((bits) => ({
+                    value: String(bits),
+                    label: t('export.file.bitsPerChannel', { bits }),
+                  }))}
+                  value={String(encoding.bitDepth)}
+                  disabled={isExporting}
+                  onChange={(value) => setEncoding({ bitDepth: Number(value) as 8 | 16 })}
+                  className="w-full"
+                />
+              )}
+              {['jpeg', 'webp', 'avif'].includes(fileFormat) && (
+                <Text>{t('export.file.bitsPerChannel', { bits: 8 })}</Text>
+              )}
               {(fileFormat === FileFormats.Tiff || fileFormat === FileFormats.Png) && (
                 <div className={isExporting ? 'opacity-50 pointer-events-none' : ''}>
                   <Text variant={TextVariants.label} className="mb-1">
@@ -783,16 +841,18 @@ export default function ExportPanel({
               <Text variant={TextVariants.small} color={TextColors.secondary}>
                 {t('export.metadata.srgbProfile')}
               </Text>
-              {fileFormat == FileFormats.Jpeg && (
+              {
                 <Section title={t('export.sections.metadata')}>
-                  <Switch
-                    checked={keepMetadata}
-                    disabled={isExporting}
-                    label={t('export.metadata.saveWithMetadata')}
-                    onChange={setKeepMetadata}
-                    trackClassName="bg-surface"
-                  />
-                  {keepMetadata && (
+                  {['jpeg', 'png', 'webp'].includes(fileFormat) && (
+                    <Switch
+                      checked={keepMetadata}
+                      disabled={isExporting}
+                      label={t('export.metadata.saveWithMetadata')}
+                      onChange={setKeepMetadata}
+                      trackClassName="bg-surface"
+                    />
+                  )}
+                  {keepMetadata && ['jpeg', 'png', 'webp'].includes(fileFormat) ? (
                     <div className="pl-2 border-l-2 border-surface">
                       <Switch
                         label={t('export.metadata.removeGps')}
@@ -802,83 +862,19 @@ export default function ExportPanel({
                         trackClassName="bg-surface"
                       />
                     </div>
-                  )}
-                </Section>
-              )}
-
-              <Section title={t('export.sections.watermark')}>
-                <Switch
-                  label={t('export.watermark.addWatermark')}
-                  checked={enableWatermark}
-                  onChange={setEnableWatermark}
-                  disabled={isExporting}
-                  trackClassName="bg-surface"
-                />
-                {enableWatermark && (
-                  <div className="space-y-4 pl-2 border-l-2 border-surface">
-                    <div className={isExporting ? 'opacity-50 pointer-events-none' : ''}>
-                      <ImagePicker
-                        label={t('export.watermark.watermarkImage')}
-                        imageName={watermarkPath ? watermarkPath.split(/[\\/]/).pop() || null : null}
-                        onImageSelect={setWatermarkPath}
-                        onClear={() => setWatermarkPath(null)}
+                  ) : (
+                    <div className="pl-2 border-l-2 border-surface">
+                      <Switch
+                        checked={keepAuthor}
+                        onChange={setKeepAuthor}
+                        disabled={isExporting}
+                        label={t('export.metadata.keepAuthor')}
+                        trackClassName="bg-surface"
                       />
                     </div>
-                    {watermarkPath && (
-                      <>
-                        <Dropdown
-                          options={anchorOptions}
-                          value={watermarkAnchor}
-                          onChange={(val) => setWatermarkAnchor(val as WatermarkAnchor)}
-                          disabled={isExporting}
-                          className="w-full"
-                        />
-                        <div>
-                          <Slider
-                            label={t('export.watermark.scale')}
-                            min={1}
-                            max={100}
-                            step={1}
-                            value={watermarkScale}
-                            onChange={(e) => setWatermarkScale(Number(e.target.value))}
-                            disabled={isExporting}
-                            defaultValue={10}
-                          />
-                          <Slider
-                            label={t('export.watermark.spacing')}
-                            min={0}
-                            max={25}
-                            step={1}
-                            value={watermarkSpacing}
-                            onChange={(e) => setWatermarkSpacing(Number(e.target.value))}
-                            disabled={isExporting}
-                            defaultValue={5}
-                          />
-                          <Slider
-                            label={t('export.watermark.opacity')}
-                            min={0}
-                            max={100}
-                            step={1}
-                            value={watermarkOpacity}
-                            onChange={(e) => setWatermarkOpacity(Number(e.target.value))}
-                            disabled={isExporting}
-                            defaultValue={75}
-                          />
-                        </div>
-                        <WatermarkPreview
-                          imageAspectRatio={imageAspectRatio}
-                          watermarkImageAspectRatio={watermarkImageAspectRatio}
-                          watermarkPath={watermarkPath}
-                          anchor={watermarkAnchor as WatermarkAnchor}
-                          scale={watermarkScale}
-                          spacing={watermarkSpacing}
-                          opacity={watermarkOpacity}
-                        />
-                      </>
-                    )}
-                  </div>
-                )}
-              </Section>
+                  )}
+                </Section>
+              }
             </>
 
             <div>
@@ -913,6 +909,79 @@ export default function ExportPanel({
                       className="overflow-hidden"
                     >
                       <div className="px-4 pb-4 pt-2 border-t border-surface/50 flex flex-col gap-4">
+                        <Section title={t('export.sections.watermark')}>
+                          <Switch
+                            label={t('export.watermark.addWatermark')}
+                            checked={enableWatermark}
+                            onChange={setEnableWatermark}
+                            disabled={isExporting}
+                            trackClassName="bg-surface"
+                          />
+                          {enableWatermark && (
+                            <div className="space-y-4 pl-2 border-l-2 border-surface">
+                              <div className={isExporting ? 'opacity-50 pointer-events-none' : ''}>
+                                <ImagePicker
+                                  label={t('export.watermark.watermarkImage')}
+                                  imageName={watermarkPath ? watermarkPath.split(/[\\/]/).pop() || null : null}
+                                  onImageSelect={setWatermarkPath}
+                                  onClear={() => setWatermarkPath(null)}
+                                />
+                              </div>
+                              {watermarkPath && (
+                                <>
+                                  <Dropdown
+                                    options={anchorOptions}
+                                    value={watermarkAnchor}
+                                    onChange={(val) => setWatermarkAnchor(val as WatermarkAnchor)}
+                                    disabled={isExporting}
+                                    className="w-full"
+                                  />
+                                  <div>
+                                    <Slider
+                                      label={t('export.watermark.scale')}
+                                      min={1}
+                                      max={100}
+                                      step={1}
+                                      value={watermarkScale}
+                                      onChange={(e) => setWatermarkScale(Number(e.target.value))}
+                                      disabled={isExporting}
+                                      defaultValue={10}
+                                    />
+                                    <Slider
+                                      label={t('export.watermark.spacing')}
+                                      min={0}
+                                      max={25}
+                                      step={1}
+                                      value={watermarkSpacing}
+                                      onChange={(e) => setWatermarkSpacing(Number(e.target.value))}
+                                      disabled={isExporting}
+                                      defaultValue={5}
+                                    />
+                                    <Slider
+                                      label={t('export.watermark.opacity')}
+                                      min={0}
+                                      max={100}
+                                      step={1}
+                                      value={watermarkOpacity}
+                                      onChange={(e) => setWatermarkOpacity(Number(e.target.value))}
+                                      disabled={isExporting}
+                                      defaultValue={75}
+                                    />
+                                  </div>
+                                  <WatermarkPreview
+                                    imageAspectRatio={imageAspectRatio}
+                                    watermarkImageAspectRatio={watermarkImageAspectRatio}
+                                    watermarkPath={watermarkPath}
+                                    anchor={watermarkAnchor as WatermarkAnchor}
+                                    scale={watermarkScale}
+                                    spacing={watermarkSpacing}
+                                    opacity={watermarkOpacity}
+                                  />
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </Section>
                         <Switch
                           label={t('export.advanced.preserveFolders')}
                           checked={preserveFolders}
