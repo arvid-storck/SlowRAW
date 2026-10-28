@@ -28,6 +28,7 @@
 ### Things to change
 
 - Fix docs/DEVELOPMENT.md to show what it does, no need to write what is does not do.
+- Update exif reader to one that reads lens profiles
 - Use the built in lens profile when avawable lensfun as a spare
 
 ### Things to consider (Do not implelent unless you need to or want to do i and its benfits the program)
