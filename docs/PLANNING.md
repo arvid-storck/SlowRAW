@@ -22,6 +22,8 @@
 - Camera calibration did not use the interpolated profile
 - Batch analysis could retain too many RAW decodes
 - Decoded cache could reuse externally changed files
+- Importing does not work when importing 50000 images and more, and when rescanning, it says "database is locked"
+- When shoosing auto in lens profile, a ricoh gr ii gets the profile of a samyang 500mm f somthing
 
 ### Things to change
 
