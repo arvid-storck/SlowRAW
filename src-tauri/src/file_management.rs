@@ -27,8 +27,6 @@ use walkdir::WalkDir;
 
 use crate::AppState;
 use crate::PendingMetadata;
-#[cfg(target_os = "android")]
-use crate::android_integration::*;
 use crate::app_settings::*;
 use crate::exif_processing;
 use crate::formats::{is_raw_file, is_supported_image_file};
@@ -74,8 +72,8 @@ fn compute_thumbnail_cache_hash(path_str: &str, adjustments_bytes: &[u8]) -> Opt
         .as_secs();
 
     let mut hasher = blake3::Hasher::new();
-    // Regenerate thumbnails after retiring the selection-refinement renderer.
-    hasher.update(b"icc-extended-rgb-output-v11");
+    // Retire thumbnails made with the previous automatic lens matcher.
+    hasher.update(b"embedded-lens-exiftool-v16");
     hasher.update(path_str.as_bytes());
     hasher.update(&img_mod_time.to_le_bytes());
     hasher.update(adjustments_bytes);
@@ -1104,18 +1102,6 @@ pub fn read_file_mapped(path: &Path) -> Result<Mmap, ReadFileError> {
     Ok(mmap)
 }
 
-fn find_embedded_jpeg(exif: &exif::Exif, ifd: exif::In) -> Option<&[u8]> {
-    let offset = exif
-        .get_field(exif::Tag::JPEGInterchangeFormat, ifd)?
-        .value
-        .get_uint(0)? as usize;
-    let len = exif
-        .get_field(exif::Tag::JPEGInterchangeFormatLength, ifd)?
-        .value
-        .get_uint(0)? as usize;
-    exif.buf().get(offset..offset + len)
-}
-
 fn apply_exif_orientation(img: DynamicImage, orientation: u32) -> DynamicImage {
     match orientation {
         2 => img.fliph(),
@@ -1130,27 +1116,60 @@ fn apply_exif_orientation(img: DynamicImage, orientation: u32) -> DynamicImage {
 }
 
 fn try_load_embedded_raw_preview(source_path: &Path, target_res: u32) -> Option<DynamicImage> {
+    let source = exif_processing::read_source_metadata(source_path).ok()?;
     let mmap = read_file_mapped(source_path).ok()?;
-    let exif = exif_processing::read_exif(&mmap)?;
-
-    let (jpeg_bytes, ifd) = find_embedded_jpeg(&exif, exif::In::PRIMARY)
-        .map(|b| (b, exif::In::PRIMARY))
-        .or_else(|| {
-            find_embedded_jpeg(&exif, exif::In::THUMBNAIL).map(|b| (b, exif::In::THUMBNAIL))
-        })?;
-
-    let img = image::load_from_memory_with_format(jpeg_bytes, image::ImageFormat::Jpeg).ok()?;
-
-    if img.width().max(img.height()) < (target_res as f32 * 0.95) as u32 {
-        return None;
+    for preview in source.previews {
+        let Some(end) = preview.offset.checked_add(preview.length) else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (usize::try_from(preview.offset), usize::try_from(end)) else {
+            continue;
+        };
+        let Some(bytes) = mmap.get(start..end).filter(|v| v.starts_with(b"\xff\xd8")) else {
+            continue;
+        };
+        let Ok(image) = image::load_from_memory_with_format(bytes, image::ImageFormat::Jpeg) else {
+            continue;
+        };
+        if image.width().max(image.height()) >= (target_res as f32 * 0.95) as u32 {
+            return Some(apply_exif_orientation(image, preview.orientation));
+        }
     }
+    None
+}
 
-    let orientation = exif
-        .get_field(exif::Tag::Orientation, ifd)
-        .and_then(|f| f.value.get_uint(0))
-        .unwrap_or(1);
-
-    Some(apply_exif_orientation(img, orientation))
+#[cfg(test)]
+mod embedded_preview_tests {
+    #[test]
+    #[ignore = "Uses the developer-provided RAW files in testbilder"]
+    fn supplied_raw_previews_use_cached_exiftool_locations() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("testbilder");
+        let mut found = 0;
+        for entry in std::fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if !crate::formats::is_raw_file(&path) {
+                continue;
+            }
+            let metadata = crate::exif_processing::read_source_metadata(&path).unwrap();
+            let requests = crate::exiftool::request_count();
+            if !metadata.previews.is_empty() {
+                let preview =
+                    super::try_load_embedded_raw_preview(&path, 64).unwrap_or_else(|| {
+                        panic!("Invalid cached preview locations: {}", path.display())
+                    });
+                assert!(preview.width().max(preview.height()) >= 60);
+                found += 1;
+            }
+            assert_eq!(crate::exiftool::request_count(), requests);
+        }
+        assert!(
+            found >= 5,
+            "Expected previews for Nikon, Olympus, Panasonic, Ricoh and Sony"
+        );
+    }
 }
 
 pub fn generate_thumbnail_data(
@@ -1177,9 +1196,28 @@ pub fn generate_thumbnail_data(
             .and_then(|content| serde_json::from_str(&content).ok())
     };
 
-    let adjustments = metadata
+    let mut adjustments = metadata
         .as_ref()
         .map_or(serde_json::Value::Null, |m| m.adjustments.clone());
+    if adjustments["lensCorrectionMode"].as_str() == Some("auto")
+        || matches!(
+            adjustments["lensProfileSource"].as_str(),
+            Some("embedded" | "off")
+        )
+    {
+        let state = app_handle.state::<AppState>();
+        let lens_db = state
+            .lens_db
+            .lock()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+            .clone();
+        resolve_lens_params_in_adjustments(
+            &mut adjustments,
+            &metadata.as_ref().and_then(|m| m.exif.clone()),
+            lens_db.as_deref(),
+            &source_path,
+        );
+    }
 
     let settings = load_settings(app_handle.clone()).unwrap_or_default();
     let always_decode_raw = settings.always_decode_raw_thumbnails.unwrap_or(false);
@@ -1756,94 +1794,73 @@ pub fn resolve_lens_params_in_adjustments(
     adjustments: &mut Value,
     exif_data: &Option<HashMap<String, String>>,
     lens_db: Option<&crate::lens_correction::LensDatabase>,
+    source_path: &Path,
 ) {
-    if let Some(map) = adjustments.as_object_mut() {
-        let mode = map
-            .get("lensCorrectionMode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("manual");
-
-        if mode == "auto" {
-            if let Some(exif) = exif_data {
-                let exif_maker = exif.get("Make").map(|s| s.as_str()).unwrap_or("");
-                let exif_model = exif.get("LensModel").map(|s| s.as_str()).unwrap_or("");
-                if let Some(db) = lens_db {
-                    if let Some((detected_maker, detected_model)) =
-                        crate::lens_correction::find_best_lens_match(db, exif_maker, exif_model)
-                    {
-                        map.insert(
-                            "lensMaker".to_string(),
-                            serde_json::to_value(&detected_maker).unwrap(),
-                        );
-                        map.insert(
-                            "lensModel".to_string(),
-                            serde_json::to_value(&detected_model).unwrap(),
-                        );
-                    } else {
-                        map.remove("lensMaker");
-                        map.remove("lensModel");
-                    }
-                }
-            } else {
-                map.remove("lensMaker");
-                map.remove("lensModel");
+    let Some(map) = adjustments.as_object_mut() else {
+        return;
+    };
+    let auto = map.get("lensCorrectionMode").and_then(Value::as_str) == Some("auto");
+    let source = map
+        .get("lensProfileSource")
+        .and_then(Value::as_str)
+        .unwrap_or("lensfun")
+        .to_owned();
+    if !auto && source == "off" {
+        for key in ["lensMaker", "lensModel", "lensDistortionParams"] {
+            map.remove(key);
+        }
+        return;
+    }
+    if auto || source == "embedded" {
+        let metadata = crate::exif_processing::read_source_metadata(source_path).ok();
+        let exif = metadata
+            .as_ref()
+            .map(|data| &data.fields)
+            .or(exif_data.as_ref());
+        let embedded = metadata
+            .as_ref()
+            .and_then(|data| data.lens_profile.as_ref());
+        let profile = exif.and_then(|exif| {
+            crate::lens_correction::select_auto_profile(
+                if auto { lens_db } else { None },
+                exif,
+                embedded,
+            )
+        });
+        if let Some(profile) = profile {
+            map.insert("lensMaker".into(), serde_json::json!(profile.maker));
+            map.insert("lensModel".into(), serde_json::json!(profile.model));
+            map.insert(
+                "lensDistortionParams".into(),
+                serde_json::to_value(profile.params).unwrap(),
+            );
+        } else {
+            for key in ["lensMaker", "lensModel", "lensDistortionParams"] {
+                map.remove(key);
+            }
+            if !auto {
+                map.insert("lensProfileSource".into(), serde_json::json!("off"));
             }
         }
-
-        if let Some(db) = lens_db {
-            let has_valid_lens = match (
-                map.get("lensMaker").and_then(|v| v.as_str()),
-                map.get("lensModel").and_then(|v| v.as_str()),
-            ) {
-                (Some(maker), Some(model)) if !maker.is_empty() && !model.is_empty() => {
-                    let mut focal_length = 50.0;
-                    let mut aperture = None;
-                    let mut distance = None;
-
-                    if let Some(exif) = exif_data {
-                        if let Some(fl_str) = exif
-                            .get("FocalLength")
-                            .or(exif.get("FocalLengthIn35mmFilm"))
-                            && let Ok(fl) = fl_str.replace(" mm", "").trim().parse::<f32>()
-                        {
-                            focal_length = fl;
-                        }
-                        if let Some(ap_str) = exif.get("ApertureValue").or(exif.get("FNumber"))
-                            && let Ok(ap) = ap_str.replace("f/", "").trim().parse::<f32>()
-                        {
-                            aperture = Some(ap);
-                        }
-                        if let Some(dist_str) = exif.get("SubjectDistance")
-                            && let Ok(dist) = dist_str.replace(" m", "").trim().parse::<f32>()
-                        {
-                            distance = Some(dist);
-                        }
-                    }
-
-                    if let Some(params) = crate::lens_correction::resolve_lens_params(
-                        db,
-                        maker,
-                        model,
-                        focal_length,
-                        aperture,
-                        distance,
-                    ) {
-                        map.insert(
-                            "lensDistortionParams".to_string(),
-                            serde_json::to_value(params).unwrap(),
-                        );
-                        true
-                    } else {
-                        false
-                    }
-                }
-                _ => false,
-            };
-
-            if !has_valid_lens {
-                map.remove("lensDistortionParams");
-            }
-        }
+        return;
+    }
+    let params = lens_db.zip(exif_data.as_ref()).and_then(|(db, exif)| {
+        crate::lens_correction::resolve_lens_params(
+            db,
+            map.get("lensMaker")?.as_str()?,
+            map.get("lensModel")?.as_str()?,
+            crate::lens_correction::metadata_number(exif, "FocalLength")?,
+            crate::lens_correction::metadata_number(exif, "FNumber"),
+            crate::lens_correction::metadata_number(exif, "SubjectDistance"),
+        )
+    });
+    if let Some(params) = params {
+        map.insert(
+            "lensDistortionParams".into(),
+            serde_json::to_value(params).unwrap(),
+        );
+    } else {
+        map.remove("lensDistortionParams");
     }
 }
 
@@ -2150,6 +2167,7 @@ pub fn save_metadata_and_update_thumbnail(
             &mut final_adjustments,
             &metadata.exif,
             lens_db_guard.as_deref(),
+            &source_path,
         );
     }
 
@@ -2272,6 +2290,7 @@ pub async fn apply_adjustments_to_paths(
                 &mut new_adjustments,
                 &existing_metadata.exif,
                 lens_db.as_deref(),
+                &source_path,
             );
 
             existing_metadata.adjustments = new_adjustments;
@@ -2457,6 +2476,7 @@ pub async fn apply_auto_lens_correction_to_paths(
                 &mut existing_metadata.adjustments,
                 &existing_metadata.exif,
                 lens_db.as_deref(),
+                &source_path,
             );
 
             if let Ok(json_string) = serde_json::to_string_pretty(&existing_metadata) {
@@ -2782,16 +2802,6 @@ pub fn show_in_finder(path: String) -> Result<(), String> {
         }
     }
 
-    #[cfg(target_os = "android")]
-    {
-        return Err("Show in File Manager is not natively supported via CLI on Android.".into());
-    }
-
-    #[cfg(target_os = "ios")]
-    {
-        return Err("Show in File Manager is not supported on iOS.".into());
-    }
-
     Ok(())
 }
 
@@ -3019,12 +3029,6 @@ pub async fn import_files(
     );
 
     if import_mode == "inPlace" {
-        #[cfg(target_os = "android")]
-        if source_paths.iter().any(|path| is_android_content_uri(path)) {
-            return Err(
-                "Import at existing location is not available for Android document URIs.".into(),
-            );
-        }
         let (catalog_status, already_exists) =
             crate::catalog::catalog_import_paths_in_place(source_paths, app_handle.clone()).await?;
         let _ = app_handle.emit(
@@ -3068,58 +3072,6 @@ pub async fn import_files(
             }
 
             let import_result: Result<(), String> = (|| {
-                #[cfg(target_os = "android")]
-                if is_android_content_uri(source_path_str) {
-                    let resolved_name = resolve_android_content_uri_name(source_path_str)?;
-                    let source_bytes = read_android_content_uri(source_path_str)?;
-                    let source_name_path = Path::new(&resolved_name);
-                    let file_date = exif_processing::get_creation_date_from_bytes(
-                        &resolved_name,
-                        &source_bytes,
-                    );
-
-                    let mut final_dest_folder = PathBuf::from(&destination_folder);
-                    if settings.organize_by_date {
-                        let subfolder = import_subfolder(&settings.date_folder_format, &file_date)?;
-                        final_dest_folder.push(subfolder);
-                    }
-
-                    fs::create_dir_all(&final_dest_folder)
-                        .map_err(|e| format!("Failed to create destination folder: {}", e))?;
-
-                    let new_stem = generate_filename_from_template(
-                        &settings.filename_template,
-                        source_name_path,
-                        i + 1,
-                        total_files,
-                        &file_date,
-                    );
-                    let extension = source_name_path
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("");
-                    let new_filename = format!("{}.{}", new_stem, extension);
-                    let dest_file_path = final_dest_folder.join(new_filename);
-
-                    if dest_file_path.exists() {
-                        return Err(format!(
-                            "File already exists at destination: {}",
-                            dest_file_path.display()
-                        ));
-                    }
-
-                    fs::write(&dest_file_path, source_bytes).map_err(|e| e.to_string())?;
-
-                    if import_mode == "move" {
-                        log::info!(
-                            "Skipping delete_after_import for Android content URI source: {}",
-                            source_path_str
-                        );
-                    }
-
-                    return Ok(());
-                }
-
                 let (source_path, source_sidecar) = parse_virtual_path(source_path_str);
                 if !source_path.exists() {
                     return Err(format!("Source file not found: {}", source_path_str));

@@ -4,14 +4,15 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, OptionalExtension, ToSql, params, params_from_iter};
+use rusqlite::{
+    Connection, OptionalExtension, ToSql, TransactionBehavior, params, params_from_iter,
+};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use walkdir::WalkDir;
 
 use crate::app_settings::{load_settings, save_settings};
 use crate::exif_processing::{get_primary_sidecar_path, load_sidecar, read_exif_data};
-use crate::file_management::read_file_mapped;
 use crate::formats::{is_raw_file, is_supported_media_file, is_supported_video_file};
 
 const SCHEMA_VERSION: i64 = 2;
@@ -124,6 +125,13 @@ fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
 static CHECKED_DATABASES: std::sync::LazyLock<std::sync::Mutex<HashSet<PathBuf>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
 
+// Serialize folder scans; ordinary readers and short metadata writes remain concurrent.
+static CATALOG_SCAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const INDEX_BATCH_SIZE: usize = 256;
+const UPSERT_IMAGE: &str = "INSERT INTO catalog_images(path,folder_path,filename,extension,modified,sidecar_modified,date_taken,camera,lens,focal_length,rating,color,flag,tags_json,exif_json,is_raw,is_edited,indexed_at)
+ VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+ ON CONFLICT(path) DO UPDATE SET folder_path=excluded.folder_path,filename=excluded.filename,extension=excluded.extension,modified=excluded.modified,sidecar_modified=excluded.sidecar_modified,date_taken=excluded.date_taken,camera=excluded.camera,lens=excluded.lens,focal_length=excluded.focal_length,rating=excluded.rating,color=excluded.color,flag=excluded.flag,tags_json=excluded.tags_json,exif_json=excluded.exif_json,is_raw=excluded.is_raw,is_edited=excluded.is_edited,indexed_at=excluded.indexed_at";
+
 fn migrate_catalog_schema(conn: &Connection) -> rusqlite::Result<()> {
     let version: Option<String> = conn
         .query_row(
@@ -174,15 +182,20 @@ fn migrate_catalog_schema(conn: &Connection) -> rusqlite::Result<()> {
 
 fn open_db(app: &AppHandle) -> Result<Connection, String> {
     let path = db_path(app)?;
+    open_db_path(&path)
+}
+
+fn open_db_path(path: &Path) -> Result<Connection, String> {
+    let path = path.to_path_buf();
     let mut checked = CHECKED_DATABASES.lock().map_err(|e| e.to_string())?;
     let open = || -> Result<Connection, rusqlite::Error> {
         let conn = Connection::open(&path)?;
         conn.busy_timeout(std::time::Duration::from_secs(15))?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         if checked.contains(&path) {
             return Ok(conn);
         }
+        conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS catalog_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS catalog_folders(path TEXT PRIMARY KEY, added_at INTEGER NOT NULL);
@@ -302,6 +315,7 @@ fn index_folder(
     conn: &mut Connection,
     folder: &Path,
     enable_xmp_sync: bool,
+    force_metadata: bool,
 ) -> Result<u64, String> {
     if !folder.is_dir() {
         return Err(format!(
@@ -316,14 +330,12 @@ fn index_folder(
     )
     .map_err(|e| e.to_string())?;
 
+    crate::exiftool::ensure_available()?;
     let mut seen = HashSet::new();
-    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let mut pending = Vec::with_capacity(INDEX_BATCH_SIZE);
     let mut indexed = 0u64;
-    for entry in WalkDir::new(folder)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
+    for entry in WalkDir::new(folder).follow_links(false).into_iter() {
+        let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
         if !entry.file_type().is_file() || !is_supported_media_file(path) {
             continue;
@@ -349,7 +361,7 @@ fn index_folder(
                     .map(unix_seconds)
                     .unwrap_or(0),
             );
-        let existing: Option<(i64, i64)> = transaction
+        let existing: Option<(i64, i64)> = conn
             .query_row(
                 "SELECT modified,sidecar_modified FROM catalog_images WHERE path=?1",
                 [&path_text],
@@ -357,7 +369,7 @@ fn index_folder(
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if existing == Some((modified, sidecar_modified)) {
+        if !force_metadata && existing == Some((modified, sidecar_modified)) {
             continue;
         }
 
@@ -367,12 +379,10 @@ fn index_folder(
         }
         let exif = if is_supported_video_file(path) {
             HashMap::new()
-        } else if let Some(exif) = sidecar_data.exif.clone() {
+        } else if let Some(exif) = sidecar_data.exif.clone().filter(|_| !force_metadata) {
             exif
         } else {
-            read_file_mapped(path)
-                .map(|bytes| read_exif_data(&path_text, &bytes))
-                .unwrap_or_default()
+            read_exif_data(&path_text, &[])
         };
         let tags = sidecar_data.tags.unwrap_or_default();
         let color = tags
@@ -406,16 +416,40 @@ fn index_folder(
             .unwrap_or("")
             .to_ascii_lowercase();
         let filename = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
-        transaction.execute(
-            "INSERT INTO catalog_images(path,folder_path,filename,extension,modified,sidecar_modified,date_taken,camera,lens,focal_length,rating,color,flag,tags_json,exif_json,is_raw,is_edited,indexed_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
-             ON CONFLICT(path) DO UPDATE SET folder_path=excluded.folder_path,filename=excluded.filename,extension=excluded.extension,modified=excluded.modified,sidecar_modified=excluded.sidecar_modified,date_taken=excluded.date_taken,camera=excluded.camera,lens=excluded.lens,focal_length=excluded.focal_length,rating=excluded.rating,color=excluded.color,flag=excluded.flag,tags_json=excluded.tags_json,exif_json=excluded.exif_json,is_raw=excluded.is_raw,is_edited=excluded.is_edited,indexed_at=excluded.indexed_at",
-            params![path_text, folder_text, filename, extension, modified, sidecar_modified, date_taken, camera, lens, focal, sidecar_data.rating, color, flag, serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into()), serde_json::to_string(&exif.iter().collect::<BTreeMap<_, _>>()).unwrap_or_else(|_| "{}".into()), is_raw_file(path), sidecar.exists(), unix_seconds(SystemTime::now())],
-        ).map_err(|e| e.to_string())?;
+        use rusqlite::types::Value;
+        let optional = |text: Option<String>| text.map(Value::from).unwrap_or(Value::Null);
+        pending.push(vec![
+            path_text.into(),
+            folder_text.clone().into(),
+            filename.to_owned().into(),
+            extension.into(),
+            modified.into(),
+            sidecar_modified.into(),
+            optional(date_taken),
+            optional(camera),
+            optional(lens),
+            optional(focal),
+            i64::from(sidecar_data.rating).into(),
+            optional(color),
+            optional(flag),
+            serde_json::to_string(&tags)
+                .map_err(|e| e.to_string())?
+                .into(),
+            serde_json::to_string(&exif.iter().collect::<BTreeMap<_, _>>())
+                .map_err(|e| e.to_string())?
+                .into(),
+            i64::from(is_raw_file(path)).into(),
+            i64::from(sidecar.exists()).into(),
+            unix_seconds(SystemTime::now()).into(),
+        ]);
+        if pending.len() == INDEX_BATCH_SIZE {
+            write_catalog_batch(conn, &mut pending, UPSERT_IMAGE)?;
+        }
         indexed += 1;
     }
+    write_catalog_batch(conn, &mut pending, UPSERT_IMAGE)?;
 
-    let mut stale = transaction
+    let mut stale = conn
         .prepare("SELECT path FROM catalog_images WHERE folder_path=?1")
         .map_err(|e| e.to_string())?;
     let stale_paths: Vec<String> = stale
@@ -425,13 +459,55 @@ fn index_folder(
         .filter(|p| !seen.contains(p))
         .collect();
     drop(stale);
-    for path in stale_paths {
-        transaction
-            .execute("DELETE FROM catalog_images WHERE path=?1", [path])
+    for batch in stale_paths.chunks(INDEX_BATCH_SIZE) {
+        let transaction = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
+        for path in batch {
+            transaction
+                .execute("DELETE FROM catalog_images WHERE path=?1", [path])
+                .map_err(|e| e.to_string())?;
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
+    }
+    Ok(indexed)
+}
+
+fn write_catalog_batch(
+    conn: &mut Connection,
+    rows: &mut Vec<Vec<rusqlite::types::Value>>,
+    sql: &str,
+) -> Result<u64, String> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let mut updated = 0;
+    {
+        let mut insert = transaction.prepare_cached(sql).map_err(|e| e.to_string())?;
+        for row in rows.iter() {
+            updated += insert
+                .execute(params_from_iter(row))
+                .map_err(|e| e.to_string())? as u64;
+        }
     }
     transaction.commit().map_err(|e| e.to_string())?;
-    Ok(indexed)
+    rows.clear();
+    Ok(updated)
+}
+
+fn scan_roots(folders: HashSet<PathBuf>) -> Vec<PathBuf> {
+    let mut folders: Vec<_> = folders.into_iter().collect();
+    folders.sort();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for folder in folders {
+        if !roots.iter().any(|root| folder.starts_with(root)) {
+            roots.push(folder);
+        }
+    }
+    roots
 }
 
 fn status_from(conn: &Connection, app: &AppHandle) -> Result<CatalogStatus, String> {
@@ -468,12 +544,14 @@ pub async fn catalog_add_folder(
 ) -> Result<CatalogStatus, String> {
     let worker_app = app_handle.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _scan = CATALOG_SCAN.lock().map_err(|e| e.to_string())?;
         let mut conn = open_db(&worker_app)?;
         let mut settings = load_settings(worker_app.clone()).unwrap_or_default();
         index_folder(
             &mut conn,
             Path::new(&path),
             settings.enable_xmp_sync.unwrap_or(false),
+            false,
         )?;
         if !settings.catalog_folders.iter().any(|p| p == &path) {
             settings.catalog_folders.push(path);
@@ -491,6 +569,7 @@ pub async fn catalog_import_paths_in_place(
 ) -> Result<(CatalogStatus, usize), String> {
     let worker_app = app_handle.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _scan = CATALOG_SCAN.lock().map_err(|e| e.to_string())?;
         let mut folders = HashSet::new();
         let mut selected_paths = HashSet::new();
         let total_selected = paths.len();
@@ -533,12 +612,13 @@ pub async fn catalog_import_paths_in_place(
             }
         }
         let mut settings = load_settings(worker_app.clone()).unwrap_or_default();
-        for folder in folders {
+        for folder in scan_roots(folders) {
             let folder_text = folder.to_string_lossy().into_owned();
             index_folder(
                 &mut conn,
                 &folder,
                 settings.enable_xmp_sync.unwrap_or(false),
+                false,
             )?;
             if !settings
                 .catalog_folders
@@ -591,7 +671,8 @@ pub fn catalog_remove_images(
 #[tauri::command]
 pub fn catalog_refresh_paths(paths: Vec<String>, app_handle: AppHandle) -> Result<u64, String> {
     let mut conn = open_db(&app_handle)?;
-    let transaction = conn.transaction().map_err(|e| e.to_string())?;
+    let mut pending = Vec::with_capacity(INDEX_BATCH_SIZE);
+    let sql = "UPDATE catalog_images SET rating=?1,color=?2,flag=?3,tags_json=?4,sidecar_modified=?5,is_edited=?6,indexed_at=?7 WHERE path=?8";
     let mut updated = 0u64;
     for virtual_path in paths {
         let (path, _) = crate::file_management::parse_virtual_path(&virtual_path);
@@ -611,14 +692,24 @@ pub fn catalog_refresh_paths(paths: Vec<String>, app_handle: AppHandle) -> Resul
             .and_then(|m| m.modified())
             .map(unix_seconds)
             .unwrap_or(0);
-        updated += transaction
-            .execute(
-                "UPDATE catalog_images SET rating=?1,color=?2,flag=?3,tags_json=?4,sidecar_modified=?5,is_edited=?6,indexed_at=?7 WHERE path=?8",
-                params![sidecar_data.rating, color, flag, serde_json::to_string(&tags).unwrap_or_else(|_| "[]".into()), sidecar_modified, sidecar.exists(), unix_seconds(SystemTime::now()), path_text],
-            )
-            .map_err(|e| e.to_string())? as u64;
+        use rusqlite::types::Value;
+        pending.push(vec![
+            i64::from(sidecar_data.rating).into(),
+            color.map(Value::from).unwrap_or(Value::Null),
+            flag.map(Value::from).unwrap_or(Value::Null),
+            serde_json::to_string(&tags)
+                .map_err(|e| e.to_string())?
+                .into(),
+            sidecar_modified.into(),
+            i64::from(sidecar.exists()).into(),
+            unix_seconds(SystemTime::now()).into(),
+            path_text.into(),
+        ]);
+        if pending.len() == INDEX_BATCH_SIZE {
+            updated += write_catalog_batch(&mut conn, &mut pending, sql)?;
+        }
     }
-    transaction.commit().map_err(|e| e.to_string())?;
+    updated += write_catalog_batch(&mut conn, &mut pending, sql)?;
     Ok(updated)
 }
 
@@ -626,6 +717,7 @@ pub fn catalog_refresh_paths(paths: Vec<String>, app_handle: AppHandle) -> Resul
 pub async fn catalog_rebuild(app_handle: AppHandle) -> Result<CatalogStatus, String> {
     let worker_app = app_handle.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _scan = CATALOG_SCAN.lock().map_err(|e| e.to_string())?;
         let folders = load_settings(worker_app.clone())
             .unwrap_or_default()
             .catalog_folders;
@@ -634,15 +726,9 @@ pub async fn catalog_rebuild(app_handle: AppHandle) -> Result<CatalogStatus, Str
             .enable_xmp_sync
             .unwrap_or(false);
         let mut conn = open_db(&worker_app)?;
-        // Keep the database file openable by concurrent readers during a rebuild.
-        conn.execute_batch(
-            "BEGIN IMMEDIATE; DELETE FROM catalog_images; DELETE FROM catalog_folders; COMMIT;",
-        )
-        .map_err(|e| e.to_string())?;
-        for folder in folders {
-            if let Err(error) = index_folder(&mut conn, Path::new(&folder), enable_xmp_sync) {
-                log::warn!("Catalog rebuild skipped {}: {}", folder, error);
-            }
+        for folder in scan_roots(folders.into_iter().map(PathBuf::from).collect()) {
+            index_folder(&mut conn, &folder, enable_xmp_sync, true)
+                .map_err(|e| format!("Catalog rescan failed for {}: {e}", folder.display()))?;
         }
         status_from(&conn, &worker_app)
     })
@@ -775,7 +861,7 @@ fn filtered_query(
         Some("rating") => "rating",
         Some("edited") => "is_edited",
         Some("iso") => {
-            "CAST(COALESCE(json_extract(exif_json, '$.PhotographicSensitivity'), json_extract(exif_json, '$.ISOSpeedRatings')) AS REAL)"
+            "CAST(COALESCE(NULLIF(json_extract(exif_json, '$.ISO'), 65535), json_extract(exif_json, '$.PhotographicSensitivity'), json_extract(exif_json, '$.ISOSpeedRatings'), json_extract(exif_json, '$.RecommendedExposureIndex'), json_extract(exif_json, '$.StandardOutputSensitivity')) AS REAL)"
         }
         Some("focal_length") => "CAST(focal_length AS REAL)",
         Some("aperture") => "CAST(json_extract(exif_json, '$.FNumber') AS REAL)",
@@ -902,6 +988,63 @@ fn facets_from_connection(conn: &Connection) -> Result<CatalogFacets, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sixty_thousand_files_commit_and_rescan_with_a_concurrent_writer() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let photos = directory.path().join("media");
+        fs::create_dir(&photos).unwrap();
+        for index in 0..60_000 {
+            fs::write(photos.join(format!("{index:05}.mp4")), []).unwrap();
+        }
+        let database = directory.path().join("catalog.db");
+        let mut conn = open_db_path(&database).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let writer = std::thread::spawn(move || {
+            let conn = Connection::open(database).unwrap();
+            conn.busy_timeout(std::time::Duration::from_secs(2))
+                .unwrap();
+            let mut writes = 0;
+            while !worker_stop.load(Ordering::Relaxed) {
+                conn.execute("INSERT INTO catalog_meta(key,value) VALUES('heartbeat','1') ON CONFLICT(key) DO UPDATE SET value=value+1", []).unwrap();
+                writes += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            writes
+        });
+        let imported = index_folder(&mut conn, &photos, false, false);
+        stop.store(true, Ordering::Relaxed);
+        assert!(writer.join().unwrap() > 0);
+        assert_eq!(imported.unwrap(), 60_000);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM catalog_images", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            60_000
+        );
+        assert_eq!(index_folder(&mut conn, &photos, false, false).unwrap(), 0);
+        fs::remove_file(photos.join("00000.mp4")).unwrap();
+        index_folder(&mut conn, &photos, false, true).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM catalog_images", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            59_999
+        );
+        assert_eq!(
+            scan_roots(
+                [photos.clone(), photos.join("child"), photos]
+                    .into_iter()
+                    .collect()
+            )
+            .len(),
+            1
+        );
+    }
     fn fixture() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE catalog_images(

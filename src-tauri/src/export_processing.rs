@@ -662,38 +662,10 @@ fn save_image_with_metadata(
         image.height(),
     )?;
 
-    #[cfg(target_os = "android")]
-    {
-        let file_name = output_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| "Missing Android export file name".to_string())?;
-        crate::android_integration::save_image_bytes_to_android_gallery(
-            file_name,
-            mime_type_for_extension(&extension),
-            &image_bytes,
-        )?;
-    }
-
-    #[cfg(not(target_os = "android"))]
     fs::write(output_path, image_bytes)
         .map_err(|e| format!("Failed to write file to '{}': {}", output_path.display(), e))?;
 
     Ok(())
-}
-
-#[cfg(target_os = "android")]
-pub fn mime_type_for_extension(extension: &str) -> &'static str {
-    match extension {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "webp" => "image/webp",
-        "bmp" => "image/bmp",
-        "gif" => "image/gif",
-        "tif" | "tiff" => "image/tiff",
-        "jxl" => "image/jxl",
-        _ => "application/octet-stream",
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1008,20 +980,6 @@ fn export_masks_for_image(
 
             let alpha_bytes = encode_grayscale_to_png(&alpha_resized)?;
             ensure_export_not_cancelled(cancellation_token)?;
-            #[cfg(target_os = "android")]
-            {
-                let file_name = mask_alpha_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or_else(|| "Missing Android mask export file name".to_string())?;
-                crate::android_integration::save_image_bytes_to_android_gallery(
-                    file_name,
-                    "image/png",
-                    &alpha_bytes,
-                )?;
-            }
-
-            #[cfg(not(target_os = "android"))]
             fs::write(&mask_alpha_path, alpha_bytes).map_err(|e| e.to_string())?;
             ensure_export_not_cancelled(cancellation_token)?;
         }
@@ -1161,7 +1119,7 @@ async fn export_images_impl(
 
                 let is_current_edit =
                     Some(&source_path_str) == adjustments_mode.active_path.as_ref();
-                let js_adjustments = if is_current_edit {
+                let mut js_adjustments = if is_current_edit {
                     adjustments_mode
                         .active_adjustments
                         .clone()
@@ -1171,6 +1129,15 @@ async fn export_images_impl(
                 } else {
                     crate::exif_processing::load_sidecar(&sidecar_path).adjustments
                 };
+                if js_adjustments["lensCorrectionMode"].as_str() == Some("auto") {
+                    let lens_db = state.lens_db.lock().map_err(|e| e.to_string())?.clone();
+                    crate::file_management::resolve_lens_params_in_adjustments(
+                        &mut js_adjustments,
+                        &None,
+                        lens_db.as_deref(),
+                        &source_path,
+                    );
+                }
                 let is_raw = is_raw_file(&source_path_str);
                 let original_path = std::path::Path::new(&source_path_str);
                 let file_date = exif_processing::get_creation_date_from_path(original_path);
@@ -1635,6 +1602,15 @@ pub async fn estimate_export_sizes(
     } else {
         let metadata = crate::exif_processing::load_sidecar(&sidecar_path);
         let mut js_adjustments = metadata.adjustments;
+        if js_adjustments["lensCorrectionMode"].as_str() == Some("auto") {
+            let lens_db = state.lens_db.lock().map_err(|e| e.to_string())?.clone();
+            crate::file_management::resolve_lens_params_in_adjustments(
+                &mut js_adjustments,
+                &metadata.exif,
+                lens_db.as_deref(),
+                &source_path,
+            );
+        }
 
         const ESTIMATE_DIM: u32 = 1280;
 
@@ -1915,15 +1891,12 @@ mod tests {
             false,
         )
         .unwrap();
-        let exif = exif::Reader::new()
-            .read_from_container(&mut Cursor::new(&bytes))
-            .unwrap();
+        let output = dir.path().join("export.jpg");
+        fs::write(&output, &bytes).unwrap();
+        let metadata = exif_processing::read_source_metadata(&output).unwrap();
         assert_eq!(
-            exif.get_field(exif::Tag::ColorSpace, exif::In::PRIMARY)
-                .unwrap()
-                .value
-                .get_uint(0),
-            Some(65535)
+            metadata.fields.get("ColorSpace").map(String::as_str),
+            Some("Uncalibrated")
         );
         let mut decoder = image::codecs::jpeg::JpegDecoder::new(Cursor::new(bytes)).unwrap();
         assert_eq!(

@@ -1,0 +1,24 @@
+Built-in lens correction models
+===============================
+
+Sony, Fujifilm and Olympus models are adapted from darktable:
+Copyright (C) 2019-2026 darktable developers.
+https://github.com/darktable-org/darktable/blob/master/src/iop/lens.cc
+https://github.com/darktable-org/darktable/blob/master/src/common/exif.cc
+
+Nikon's version-0100 correction polynomial follows ART:
+Copyright (c) 2020 Alberto Griggio <alberto.griggio@gmail.com>
+Original darktable attribution: Copyright (C) 2010-2020 darktable developers.
+https://bitbucket.org/agriggio/art/src/8776be5050b4f17b6b636da03f505926c9bf3b98/rtengine/lensexif.cc
+
+These adaptations are free software: you can redistribute them and/or modify
+them under the terms of the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your option)
+any later version.
+
+They are distributed in the hope that they will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+A PARTICULAR PURPOSE. See GPL-3.0.txt for the full license.
+
+Panasonic's polynomial is implemented from the original reverse-engineering notes:
+https://github.com/trou/panasonic-rw2/blob/master/notes.txt

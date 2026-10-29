@@ -24,6 +24,12 @@ modules:
       - type: dir
         path: ..
 
+      # Prefetched by Flatpak so the Rust build needs no network access.
+      - type: file
+        url: https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.60.tar.gz
+        sha256: c8e3c42576f46d862e4cd9c192989776e7363931e890c95056bcd6293e83ea36
+        dest-filename: exiftool-source.tar.gz
+
       - node-sources.json
       - cargo-sources.json
 
@@ -35,6 +41,7 @@ modules:
         npm_config_offline: 'true'
 
     build-commands:
+      - node scripts/update-exiftool.mjs --ensure --platform linux --archive exiftool-source.tar.gz
       - npm ci --offline --legacy-peer-deps
       - cargo --offline fetch --manifest-path src-tauri/Cargo.toml --verbose
       - npm run --offline tauri build -- --no-bundle

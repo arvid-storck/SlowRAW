@@ -53,6 +53,7 @@ const react = {
 const { useExportSettings } = load('src/hooks/useExportSettings.ts', {
   react,
   '../utils/colorSpaces': load('src/utils/colorSpaces.ts'),
+  '../utils/exportEncoding': load('src/utils/exportEncoding.ts'),
   '../components/ui/ExportImportProperties': {
     WatermarkAnchor: { BottomRight: 'bottom-right' },
     FILE_FORMATS: [{ id: 'jpeg' }, { id: 'png' }, { id: 'tiff' }],
@@ -109,7 +110,10 @@ assert.doesNotMatch(read('src/components/panel/SettingsPanel.tsx'), /disabled=\{
 const manifest = read('src-tauri/Cargo.toml');
 assert.doesNotMatch(manifest, /features[^\n]*"(gles|dx12|metal)"/);
 assert.match(manifest, /features[^\n]*"vulkan"/);
-assert.doesNotMatch(read('src/components/panel/SettingsPanel.tsx'), /filteredBackendOptions|processingBackend|displayColorSpace/);
+assert.doesNotMatch(
+  read('src/components/panel/SettingsPanel.tsx'),
+  /filteredBackendOptions|processingBackend|displayColorSpace/,
+);
 assert.match(read('src-tauri/src/vulkan_instance.rs'), /Backends::VULKAN/);
 assert.match(read('src-tauri/src/vulkan_instance.rs'), /libMoltenVK.dylib/);
 assert.match(read('src-tauri/tauri.macos.conf.json'), /libMoltenVK.dylib/);

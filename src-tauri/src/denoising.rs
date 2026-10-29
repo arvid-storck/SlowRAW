@@ -287,7 +287,12 @@ mod color_tests {
                 DynamicImage::from_decoder(decoder).unwrap().to_rgb16(),
                 source.to_rgb16()
             );
-            let loaded = crate::image_loader::load_image_with_orientation(&bytes, None).unwrap();
+            let loaded = crate::image_loader::load_image_with_orientation(
+                &bytes,
+                path.to_str().unwrap(),
+                None,
+            )
+            .unwrap();
             let stored_profile =
                 moxcms::ColorProfile::new_from_slice(ColorSpace::Rec2020.icc()).unwrap();
             let expected = convert_image(&source, &stored_profile, ColorSpace::Srgb).unwrap();

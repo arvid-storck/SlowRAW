@@ -28,6 +28,7 @@ import {
 import { useTranslation, Trans } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { Adjustments, INITIAL_ADJUSTMENTS } from '../../../utils/adjustments';
+import { lensCapabilities } from '../../../utils/lensProfile';
 import clsx from 'clsx';
 import { Orientation } from '../../ui/AppProperties';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -43,6 +44,9 @@ import { Crop } from 'react-image-crop';
 import { useShallow } from 'zustand/react/shallow';
 import { useUIStore } from '../../../store/useUIStore';
 import { useContextMenu } from '../../../context/ContextMenuContext';
+
+type LensProfileResult = { maker: string; model: string; params: Adjustments['lensDistortionParams'] };
+type LensProfileSource = Adjustments['lensProfileSource'];
 
 const BASE_RATIO = 1.618;
 const ORIGINAL_RATIO = 0;
@@ -86,6 +90,28 @@ export default function CropPanel() {
   const localRotationRef = useRef<number | null>(null);
 
   const lensMode = adjustments.lensCorrectionMode || 'manual';
+  const profileSource =
+    adjustments.lensProfileSource ?? (adjustments.lensDistortionParams?.embedded ? 'embedded' : 'lensfun');
+  const [embeddedProfile, setEmbeddedProfile] = useState<LensProfileResult | null>(null);
+  const lensRequest = useRef(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setEmbeddedProfile(null);
+    if (selectedImage?.path) {
+      invoke<LensProfileResult | null>('autodetect_lens', { path: selectedImage.path, profileSource: 'embedded' })
+        .then((profile) => {
+          if (!cancelled) setEmbeddedProfile(profile);
+        })
+        .catch(() => {
+          if (!cancelled) setEmbeddedProfile(null);
+        });
+    }
+    return () => {
+      cancelled = true;
+      lensRequest.current++;
+    };
+  }, [selectedImage?.path]);
 
   const [modeBubbleStyle, setModeBubbleStyle] = useState({});
   const isModeInitialAnimation = useRef(true);
@@ -405,6 +431,7 @@ export default function CropPanel() {
       lensVignetteEnabled: INITIAL_ADJUSTMENTS.lensVignetteEnabled,
       lensDistortionParams: INITIAL_ADJUSTMENTS.lensDistortionParams,
       lensCorrectionMode: INITIAL_ADJUSTMENTS.lensCorrectionMode,
+      lensProfileSource: INITIAL_ADJUSTMENTS.lensProfileSource,
     }));
   };
 
@@ -483,46 +510,51 @@ export default function CropPanel() {
     [selectedImage?.exif],
   );
 
-  const handleAutoDetectLens = useCallback(async () => {
-    const exifMaker = selectedImage?.exif?.Make;
-    const exifModel = selectedImage?.exif?.LensModel;
-
-    if (!exifMaker || !exifModel) {
-      setDetectionStatus('not_found');
-      return;
-    }
-
-    setDetectionStatus('detecting');
-    try {
-      const result: [string, string] | null = await invoke('autodetect_lens', {
-        maker: exifMaker,
-        model: exifModel,
-      });
-
-      if (result) {
-        const [detectedMaker, detectedModel] = result;
-        const distParams = await fetchDistortionParams(detectedMaker, detectedModel);
-
+  const loadLensProfile = useCallback(
+    async (source?: 'embedded' | 'lensfun') => {
+      const path = selectedImage?.path;
+      if (!path) return;
+      const request = ++lensRequest.current;
+      setDetectionStatus('detecting');
+      try {
+        const result = await invoke<LensProfileResult | null>('autodetect_lens', { path, profileSource: source });
+        if (useEditorStore.getState().selectedImage?.path !== path || request !== lensRequest.current) return;
         setAdjustments((prev) => ({
           ...prev,
-          lensMaker: detectedMaker,
-          lensModel: detectedModel,
-          lensDistortionParams: distParams,
-          lensCorrectionMode: 'auto',
+          lensMaker: result?.maker ?? null,
+          lensModel: result?.model ?? null,
+          lensDistortionParams: result?.params ?? null,
         }));
-
-        setDetectionStatus('success');
-        setTimeout(() => setDetectionStatus('idle'), 2000);
-      } else {
+        setDetectionStatus(result ? 'success' : 'not_found');
+      } catch {
+        if (request !== lensRequest.current) return;
+        setAdjustments((prev) => ({ ...prev, lensMaker: null, lensModel: null, lensDistortionParams: null }));
         setDetectionStatus('not_found');
       }
-    } catch {
-      setDetectionStatus('not_found');
-    }
-  }, [selectedImage?.exif, fetchDistortionParams, setAdjustments]);
+    },
+    [selectedImage?.path, setAdjustments],
+  );
+
+  const handleProfileSourceChange = useCallback(
+    (source: LensProfileSource) => {
+      lensRequest.current++;
+      setDetectionStatus('idle');
+      setAdjustments((prev) => ({
+        ...prev,
+        lensProfileSource: source,
+        lensMaker: source === 'embedded' ? (embeddedProfile?.maker ?? null) : null,
+        lensModel: source === 'embedded' ? (embeddedProfile?.model ?? null) : null,
+        lensDistortionParams: source === 'embedded' ? (embeddedProfile?.params ?? null) : null,
+      }));
+      if (source === 'lensfun') void loadLensProfile('lensfun');
+    },
+    [embeddedProfile, loadLensProfile, setAdjustments],
+  );
 
   const handleMakerChange = useCallback(
     (maker: string) => {
+      lensRequest.current++;
+      setDetectionStatus('idle');
       setAdjustments((prev) => ({
         ...prev,
         lensMaker: maker,
@@ -537,14 +569,18 @@ export default function CropPanel() {
   const handleModelChange = useCallback(
     async (model: string) => {
       if (!adjustments.lensMaker) return;
+      const path = selectedImage?.path;
+      const request = ++lensRequest.current;
       const distParams = await fetchDistortionParams(adjustments.lensMaker, model);
+      if (request !== lensRequest.current || useEditorStore.getState().selectedImage?.path !== path) return;
+      setDetectionStatus('idle');
       setAdjustments((prev) => ({
         ...prev,
         lensModel: model,
         lensDistortionParams: distParams,
       }));
     },
-    [adjustments.lensMaker, fetchDistortionParams, setAdjustments],
+    [adjustments.lensMaker, selectedImage?.path, fetchDistortionParams, setAdjustments],
   );
 
   const handleMyLensSelect = useCallback(
@@ -554,11 +590,11 @@ export default function CropPanel() {
       const selected = myLenses[index];
       if (!selected) return;
 
-      invoke('get_lensfun_lenses_for_maker', { maker: selected.maker })
-        .then((l: any) => setLenses(l))
-        .catch(console.error);
-
+      const path = selectedImage?.path;
+      const request = ++lensRequest.current;
       const distParams = await fetchDistortionParams(selected.maker, selected.model);
+      if (request !== lensRequest.current || useEditorStore.getState().selectedImage?.path !== path) return;
+      setDetectionStatus('idle');
 
       setAdjustments((prev) => ({
         ...prev,
@@ -567,20 +603,14 @@ export default function CropPanel() {
         lensDistortionParams: distParams,
       }));
     },
-    [myLenses, fetchDistortionParams, setAdjustments],
+    [myLenses, selectedImage?.path, fetchDistortionParams, setAdjustments],
   );
 
-  const hasDistortion =
-    Math.abs(adjustments.lensDistortionParams?.k1 || 0) > 1e-6 ||
-    Math.abs(adjustments.lensDistortionParams?.k2 || 0) > 1e-6 ||
-    Math.abs(adjustments.lensDistortionParams?.k3 || 0) > 1e-6;
-  const hasTca =
-    Math.abs((adjustments.lensDistortionParams?.tca_vr || 1) - 1) > 1e-5 ||
-    Math.abs((adjustments.lensDistortionParams?.tca_vb || 1) - 1) > 1e-5;
-  const hasVignetting =
-    Math.abs(adjustments.lensDistortionParams?.vig_k1 || 0) > 1e-6 ||
-    Math.abs(adjustments.lensDistortionParams?.vig_k2 || 0) > 1e-6 ||
-    Math.abs(adjustments.lensDistortionParams?.vig_k3 || 0) > 1e-6;
+  const {
+    distortion: hasDistortion,
+    tca: hasTca,
+    vignetting: hasVignetting,
+  } = lensCapabilities(adjustments.lensDistortionParams);
 
   const myLensOptions = useMemo(() => {
     if (myLenses.length === 0) {
@@ -614,12 +644,23 @@ export default function CropPanel() {
 
   const handleModeChange = useCallback(
     (mode: 'auto' | 'manual') => {
-      setAdjustments((prev) => ({ ...prev, lensCorrectionMode: mode }));
-      if (mode === 'auto') {
-        handleAutoDetectLens();
-      }
+      lensRequest.current++;
+      setDetectionStatus('idle');
+      setAdjustments((prev) => ({
+        ...prev,
+        lensCorrectionMode: mode,
+        lensProfileSource:
+          mode === 'manual'
+            ? prev.lensDistortionParams?.embedded
+              ? 'embedded'
+              : prev.lensDistortionParams
+                ? 'lensfun'
+                : 'off'
+            : prev.lensProfileSource,
+      }));
+      if (mode === 'auto') void loadLensProfile();
     },
-    [handleAutoDetectLens, setAdjustments],
+    [loadLensProfile, setAdjustments],
   );
 
   const handleTransformContextMenu = (e: React.MouseEvent) => {
@@ -672,6 +713,7 @@ export default function CropPanel() {
         lensVignetteEnabled: INITIAL_ADJUSTMENTS.lensVignetteEnabled,
         lensDistortionParams: INITIAL_ADJUSTMENTS.lensDistortionParams,
         lensCorrectionMode: INITIAL_ADJUSTMENTS.lensCorrectionMode,
+        lensProfileSource: INITIAL_ADJUSTMENTS.lensProfileSource,
       }));
     };
 
@@ -1260,7 +1302,7 @@ export default function CropPanel() {
                               'w-full flex items-center justify-center gap-2 p-3 text-sm rounded-md border transition-colors',
                               detectionStatus === 'not_found'
                                 ? 'bg-red-500/10 text-red-400 border-red-500/20'
-                                : adjustments.lensMaker
+                                : adjustments.lensDistortionParams
                                   ? 'bg-green-500/10 text-green-400 border-green-500/20'
                                   : 'bg-bg-primary border-surface text-text-secondary',
                             )}
@@ -1271,7 +1313,7 @@ export default function CropPanel() {
                               </>
                             ) : detectionStatus === 'not_found' ? (
                               t('modals.lensCorrection.lensProfileNotFound')
-                            ) : adjustments.lensMaker && adjustments.lensModel ? (
+                            ) : adjustments.lensDistortionParams && adjustments.lensModel ? (
                               <>
                                 <Check size={16} /> {adjustments.lensMaker} - {adjustments.lensModel}
                               </>
@@ -1283,28 +1325,58 @@ export default function CropPanel() {
                           </div>
                         ) : (
                           <>
-                            <Dropdown
-                              options={myLensOptions}
-                              value=""
-                              onChange={handleMyLensSelect}
-                              placeholder={t('modals.lensCorrection.chooseSavedLens')}
+                            <Dropdown<LensProfileSource>
+                              options={[
+                                { label: t('modals.lensCorrection.sourceOff'), value: 'off' },
+                                ...(embeddedProfile
+                                  ? [{ label: t('modals.lensCorrection.sourceEmbedded'), value: 'embedded' as const }]
+                                  : []),
+                                { label: t('modals.lensCorrection.sourceLensfun'), value: 'lensfun' },
+                              ]}
+                              value={profileSource}
+                              onChange={handleProfileSourceChange}
                             />
-                            <Dropdown
-                              options={makers.map((m) => ({ label: m, value: m }))}
-                              value={adjustments.lensMaker || ''}
-                              onChange={handleMakerChange}
-                              placeholder={t('modals.lensCorrection.selectManufacturer')}
-                            />
-                            {adjustments.lensMaker && (
-                              <Dropdown
-                                options={lenses.map((l) => ({ label: l, value: l }))}
-                                value={adjustments.lensModel || ''}
-                                onChange={handleModelChange}
-                                placeholder={t('modals.lensCorrection.selectLensModel')}
-                              />
+                            {profileSource === 'lensfun' && (
+                              <>
+                                <Dropdown
+                                  options={myLensOptions}
+                                  value=""
+                                  onChange={handleMyLensSelect}
+                                  placeholder={t('modals.lensCorrection.chooseSavedLens')}
+                                />
+                                <Dropdown
+                                  options={makers.map((m) => ({ label: m, value: m }))}
+                                  value={adjustments.lensMaker || ''}
+                                  onChange={handleMakerChange}
+                                  placeholder={t('modals.lensCorrection.selectManufacturer')}
+                                />
+                                {adjustments.lensMaker && (
+                                  <Dropdown
+                                    options={lenses.map((l) => ({ label: l, value: l }))}
+                                    value={adjustments.lensModel || ''}
+                                    onChange={handleModelChange}
+                                    placeholder={t('modals.lensCorrection.selectLensModel')}
+                                  />
+                                )}
+                              </>
+                            )}
+                            {profileSource === 'embedded' && adjustments.lensModel && (
+                              <Text variant={TextVariants.label}>{adjustments.lensModel}</Text>
                             )}
                           </>
                         )}
+
+                        {adjustments.lensDistortionParams &&
+                          detectionStatus !== 'detecting' &&
+                          detectionStatus !== 'not_found' && (
+                            <div className="text-xs text-text-secondary" data-testid="lens-profile-source">
+                              {adjustments.lensDistortionParams.embedded
+                                ? t('modals.lensCorrection.profileSourceEmbedded', {
+                                    source: adjustments.lensDistortionParams.embedded.source ?? 'DNG',
+                                  })
+                                : t('modals.lensCorrection.profileSourceLensfun')}
+                            </div>
+                          )}
 
                         <div className="flex flex-col gap-3 mt-2">
                           <div
@@ -1313,7 +1385,7 @@ export default function CropPanel() {
                               hasDistortion ? '' : 'opacity-50 grayscale',
                             )}
                           >
-                            <div className="flex items-center gap-3">
+                            <div className="flex min-h-10 items-center gap-3">
                               <SquareDashed size={16} className="text-text-secondary shrink-0" />
                               <Switch
                                 className="grow"
@@ -1356,7 +1428,7 @@ export default function CropPanel() {
                               hasTca ? '' : 'opacity-50 grayscale',
                             )}
                           >
-                            <div className="flex items-center gap-3">
+                            <div className="flex min-h-10 items-center gap-3">
                               <Activity size={16} className="text-text-secondary shrink-0" />
                               <Switch
                                 className="grow"
@@ -1399,7 +1471,7 @@ export default function CropPanel() {
                               hasVignetting ? '' : 'opacity-50 grayscale',
                             )}
                           >
-                            <div className="flex items-center gap-3">
+                            <div className="flex min-h-10 items-center gap-3">
                               <CircleDashed size={16} className="text-text-secondary shrink-0" />
                               <Switch
                                 className="grow"

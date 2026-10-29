@@ -94,7 +94,7 @@ SlowRAW relies on [dnglab / rawler](https://github.com/dnglab/dnglab/tree/main/r
 <details>
 <summary><strong>Lens Correction Support</strong></summary>
 
-SlowRAW supports automatic lens profile detection, distortion, transverse chromatic aberration (TCA), and vignetting correction through **[Lensfun](https://lensfun.github.io/)**.
+SlowRAW reads camera and lens metadata with Phil Harvey's official **[ExifTool](https://exiftool.org/)**. Automatic correction reuses that metadata and prefers supported built-in DNG, Sony, Fujifilm, Olympus/OM System, Panasonic/Leica and Nikon profiles, with **[Lensfun](https://lensfun.github.io/)** as a fallback. Available corrections depend on the camera's data and supported model; the lens panel shows the profile source. Fixed-lens cameras are matched through their camera mount and profile. See [CODEMAP](docs/CODEMAP.md) for model coverage and limitations.
 
 Lens profiles can be updated independently from the main application.
 
@@ -143,16 +143,24 @@ You'll need to have [Rust](https://www.rust-lang.org/tools/install) and [Node.js
 
 ### MacOS
 
-Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/). Then install MoltenVK.
+Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 # Install molten-vk
 brew install molten-vk
+
+# Install Perl
+brew install perl
 ```
 
 ### Linux
 
 Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/) for your distribution. 
+
+```bash
+# Install Perl (Debian / Ubuntu)
+sudo apt install perl
+```
 
 ### For all OS
 
@@ -197,6 +205,8 @@ npm run clean
 npm run clean:deep -- --dry-run
 npm run clean:deep
 ```
+
+Both commands remove interrupted ExifTool downloads. `clean:deep` also removes downloaded ExifTool.
 
 ### Updating the RAW decoder
 

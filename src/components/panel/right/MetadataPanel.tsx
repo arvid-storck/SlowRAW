@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { cameraIso } from '../../../utils/metadata';
 import { invoke } from '@tauri-apps/api/core';
 import { Check, ChevronDown, ChevronRight, Plus, Star, Tag, X, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -212,12 +213,9 @@ export default function MetadataPanel() {
     const cameraGridKeys = ['ExposureTime', 'FNumber', 'PhotographicSensitivity', 'FocalLengthIn35mmFilm'];
     const cameraGridSettings = cameraGridKeys.map((key) => {
       const value =
-        exif[key] ??
-        (key === 'FocalLengthIn35mmFilm'
-          ? exif.FocalLength
-          : key === 'PhotographicSensitivity'
-            ? exif.ISOSpeed
-            : undefined);
+        key === 'PhotographicSensitivity'
+          ? cameraIso(exif)
+          : (exif[key] ?? (key === 'FocalLengthIn35mmFilm' ? exif.FocalLength : undefined));
       const hasValue = value !== undefined && value !== null && value !== '';
 
       const translatedLabel =

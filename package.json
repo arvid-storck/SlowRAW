@@ -3,6 +3,7 @@
   "author": "Arvid Storck, chatgpt",
   "private": true,
   "scripts": {
+    "update:exiftool": "node scripts/update-exiftool.mjs --ensure",
     "dev": "vite",
     "build": "vite build",
     "clean": "node scripts/clean.mjs",
@@ -19,7 +20,6 @@
     "i18n:runtime-check": "node src/i18n/check-runtime.mjs",
     "i18n:lint": "i18next-cli lint",
     "update:rawler": "cargo update --manifest-path src-tauri/Cargo.toml -p rawler",
-    "update:kamadak-exif": "cargo update --manifest-path src-tauri/Cargo.toml -p kamadak-exif",
     "update:rcd": "node scripts/update-rcd.mjs"
   },
   "dependencies": {

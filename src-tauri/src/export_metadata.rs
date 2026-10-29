@@ -202,35 +202,10 @@ fn required_xmp(source: &str, keep_author: bool) -> Result<Option<Vec<u8>>, Stri
         (None, None)
     };
     if keep_author {
-        if crate::formats::is_raw_file(source) && (author.is_none() || copyright.is_none()) {
-            let loader = rawler::RawLoader::new();
-            if let Ok(raw_source) = rawler::rawsource::RawSource::new(path)
-                && let Ok(decoder) = loader.get_decoder(&raw_source)
-                && let Ok(meta) = decoder.raw_metadata(&raw_source, &Default::default())
-            {
-                author = author.or(meta.exif.artist);
-                copyright = copyright.or(meta.exif.copyright);
-            }
-        }
-        if let Ok(exif) = exif::Reader::new().read_from_container(&mut Cursor::new(bytes.as_ref()))
-        {
-            let string = |tag| {
-                exif.get_field(tag, exif::In::PRIMARY).and_then(|field| {
-                    if let exif::Value::Ascii(values) = &field.value {
-                        Some(
-                            values
-                                .iter()
-                                .map(|v| String::from_utf8_lossy(v).trim_matches('\0').to_string())
-                                .collect::<Vec<_>>()
-                                .join("; "),
-                        )
-                    } else {
-                        None
-                    }
-                })
-            };
-            author = author.or_else(|| string(exif::Tag::Artist));
-            copyright = copyright.or_else(|| string(exif::Tag::Copyright));
+        if author.is_none() || copyright.is_none() {
+            let metadata = crate::exif_processing::read_source_metadata(path)?;
+            author = author.or_else(|| metadata.fields.get("Artist").cloned());
+            copyright = copyright.or_else(|| metadata.fields.get("Copyright").cloned());
         }
         // Explicit metadata edits take precedence, including clearing a field.
         if let Some(map) = crate::exif_processing::read_rrexif_sidecar(path) {

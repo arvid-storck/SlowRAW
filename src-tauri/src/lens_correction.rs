@@ -1,14 +1,11 @@
 use crate::AppState;
-use fuzzy_matcher::FuzzyMatcher;
-#[cfg(target_os = "android")]
-use include_dir::{Dir, include_dir};
+use crate::embedded_lens::EmbeddedLensProfile;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::fs;
 use tauri::{Manager, State};
 use walkdir::WalkDir;
-#[cfg(target_os = "android")]
-static LENS_DB_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/lensfun_db");
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 pub struct Distortion {
@@ -159,6 +156,8 @@ pub struct LensDistortionParams {
     vig_k1: f64,
     vig_k2: f64,
     vig_k3: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedded: Option<EmbeddedLensProfile>,
 }
 
 fn strip_maker_prefix(name: &str, maker: &str) -> String {
@@ -484,6 +483,7 @@ impl Lens {
             vig_k1,
             vig_k2,
             vig_k3,
+            embedded: None,
         })
     }
 }
@@ -531,34 +531,6 @@ pub fn load_lensfun_db(app_handle: &tauri::AppHandle) -> LensDatabase {
         lenses: Vec::new(),
     };
 
-    #[cfg(target_os = "android")]
-    {
-        log::info!("Loading Lensfun DB from embedded assets (Android path)");
-
-        for file in LENS_DB_DIR.files() {
-            let is_xml = file
-                .path()
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.eq_ignore_ascii_case("xml"))
-                .unwrap_or(false);
-
-            if is_xml {
-                if let Some(xml_content) = file.contents_utf8() {
-                    match quick_xml::de::from_str::<LensDatabase>(xml_content) {
-                        Ok(mut db) => {
-                            combined_db.cameras.append(&mut db.cameras);
-                            combined_db.lenses.append(&mut db.lenses);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to parse embedded XML {:?}: {}", file.path(), e)
-                        }
-                    }
-                }
-            }
-        }
-    }
-    #[cfg(not(target_os = "android"))]
     {
         let updated_path = std::env::var("RAPIDRAW_COMPONENT_DIR")
             .ok()
@@ -647,103 +619,246 @@ pub fn get_lensfun_lenses_for_maker(
     }
 }
 
+fn identifier(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn maker_id(text: &str) -> String {
+    identifier(text.split_whitespace().next().unwrap_or(""))
+}
+
+fn find_exact_lens_match(db: &LensDatabase, maker: &str, model: &str) -> Option<(String, String)> {
+    let wanted = identifier(model.trim_matches('"'));
+    if wanted.is_empty() || matches!(wanted.as_str(), "unknown" | "0" | "65535" | "fixedlens") {
+        return None;
+    }
+    let mut matches = db.lenses.iter().filter(|lens| {
+        let lens_maker = lens.get_maker();
+        let same_maker = maker.trim().is_empty() || maker_id(maker) == maker_id(&lens_maker);
+        let explicit_maker = wanted.starts_with(&identifier(&lens_maker));
+        (same_maker || explicit_maker)
+            && lens.model.iter().any(|name| {
+                identifier(&name.value) == wanted
+                    || identifier(&strip_maker_prefix(&name.value, &lens_maker)) == wanted
+            })
+    });
+    let lens = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    let maker = lens.get_maker();
+    Some((
+        maker.clone(),
+        lens.get_display_name(&lenses_for_maker(db, &maker)),
+    ))
+}
+
 pub fn find_best_lens_match(
     db: &LensDatabase,
     maker: &str,
     model: &str,
 ) -> Option<(String, String)> {
-    let clean_maker = maker.trim().trim_matches('"').to_string();
-    let clean_model = model.trim().trim_matches('"').to_string();
-    let matcher = fuzzy_matcher::skim::SkimMatcherV2::default().ignore_case();
-
-    let lenses_from_maker: Vec<&Lens> = db
-        .lenses
-        .iter()
-        .filter(|lens| lens.get_maker().eq_ignore_ascii_case(&clean_maker))
-        .collect();
-
-    if !lenses_from_maker.is_empty() {
-        let best_match = lenses_from_maker
-            .iter()
-            .filter_map(|lens| {
-                let english_name = lens.get_full_model_name();
-                let canonical_name = lens.get_canonical_model_name();
-
-                let score_english = matcher
-                    .fuzzy_match(&english_name, &clean_model)
-                    .unwrap_or(0);
-                let score_canonical = matcher
-                    .fuzzy_match(&canonical_name, &clean_model)
-                    .unwrap_or(0);
-                let score = score_english.max(score_canonical);
-
-                if score > 0 {
-                    let best_name = if score_canonical > score_english {
-                        &canonical_name
-                    } else {
-                        &english_name
-                    };
-                    let length_penalty =
-                        (best_name.len() as i64 - clean_model.len() as i64).max(0) / 2;
-                    let adjusted_score = score - length_penalty;
-                    Some((adjusted_score, *lens))
-                } else {
-                    None
-                }
-            })
-            .max_by_key(|(score, _)| *score);
-
-        if let Some((_, best_lens)) = best_match {
-            return Some((
-                best_lens.get_maker(),
-                best_lens.get_display_name(&lenses_from_maker),
-            ));
-        }
+    if let Some(exact) = find_exact_lens_match(db, maker, model) {
+        return Some(exact);
     }
-
-    let best_match_fallback = db
+    // Text similarity alone confused unrelated lenses. Require the same optical
+    // numbers, a strong name match and a clear lead over the next candidate.
+    static NUMBERS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let numbers = NUMBERS.get_or_init(|| regex::Regex::new(r"\d+(?:\.\d+)?").unwrap());
+    let signature = |text: &str| {
+        numbers
+            .find_iter(text)
+            .map(|m| m.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let wanted_numbers = signature(model);
+    if wanted_numbers.is_empty() {
+        return None;
+    }
+    let wanted = identifier(model);
+    let mut candidates = db
         .lenses
         .iter()
         .filter_map(|lens| {
-            let english_name = lens.get_full_model_name();
-            let canonical_name = lens.get_canonical_model_name();
-
-            let score_english = matcher
-                .fuzzy_match(&english_name, &clean_model)
-                .unwrap_or(0);
-            let score_canonical = matcher
-                .fuzzy_match(&canonical_name, &clean_model)
-                .unwrap_or(0);
-            let score = score_english.max(score_canonical);
-
-            if score > 0 { Some((score, lens)) } else { None }
+            let lens_maker = lens.get_maker();
+            let same_maker = maker.trim().is_empty() || maker_id(maker) == maker_id(&lens_maker);
+            if !same_maker && !wanted.starts_with(&identifier(&lens_maker)) {
+                return None;
+            }
+            let score = lens
+                .model
+                .iter()
+                .filter(|name| signature(&name.value) == wanted_numbers)
+                .map(|name| {
+                    strsim::jaro_winkler(&wanted, &identifier(&name.value)).max(
+                        strsim::jaro_winkler(
+                            &wanted,
+                            &identifier(&strip_maker_prefix(&name.value, &lens_maker)),
+                        ),
+                    )
+                })
+                .fold(0.0_f64, f64::max);
+            (score >= 0.90).then_some((score, lens))
         })
-        .max_by_key(|(score, _): &(i64, _)| *score);
-
-    if let Some((_, best_lens)) = best_match_fallback {
-        let lens_maker = best_lens.get_maker();
-        let maker_lenses = lenses_for_maker(db, &lens_maker);
-        return Some((lens_maker, best_lens.get_display_name(&maker_lenses)));
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let (score, lens) = candidates.first()?;
+    if candidates.get(1).is_some_and(|next| score - next.0 < 0.025) {
+        return None;
     }
+    let maker = lens.get_maker();
+    Some((
+        maker.clone(),
+        lens.get_display_name(&lenses_for_maker(db, &maker)),
+    ))
+}
 
-    None
+fn fixed_camera_lens(db: &LensDatabase, maker: &str, model: &str) -> Option<(String, String)> {
+    let mut camera_model = identifier(&strip_maker_prefix(
+        model,
+        maker.split_whitespace().next().unwrap_or(""),
+    ));
+    // GR and GR II share the 18.3mm F2.8 lens represented by Lensfun's ricohGR mount.
+    if maker_id(maker) == "ricoh" && camera_model == "grii" {
+        camera_model = "gr".into();
+    }
+    let camera = db.cameras.iter().find(|camera| {
+        camera
+            .maker
+            .iter()
+            .any(|name| maker_id(&name.value) == maker_id(maker))
+            && camera.model.iter().any(|name| {
+                identifier(&strip_maker_prefix(
+                    &name.value,
+                    maker.split_whitespace().next().unwrap_or(""),
+                )) == camera_model
+            })
+    })?;
+    let mut candidates = db.lenses.iter().filter(|lens| {
+        lens.mount.contains(&camera.mount)
+            && lens
+                .get_full_model_name()
+                .eq_ignore_ascii_case("fixed lens")
+    });
+    let lens = candidates.next()?;
+    if candidates.next().is_some() {
+        return None;
+    }
+    let maker = lens.get_maker();
+    Some((
+        maker.clone(),
+        lens.get_display_name(&lenses_for_maker(db, &maker)),
+    ))
 }
 
 #[tauri::command]
-pub fn autodetect_lens(
-    maker: String,
-    model: String,
-    state: tauri::State<AppState>,
-) -> Result<Option<(String, String)>, String> {
-    let db_guard = state
+pub async fn autodetect_lens(
+    path: String,
+    profile_source: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<AutoLensProfile>, String> {
+    let db = state
         .lens_db
         .lock()
-        .map_err(|e| format!("Lock poisoned: {}", e))?;
-    if let Some(db) = &*db_guard {
-        Ok(find_best_lens_match(db, &maker, &model))
-    } else {
-        Ok(None)
+        .map_err(|e| format!("Lock poisoned: {e}"))?
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (source, _) = crate::file_management::parse_virtual_path(&path);
+        let metadata = crate::exif_processing::read_source_metadata(&source)?;
+        Ok(select_auto_profile(
+            if profile_source.as_deref() == Some("embedded") {
+                None
+            } else {
+                db.as_deref()
+            },
+            &metadata.fields,
+            if profile_source.as_deref() == Some("lensfun") {
+                None
+            } else {
+                metadata.lens_profile.as_ref()
+            },
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+pub struct AutoLensProfile {
+    pub maker: String,
+    pub model: String,
+    pub params: LensDistortionParams,
+}
+
+pub fn select_auto_profile(
+    db: Option<&LensDatabase>,
+    exif: &HashMap<String, String>,
+    embedded: Option<&EmbeddedLensProfile>,
+) -> Option<AutoLensProfile> {
+    if let Some(embedded) = embedded.filter(|profile| profile.has_correction()) {
+        return Some(AutoLensProfile {
+            maker: exif
+                .get("LensMake")
+                .or_else(|| exif.get("Make"))
+                .cloned()
+                .unwrap_or_default(),
+            model: exif
+                .get("LensModel")
+                .cloned()
+                .unwrap_or_else(|| format!("{} profile", embedded.source)),
+            params: LensDistortionParams {
+                k1: 0.0,
+                k2: 0.0,
+                k3: 0.0,
+                model: 0,
+                tca_vr: 1.0,
+                tca_vb: 1.0,
+                vig_k1: 0.0,
+                vig_k2: 0.0,
+                vig_k3: 0.0,
+                embedded: Some(embedded.clone()),
+            },
+        });
     }
+    let db = db?;
+    let camera_make = exif.get("Make").map(String::as_str).unwrap_or("");
+    let maker = exif
+        .get("LensMake")
+        .map(String::as_str)
+        .unwrap_or(camera_make);
+    let model = exif.get("LensModel").map(String::as_str).unwrap_or("");
+    let (maker, model) = find_exact_lens_match(db, maker, model)
+        .or_else(|| {
+            fixed_camera_lens(
+                db,
+                camera_make,
+                exif.get("Model").map(String::as_str).unwrap_or(""),
+            )
+        })
+        .or_else(|| find_best_lens_match(db, maker, model))?;
+    let focal = metadata_number(exif, "FocalLength")?;
+    let params = resolve_lens_params(
+        db,
+        &maker,
+        &model,
+        focal,
+        metadata_number(exif, "FNumber"),
+        metadata_number(exif, "SubjectDistance"),
+    )?;
+    Some(AutoLensProfile {
+        maker,
+        model,
+        params,
+    })
+}
+
+pub fn metadata_number(exif: &HashMap<String, String>, key: &str) -> Option<f32> {
+    let text = exif.get(key)?.trim().trim_start_matches("f/");
+    let value = text.split_whitespace().next()?.parse::<f32>().ok()?;
+    (value.is_finite() && value > 0.0).then_some(value)
 }
 
 #[tauri::command]
@@ -788,5 +903,170 @@ pub fn resolve_lens_params(
         lens.get_distortion_params(focal_length, aperture, distance)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    #[ignore = "Uses the developer-provided RAW files in testbilder"]
+    fn supplied_raw_files_use_camera_iso_and_shared_profile_selection() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut db = LensDatabase {
+            cameras: Vec::new(),
+            lenses: Vec::new(),
+        };
+        for entry in WalkDir::new(root.join("lensfun_db"))
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if entry.path().extension().is_some_and(|ext| ext == "xml") {
+                if let Some(part) = fs::read_to_string(entry.path())
+                    .ok()
+                    .and_then(|xml| quick_xml::de::from_str::<LensDatabase>(&xml).ok())
+                {
+                    db.cameras.extend(part.cameras);
+                    db.lenses.extend(part.lenses);
+                }
+            }
+        }
+        assert!(db.lenses.len() > 100);
+        for (name, iso) in [
+            ("Canon - EOS R6 Mark III - RAW (3_2).CR3", "100"),
+            ("DSC_0234.NEF", "4000"),
+            ("Olympus - PEN-F - 16bit (4_3).orf", "200"),
+            ("Panasonic - DC-S1M2 - 3_2.RW2", "100"),
+            ("R0019057.DNG", "2200"),
+            ("Sony-a1-raw-00001.arw", "800"),
+        ] {
+            let path = root.parent().unwrap().join("testbilder").join(name);
+            let metadata = crate::exif_processing::read_source_metadata(&path).unwrap();
+            assert_eq!(metadata.fields["ISO"], iso, "{name}");
+            assert_eq!(metadata.fields["PhotographicSensitivity"], iso, "{name}");
+            let requests = crate::exiftool::request_count();
+            let profile =
+                select_auto_profile(Some(&db), &metadata.fields, metadata.lens_profile.as_ref());
+            eprintln!(
+                "{name}: ISO {iso}, {}",
+                profile
+                    .as_ref()
+                    .map(|p| format!(
+                        "{} / {}",
+                        if p.params.embedded.is_some() {
+                            "built-in"
+                        } else {
+                            "Lensfun"
+                        },
+                        p.model
+                    ))
+                    .unwrap_or("no matching profile".into())
+            );
+            if name == "R0019057.DNG" {
+                let profile = profile.as_ref().unwrap();
+                assert_eq!(profile.maker, "Ricoh");
+                assert!(profile.params.embedded.is_none());
+                assert!(profile.model.contains("GR & compatibles"));
+            }
+            for source in ["off", "embedded"] {
+                let mut adjustments = serde_json::json!({"lensCorrectionMode":"manual","lensProfileSource":source,"lensDistortionParams":{"k1":99}});
+                crate::file_management::resolve_lens_params_in_adjustments(
+                    &mut adjustments,
+                    &Some(metadata.fields.clone()),
+                    Some(&db),
+                    &path,
+                );
+                if source == "off" {
+                    assert!(adjustments.get("lensDistortionParams").is_none());
+                } else {
+                    assert_eq!(
+                        adjustments["lensDistortionParams"]["embedded"].is_object(),
+                        metadata.lens_profile.is_some()
+                    );
+                }
+            }
+            assert_eq!(
+                crate::exiftool::request_count(),
+                requests,
+                "Selection must reuse saved metadata for {name}"
+            );
+        }
+    }
+    #[test]
+    fn fuzzy_matches_small_name_differences_but_rejects_wrong_optics_and_ambiguity() {
+        let mut db: LensDatabase =
+            quick_xml::de::from_str(include_str!("../lensfun_db/compact-ricoh.xml")).unwrap();
+        let mut lens = db.lenses[0].clone();
+        lens.maker = vec![MultiName {
+            lang: None,
+            value: "Sony".into(),
+        }];
+        lens.model = vec![MultiName {
+            lang: None,
+            value: "Sony FE 20mm f/1.8 G".into(),
+        }];
+        db.lenses = vec![lens.clone()];
+        assert!(find_best_lens_match(&db, "Sony", "FE 20mm F1.8 G lens").is_some());
+        assert!(find_best_lens_match(&db, "Sony", "FE 24mm F1.8 G lens").is_none());
+        assert!(find_best_lens_match(&db, "Sony", "FE 20mm F2.8 G lens").is_none());
+        assert!(find_best_lens_match(&db, "Ricoh", "FE 20mm F1.8 G lens").is_none());
+        db.lenses.push(lens);
+        assert!(find_best_lens_match(&db, "Sony", "FE 20mm F1.8 G lens").is_none());
+    }
+
+    #[test]
+    fn neutral_embedded_profile_falls_back_to_lensfun() {
+        let db: LensDatabase =
+            quick_xml::de::from_str(include_str!("../lensfun_db/compact-ricoh.xml")).unwrap();
+        let neutral = EmbeddedLensProfile {
+            source: "DNG".into(),
+            radial: Some(crate::lens_metadata::RadialProfile {
+                knots: vec![0.0, 1.0],
+                distortion: vec![1.0, 1.0],
+                gain_knots: vec![0.0, 1.0],
+                gain: vec![1.0, 1.0],
+                ..Default::default()
+            }),
+            warp: None,
+            vignette: None,
+            frame: [101.0, 101.0],
+            crop: [0.0, 0.0, 101.0, 101.0],
+            orientation: 1,
+        };
+        let fields = HashMap::from([
+            ("Make".into(), "Ricoh".into()),
+            ("Model".into(), "GR II".into()),
+            ("LensModel".into(), "GR LENS".into()),
+            ("FocalLength".into(), "18.3".into()),
+            ("FNumber".into(), "2.8".into()),
+        ]);
+        let profile = select_auto_profile(Some(&db), &fields, Some(&neutral)).unwrap();
+        assert!(profile.params.embedded.is_none());
+        assert!(profile.model.contains("GR & compatibles"));
+    }
+    #[test]
+    fn ricoh_fixed_lens_uses_its_camera_mount_and_never_a_samyang_fuzzy_match() {
+        let mut db: LensDatabase =
+            quick_xml::de::from_str(include_str!("../lensfun_db/compact-ricoh.xml")).unwrap();
+        let mut samyang = db.lenses[0].clone();
+        samyang.maker = vec![MultiName {
+            lang: None,
+            value: "Samyang".into(),
+        }];
+        samyang.model = vec![MultiName {
+            lang: None,
+            value: "500mm f/6.3".into(),
+        }];
+        db.lenses.push(samyang);
+        assert!(find_best_lens_match(&db, "Ricoh", "GR II").is_none());
+        assert!(find_best_lens_match(&db, "Ricoh", "").is_none());
+        assert!(find_best_lens_match(&db, "Ricoh", "Unknown").is_none());
+        let (maker, model) =
+            fixed_camera_lens(&db, "RICOH IMAGING COMPANY, LTD.", "GR II").unwrap();
+        assert_eq!(maker, "Ricoh");
+        assert!(model.contains("GR & compatibles"), "{model}");
+        assert!(resolve_lens_params(&db, &maker, &model, 18.3, Some(2.8), None).is_some());
+        assert!(fixed_camera_lens(&db, "Ricoh", "GR IIIx mystery").is_none());
+        assert!(find_best_lens_match(&db, "Ricoh", "500mm f/6.3").is_none());
     }
 }

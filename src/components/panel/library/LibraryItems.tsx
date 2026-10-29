@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { cameraIso } from '../../../utils/metadata';
 import {
   Image as ImageIcon,
   Folder,
@@ -93,7 +94,7 @@ const ThumbnailComponent = ({
     return {
       shutter: e.ExposureTime || '',
       fNumber: fNum,
-      iso: e.PhotographicSensitivity || e.ISOSpeedRatings || '',
+      iso: cameraIso(e) || '',
       focal: e.FocalLengthIn35mmFilm || e.FocalLength || '',
     };
   }, [exif]);
@@ -548,7 +549,7 @@ const ListItemComponent = ({
     return {
       shutter: e.ExposureTime || '',
       fNumber: fNum,
-      iso: e.PhotographicSensitivity || e.ISOSpeedRatings || '',
+      iso: cameraIso(e) || '',
       focal: e.FocalLengthIn35mmFilm || e.FocalLength || '',
     };
   }, [exif]);

@@ -112,6 +112,7 @@ enum TransformAdjustment {
 
 export enum LensAdjustment {
   LensCorrectionMode = 'lensCorrectionMode',
+  LensProfileSource = 'lensProfileSource',
   LensMaker = 'lensMaker',
   LensModel = 'lensModel',
   LensDistortionAmount = 'lensDistortionAmount',
@@ -209,6 +210,7 @@ export interface Adjustments {
   lensBlurMinDepth: number;
   lensBlurMinFade: number;
   lensCorrectionMode: 'auto' | 'manual';
+  lensProfileSource: 'off' | 'embedded' | 'lensfun';
   lensDistortionAmount: number;
   lensVignetteAmount: number;
   lensTcaAmount: number;
@@ -216,6 +218,12 @@ export interface Adjustments {
   lensTcaEnabled: boolean;
   lensVignetteEnabled: boolean;
   lensDistortionParams: {
+    embedded?: {
+      source?: string;
+      warp?: { fisheye?: boolean; coefficients: number[][] } | null;
+      vignette?: { coefficients: number[] } | null;
+      radial?: { distortion: number[]; red: number[]; blue: number[]; gain: number[] } | null;
+    } | null;
     k1: number;
     k2: number;
     k3: number;
@@ -539,6 +547,7 @@ export const INITIAL_ADJUSTMENTS: Adjustments = {
   lensBlurMinDepth: 20,
   lensBlurMinFade: 20,
   lensCorrectionMode: 'manual',
+  lensProfileSource: 'lensfun',
   lensDistortionAmount: 100,
   lensVignetteAmount: 100,
   lensTcaAmount: 100,
@@ -710,6 +719,9 @@ export const normalizeLoadedAdjustments = (loadedAdjustments: Adjustments): any 
     lensBlurMinDepth: loadedAdjustments.lensBlurMinDepth ?? INITIAL_ADJUSTMENTS.lensBlurMinDepth,
     lensBlurMinFade: loadedAdjustments.lensBlurMinFade ?? INITIAL_ADJUSTMENTS.lensBlurMinFade,
     lensCorrectionMode: loadedAdjustments.lensCorrectionMode || 'manual',
+    lensProfileSource:
+      loadedAdjustments.lensProfileSource ??
+      (loadedAdjustments.lensDistortionParams?.embedded ? 'embedded' : 'lensfun'),
     lensMaker: loadedAdjustments.lensMaker ?? INITIAL_ADJUSTMENTS.lensMaker,
     lensModel: loadedAdjustments.lensModel ?? INITIAL_ADJUSTMENTS.lensModel,
     lensDistortionAmount: loadedAdjustments.lensDistortionAmount ?? INITIAL_ADJUSTMENTS.lensDistortionAmount,
@@ -861,6 +873,7 @@ export const ADJUSTMENT_GROUPS: Record<string, AdjustmentGroup[]> = {
       label: 'modals.copyPaste.groups.lensCorrection',
       keys: [
         LensAdjustment.LensCorrectionMode,
+        LensAdjustment.LensProfileSource,
         LensAdjustment.LensMaker,
         LensAdjustment.LensModel,
         LensAdjustment.LensDistortionAmount,

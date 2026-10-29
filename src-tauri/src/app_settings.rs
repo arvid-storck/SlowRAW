@@ -502,9 +502,6 @@ impl Default for AppSettings {
             catalog_folders: Vec::new(),
             small_thumbnail_resolution: Some(480),
             medium_thumbnail_resolution: Some(1280),
-            #[cfg(target_os = "android")]
-            editor_preview_resolution: Some(1280),
-            #[cfg(not(target_os = "android"))]
             editor_preview_resolution: Some(1920),
             enable_zoom_hifi: Some(true),
             use_full_dpi_rendering: Some(false),
@@ -518,9 +515,6 @@ impl Default for AppSettings {
             last_folder_state: None,
             ui_visibility: None,
             tagging_shortcuts: default_tagging_shortcuts_option(),
-            #[cfg(target_os = "android")]
-            thumbnail_size: Some("small".to_string()),
-            #[cfg(not(target_os = "android"))]
             thumbnail_size: Some("medium".to_string()),
             thumbnail_aspect_ratio: Some("cover".to_string()),
             adjustment_visibility: default_adjustment_visibility(),
@@ -533,9 +527,6 @@ impl Default for AppSettings {
             library_view_mode: Some("flat".to_string()),
             export_presets: default_export_presets(),
             my_lenses: Some(Vec::new()),
-            #[cfg(target_os = "android")]
-            high_res_zoom_multiplier: Some(0.75),
-            #[cfg(not(target_os = "android"))]
             high_res_zoom_multiplier: Some(1.0),
             display_edit_icon: Some(true),
             editor_neutral_grey_bg: Some(false),
@@ -550,13 +541,7 @@ impl Default for AppSettings {
             max_zoom_percent: Some(100),
             zoom_photo_to_pixel_click: Some(false),
             keybinds: HashMap::new(),
-            #[cfg(target_os = "android")]
-            thumbnail_worker_threads: Some(2),
-            #[cfg(not(target_os = "android"))]
             thumbnail_worker_threads: Some(4),
-            #[cfg(target_os = "android")]
-            image_cache_size: Some(2),
-            #[cfg(not(target_os = "android"))]
             image_cache_size: Some(5),
             tonemapper_override_enabled: Some(false),
             default_raw_tonemapper: Some("agx".to_string()),

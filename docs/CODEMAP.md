@@ -4,7 +4,7 @@ This is a maintainer's map of the current source tree. It covers hand-maintained
 application files and their responsibilities. Read this alongside the
 user-facing [root README](../README.md) and the separate [changelog](CHANGELOG.md).
 This document describes the current implementation. Build and update commands
-belong in [README](../README.md); workflow and documentation ownership belong in
+are also in [README](../README.md); workflow and documentation ownership belong in
 [DEVELOPMENT](DEVELOPMENT.md); tracked bugs belong in [PLANNING](PLANNING.md).
 
 ## Export data flow
@@ -29,7 +29,7 @@ ICC writing is independent of optional camera metadata.
 `exif_processing.rs` retains the full EXIF path for JPEG/PNG/WebP.
 `export_metadata.rs` independently writes a minimal XMP packet containing the
 source's IPTC Digital Source Type and optional author/copyright. It reads
-decoder-provided XMP (including compressed PNG text), EXIF, RAW metadata and
+decoder-provided XMP (including compressed PNG text), cached ExifTool fields and
 sidecar attribution overrides. Recognized source-type URIs in original bytes
 also cover uncompressed C2PA assertions. Source signatures are not copied onto
 modified image pixels.
@@ -40,7 +40,112 @@ relocates its first IFD; AVIF relocates meta while retaining absolute image
 offsets. Required-metadata write failures propagate to the export. This path
 runs after optional EXIF handling regardless of the metadata switch.
 
+## Metadata and lens profiles
+
+`exiftool.rs` drives Phil Harvey's official ExifTool through a persistent read-only
+`-stay_open` process. Requests use UTF-8 filenames, numbered response markers,
+bounded output and a timeout. Windows bundles its Perl runtime; macOS/Linux
+require system Perl to compile and run SlowRAW. Desktop installations can use
+an explicit executable or PATH.
+
+`src-tauri/.taurignore` excludes ExifTool staging directories and its generated
+runtime from development watching, allowing build-time preparation to finish.
+
+Standard EXIF fields take precedence over duplicate preview/XMP fields, and
+Composite lens IDs fill missing lens names. `exif_processing.rs` owns sidecar
+handling, cached orientation/exposure/date helpers and export writing.
+ExifTool supplies all source EXIF reads, including GPS and attribution.
+`little_exif` copies full EXIF from supported non-RAW containers and writes EXIF.
+The shared metadata/profile
+cache holds at most eight folders with 512 entries each, in an ExifTool-specific
+cache namespace. Rawler continues to decode RAW sensor data.
+SlowRAW targets Windows, macOS and Linux.
+`image-hdr` still requires `kamadak-exif` transitively. SlowRAW supplies decoded
+pixels, exposure and ISO through `HDRInput::with_image`, bypassing that library's
+EXIF reader.
+
+Automatic lens selection is shared by the editor, thumbnail generation and export.
+The source metadata cache stores display fields and a typed embedded profile
+together with embedded JPEG offsets and lengths, keyed by file size and
+modification time. ExifTool reads these in one
+request. Numeric correction fields precede `-all` so their unformatted values
+win, and binary extraction is limited to explicitly requested DNG opcodes.
+Profile construction uses the full response before display strings are truncated.
+Automatic selection consumes this cached data without a separate profile read.
+Thumbnail loading reads preview bytes from the source at cached offsets and
+uses the corresponding cached orientation. Preview pixels stay out of the
+metadata cache. Invalid or undersized previews fall back to RAW development.
+Standard EXIF ISO takes precedence over internal MakerNote sensitivity and is
+also saved under the legacy `PhotographicSensitivity` key. `utils/metadata.ts`
+shares the same ISO choice between the metadata panel, toolbar, library labels
+and frontend sorting; catalog SQL accepts the current and legacy ISO names.
+
+`embedded_lens.rs` interprets DNG `OpcodeList2` FixVignetteRadial and `OpcodeList3`
+WarpRectilinear/WarpFisheye blocks. `lens_metadata/` contains separate mathematical
+models for Sony's 16-point tables, Fujifilm's 9/11-point tables, Olympus/OM System
+radial/channel coefficients, Panasonic/Leica's distortion polynomial and Nikon's
+version-0100 distortion and vignette coefficients. ExifTool performs EXIF/MakerNote decoding;
+these modules convert its values into rendering parameters. Nikon uses ExifTool's
+decoded coefficient fields, with no separate TIFF reader. The bundled
+`resources/exiftool.config` adds Nikon's complete eight-coefficient vignette
+series and its count to ExifTool's tag definitions. The persistent process loads
+this configuration once; the existing metadata request includes the unformatted
+values. The vignette model evaluates the polynomial with an implicit constant
+of one and supports profiles with vignette data alone. Unknown versions or
+incomplete coefficient arrays are skipped. Metadata and thumbnail cache revisions
+invalidate earlier profiles that contained distortion only. Panasonic's model
+currently supplies distortion only. Unknown layouts, including Canon proprietary
+correction models, fall back to Lensfun when no supported built-in profile exists.
+
+The geometry pass maps crop/orientation coordinates back to the active image
+area, applies per-channel warps and vignette gain, and respects the three
+correction strengths/switches. Supported embedded profiles take precedence over
+Lensfun; unsupported required DNG opcodes lead to fallback. The UI reports the
+selected profile's source. Model references and license notices live in
+`src-tauri/resources/licenses/vendor-lens.txt`. Synthetic metadata fixtures check
+ExifTool extraction and known model values; real-camera validation remains useful.
+
+Neutral built-in tables (zero corrections/unit multipliers) are treated as
+absent, including older cached profiles, so Auto can fall back to Lensfun.
+Manual selection stores `lensProfileSource`: off, embedded, or lensfun. Embedded
+is offered only when a meaningful profile exists. The shared resolver enforces
+the source during reload, copy/paste, thumbnail rendering and export; choosing
+off clears stale parameters. Crop controls use `utils/lensProfile.ts` to derive
+their available corrections from either embedded or Lensfun parameters.
+
+Lensfun automatic matching first accepts unambiguous normalized identities.
+After fixed-camera matching it can use fuzzy name matching, requiring matching
+optical numbers, a compatible maker, a high similarity score and a clear lead
+over the next candidate. Ambiguous or optically different candidates are rejected.
+Fixed-lens cameras use the camera's dedicated mount; Ricoh GR II shares the
+ricohGR profile. Explicitly identified converter profiles take precedence over
+the standard fixed lens. Failed matching clears automatic correction parameters.
+The thumbnail renderer revision invalidates results from the previous matcher.
+
+`scripts/test-lens-metadata.mjs` checks camera ISO and frontend capabilities.
+The ignored Rust test `supplied_raw_files_use_camera_iso_and_shared_profile_selection`
+reads the six developer-provided `testbilder` RAW files with official ExifTool,
+checks camera ISO, Ricoh matching and manual source handling, and confirms that
+profile selection uses cached metadata without further ExifTool requests.
+
+Catalog scanning reads file metadata outside write transactions and commits up
+to 256 rows with `BEGIN IMMEDIATE`, using prepared statements. Short sidecar
+refresh batches use the same writer. A scan mutex orders imports/rescans, and
+ancestor scan roots absorb selected subfolders. WAL permits concurrent readers;
+ordinary metadata writes can run between batches. Rescans refresh existing rows
+in place, and stale-row removal follows a completed directory walk. An interrupted
+scan preserves committed batches and reports its error. Full catalog rebuilds
+and 60,000-file/concurrent-writer behavior have focused regression coverage.
+
 ## Runtime diagnostics
+
+Tailwind scans `src/` explicitly via `source('./')` in `src/styles.css`.
+Vite excludes `.rrdata`, `.rrexif` and `.xmp` from development file watching.
+Photo metadata is therefore independent of CSS source scanning: Tailwind's
+Vite 8 integration would otherwise treat scanned sidecars as asset modules
+and request a full page reload after autosave. `scripts/test-dev-sidecars.mjs`
+reproduces this with an isolated Vite/Tailwind server and verifies that UI
+classes are generated while sidecar saves cannot reload the editor.
 
 The application uses the SlowRAW product/executable name. The internal
 `io.github.arvid-storck.SlowRAW` identifier owns its application-data directory.
@@ -487,7 +592,7 @@ are composited during image rendering; the source image remains intact.
 | --- | --- |
 | `package.json` / `package-lock.json` | Frontend dependencies and npm commands / locked versions. |
 | `index.html` | Vite's HTML entry point. |
-| `vite.config.mjs` | Frontend bundling and dev-server configuration. |
+| `vite.config.mjs` | Frontend bundling and dev-server configuration; excludes metadata sidecars from watching. |
 | `tsconfig.json` | TypeScript compiler settings. |
 | `eslint.config.js` | Lint rules. |
 | `.prettierrc` / `.prettierignore` | Formatter rules and exclusions. |
@@ -495,13 +600,14 @@ are composited during image rendering; the source image remains intact.
 | `i18next.config.ts` | Translation extraction/check configuration. |
 | `src-tauri/Cargo.toml` / `Cargo.lock` | Rust dependencies / locked versions, including the linked rawler source revision. |
 | `src-tauri/rust-toolchain.toml` | Rust toolchain selection. |
-| `src-tauri/build.rs` | Tauri build-time preparation. |
+| `src-tauri/build.rs` | Prepares missing ExifTool resources for desktop builds, macOS MoltenVK and Tauri resources. |
 | `src-tauri/tauri.conf.json` | Main Tauri app/build configuration. |
 | `src-tauri/tauri.linux.conf.json` / `tauri.macos.conf.json` | Platform-specific Tauri overrides. |
 | `src-tauri/capabilities/` | Tauri permissions. |
 | `src-tauri/icons/` | App icons. |
 | `src-tauri/lensfun_db/` | Bundled lens profiles; separately updatable at runtime. |
 | `src-tauri/resources/` | Bundled runtime resources, licenses, and native libraries. |
+| `src-tauri/resources/exiftool.config` | Additional Nikon vignette tag definitions loaded by the persistent ExifTool process. |
 | `data/` | Linux desktop entry and AppStream metadata. |
 | `packaging/` | Linux/Flatpak and dependency-source packaging metadata. |
 
@@ -510,12 +616,21 @@ are composited during image rendering; the source image remains intact.
 | File | Responsibility |
 | --- | --- |
 | `scripts/build-portable.ps1` | Builds and packages a portable Windows ZIP in a fresh output folder. |
+| `scripts/update-exiftool.mjs` | Stages the pinned official Windows or Unix distribution; verifies SHA-256/version and reuses complete local copies. |
+| `scripts/update-rcd.mjs` | Updates the pinned upstream librtprocess revision used by the RCD adapter. |
 | `scripts/clean.mjs` | Removes explicit generated build paths; `--dependencies` also removes node_modules, with project-boundary and symlink checks. |
 | `scripts/test-desktop-workflow.mjs` | Zoom focus/scale, export-session persistence, metadata and branding regression checks. |
 | `scripts/test-catalog.mjs` | In-memory catalog paging/count/stale-reply, smart-filter editing and album-group creation checks. |
 | `scripts/test-logging.mjs` | Production console suppression, debug console availability and diagnostic configuration checks. |
 | `scripts/test-image-flags.mjs` | In-memory flag selection, write queue and rollback regression checks. |
 | `scripts/test-white-balance.mjs` | Frontend white-balance defaults, bounds and Kelvin slider scaling checks. |
+| `scripts/test-color-workflow.mjs` | Automatic monitor transforms, Vulkan display and independent export-profile checks. |
+| `scripts/test-export-settings.mjs` | Format-specific options, preset/session persistence and ProPhoto policy checks. |
+| `scripts/test-neutral-processing.mjs` | Neutral detail controls and monotonic curve checks. |
+| `scripts/test-mask-compat.mjs` | Normalizes legacy mask types while preserving stored brush data. |
+| `scripts/test-lens-metadata.mjs` | Camera ISO selection and available embedded/Lensfun corrections. |
+| `scripts/test-dev-sidecars.mjs` | Isolated Vite/Tailwind regression for autosave-triggered page reloads. |
+| `scripts/test-exiftool-staging.mjs` | Platform layouts, offline reuse, checksum rejection and staging cleanup. |
 | `docs/CODEMAP.md` | Source-file map and technical overview (this document). |
 | `docs/catalog-focused-build.md` | Catalog filtering, paging, cache and validation notes. |
 
@@ -527,7 +642,7 @@ are composited during image rendering; the source image remains intact.
 | --- | --- |
 | `main.tsx` | Starts React; disables browser console output in production builds. |
 | `App.tsx` | Composes the application shell, views, global panels, events, and interactions. |
-| `styles.css` | Global styles, theme variables and centralized square workspace corners. |
+| `styles.css` | Global styles, theme variables, square workspace corners and Tailwind source scope restricted to src/. |
 | `window/TitleBar.tsx` | Custom window title bar. |
 | `store/useEditorStore.ts` | Selected image, adjustments, editor state, undo/copy state. |
 | `store/useLibraryStore.ts` | Library images, catalog mode, filters, pages, albums, selection; default sort is capture date ascending, with saved preferences restored at startup. |
@@ -588,7 +703,7 @@ are composited during image rendering; the source image remains intact.
 | `components/panel/editor/overlays/CompositionOverlays.tsx` | Rule of Thirds SVG guide; accepts only off/thirds modes. |
 | `components/panel/editor/Waveform.tsx` | Image waveform visualization. |
 | `components/panel/right/ControlsPanel.tsx` | Main adjustment controls. |
-| `components/panel/right/CropPanel.tsx` | Crop, straighten, and geometry controls. |
+| `components/panel/right/CropPanel.tsx` | Crop/geometry requests and automatic or explicit off/embedded/Lensfun source selection. |
 | `components/panel/right/ExportPanel.tsx` | Export configuration, including 8/16-bit TIFF, and action. |
 | `components/panel/library/CatalogPanel.tsx` | Capture-date tree and recursive albums, groups and smart groups. |
 | `components/panel/right/Masks.tsx` | Mask editing UI pieces. |
@@ -653,8 +768,10 @@ are composited during image rendering; the source image remains intact.
 | `utils/keyboardUtils.ts` | Shortcut definitions, parsing, and normalization. |
 | `utils/maskUtils.ts` | Mask conversion and helper functions. |
 | `utils/mediaTypes.ts` | Recognizes video paths for frontend media dispatch. |
+| `utils/metadata.ts` | Shared camera-reported ISO selection with legacy metadata-key fallbacks. |
+| `utils/lensProfile.ts` | Derives distortion, chromatic-aberration and vignette availability from embedded or Lensfun parameters. |
 | `utils/themes.ts` | Theme definitions. |
-| `utils/colorSpaces.ts` | Shared output-space list; display choices exclude ProPhoto. |
+| `utils/colorSpaces.ts` | Shared export RGB color-space list. |
 | `utils/exportEncoding.ts` | Per-format encoder defaults and UI-only ProPhoto eligibility. |
 | `utils/zoom.ts` | Zoom constants and constraints. |
 | `utils/whiteBalance.ts` | Kelvin/tint types and limits, default resolution and logarithmic temperature slider scaling. |
@@ -683,7 +800,16 @@ are composited during image rendering; the source image remains intact.
 | `component_updates.rs` | Downloads Lensfun profile updates. |
 | `culling.rs` | Image culling analysis/actions. |
 | `denoising.rs` | Traditional noise reduction and standalone save/batch flows. |
-| `exif_processing.rs` | EXIF extraction and sidecar reading/writing. |
+| `exif_processing.rs` | Shared stamped metadata/profile cache, sidecar handling, byte-level EXIF helpers and export EXIF writing. |
+| `exiftool.rs` | Persistent official ExifTool process, bundled/configured executable lookup, JSON normalization and profile extraction. |
+| `embedded_lens.rs` | DNG opcode interpretation, embedded profile geometry/gain and neutral-profile detection. |
+| `lens_metadata/mod.rs` | Shared numeric-tag access, radial correction tables and camera-model dispatch. |
+| `lens_metadata/sony.rs` | Sony correction tables. |
+| `lens_metadata/fujifilm.rs` | Supported Fujifilm 9/11-point correction tables. |
+| `lens_metadata/olympus.rs` | Olympus/OM System radial and channel correction coefficients. |
+| `lens_metadata/panasonic.rs` | Panasonic/Leica distortion-polynomial inversion. |
+| `lens_metadata/nikon.rs` | Nikon version-0100 distortion and vignette polynomial models. |
+| `lens_metadata/tests.rs` | Numeric-model and official-ExifTool metadata fixtures. |
 | `export_processing.rs` | Export/batch/size-estimate flow, render precision and format encoders. |
 | `export_metadata.rs` | Selective source-type/attribution extraction and XMP container writing. |
 | `file_management.rs` | Filesystem operations, import/move/copy, sidecars, and path handling. |
@@ -709,7 +835,7 @@ are composited during image rendering; the source image remains intact.
 | `image_processing.rs` | Core adjustment pipeline, geometry, color, masks, histogram/waveform data. |
 | `launch_request.rs` | File/open and external editor round-trip requests. |
 | `lens_blur.rs` | Lens/portrait blur processing. |
-| `lens_correction.rs` | Lensfun lookup and optical corrections. |
+| `lens_correction.rs` | Shared profile selection, exact/fixed-camera/guarded fuzzy Lensfun matching and coefficient interpolation. |
 | `logging.rs` | Sends debug diagnostics to stderr with the configured log level. |
 | `mask_generation.rs` | Mask definitions/generation with legacy type aliases for sidecar compatibility. |
 | `negative_conversion.rs` | Film-negative conversion. |
@@ -779,12 +905,6 @@ This updates the upstream Rawler revision in src-tauri/Cargo.lock. Keep the
 lockfile and rebuild the application. Rawler API changes may require adapting
 raw_processing.rs and exif_processing.rs. RAW support is linked into the app.
 
-### Updating the metadata reader
-
-```powershell
-npm run update:kamadak-exif
-```
-
 ### Updating the RCD library
 
 ```powershell
@@ -802,16 +922,24 @@ You'll need to have [Rust](https://www.rust-lang.org/tools/install) and [Node.js
 
 ### MacOS
 
-Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/). Then install MoltenVK.
+Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 # Install molten-vk
 brew install molten-vk
+
+# Install Perl
+brew install perl
 ```
 
 ### Linux
 
 Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/) for your distribution. 
+
+```bash
+# Install Perl (Debian / Ubuntu)
+sudo apt install perl
+```
 
 ### For all OS
 
@@ -852,7 +980,7 @@ git fetch origin
 git reset --mixed origin/main
 git branch -M main
 git add -A
-git commit -m "Text här"
+git commit -m "Read docs/CHANGELOG.md"
 git push -u origin main
 ```
 
@@ -872,8 +1000,9 @@ git push -u origin main
 - Portable Windows packaging includes the EXE and application resources/licenses. It reports EXE, folder and ZIP sizes.
 
 `npm run clean` removes generated build caches. Export portable output before
-cleaning, and use a fresh output directory for portable builds.
-`npm run clean:deep` also removes `node_modules` and generated MoltenVK notices. Both commands support `-- --dry-run` to preview cleanup targets.
+cleaning. Both cleanup modes also remove interrupted ExifTool staging directories.
+Use a fresh output directory for portable builds.
+`npm run clean:deep` also removes `node_modules`, downloaded ExifTool and generated MoltenVK notices. Both commands support `-- --dry-run` to preview cleanup targets.
 
 Package sizes depend on the toolchain, dependency versions and bundled resources.
 Use the portable script's size report for the build being distributed.

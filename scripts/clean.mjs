@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,8 +11,20 @@ if (packageJson.name !== 'slowraw' || !existsSync(join(projectRoot, 'src-tauri',
 
 const dryRun = process.argv.includes('--dry-run');
 const generatedDirectories = ['dist', 'dist-ssr', join('src-tauri', 'target'), join('src-tauri', 'rcd', 'target')];
+const resources = join(projectRoot, 'src-tauri', 'resources');
+if (existsSync(resources)) {
+  for (const entry of readdirSync(resources, { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name.startsWith('.exiftool-staging-')) {
+      generatedDirectories.push(join('src-tauri', 'resources', entry.name));
+    }
+  }
+}
 if (process.argv.includes('--dependencies')) {
-  generatedDirectories.push('node_modules', join('src-tauri', 'resources', 'macos'));
+  generatedDirectories.push(
+    'node_modules',
+    join('src-tauri', 'resources', 'macos'),
+    join('src-tauri', 'resources', 'exiftool'),
+  );
 }
 
 for (const relativePath of generatedDirectories) {

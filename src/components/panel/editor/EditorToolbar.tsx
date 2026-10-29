@@ -1,4 +1,5 @@
 import { memo, useState, useEffect, useRef, useMemo } from 'react';
+import { cameraIso } from '../../../utils/metadata';
 import { Eye, EyeOff, ArrowLeft, Maximize, Loader2, Undo, Redo } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
@@ -103,7 +104,7 @@ const EditorToolbar = memo(
       }
 
       const data = {
-        iso: exif.PhotographicSensitivity || exif.ISO,
+        iso: cameraIso(exif),
         fNumber: fNum,
         shutter: exif.ExposureTime,
         focal: exif.FocalLengthIn35mmFilm,

@@ -1,4 +1,5 @@
 fn main() {
+    prepare_exiftool();
     // Tauri embeds its application manifest only in binaries. Unit-test harnesses
     // also import TaskDialogIndirect via the dialog plugin and need Common Controls 6.
     #[cfg(target_os = "windows")]
@@ -18,6 +19,54 @@ fn main() {
     .expect("Build Windows resources");
     #[cfg(not(target_os = "windows"))]
     tauri_build::build();
+}
+
+fn prepare_exiftool() {
+    use std::{env, path::PathBuf, process::Command};
+
+    let platform = env::var("CARGO_CFG_TARGET_OS").unwrap();
+    assert!(
+        matches!(platform.as_str(), "windows" | "macos" | "linux"),
+        "SlowRAW supports Windows, macOS and Linux"
+    );
+    let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let runtime = manifest.join("resources/exiftool");
+    let updater = manifest.join("../scripts/update-exiftool.mjs");
+    let launcher = runtime.join(if platform == "windows" {
+        "exiftool.exe"
+    } else {
+        "exiftool"
+    });
+    let library = runtime.join(if platform == "windows" {
+        "exiftool_files/lib/Image/ExifTool.pm"
+    } else {
+        "lib/Image/ExifTool.pm"
+    });
+    println!("cargo:rerun-if-changed={}", updater.display());
+    for file in [&launcher, &library] {
+        println!("cargo:rerun-if-changed={}", file.display());
+    }
+    if launcher.is_file() && library.is_file() {
+        return;
+    }
+
+    println!("cargo:warning=Preparing official ExifTool for the {platform} build");
+    let mut command = Command::new("node");
+    command
+        .arg(updater)
+        .args(["--ensure", "--platform", &platform]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let status = command
+        .status()
+        .expect("Run scripts/update-exiftool.mjs (Node.js is required)");
+    assert!(
+        status.success(),
+        "Could not prepare official ExifTool; check the download error above. For offline builds, stage it first with npm run update:exiftool."
+    );
 }
 
 #[cfg(target_os = "macos")]

@@ -8,7 +8,6 @@ use crate::image_processing::ImageMetadata;
 use crate::image_processing::{apply_orientation, reduce_raw_color_noise};
 use crate::white_balance::WhiteBalance;
 use anyhow::{Context, Result, anyhow};
-use exif::{Reader as ExifReader, Tag};
 use image::{DynamicImage, GenericImageView, ImageReader};
 use rawler::Orientation;
 use serde_json::Value;
@@ -95,7 +94,7 @@ pub fn load_base_image_from_bytes(
         }
         Ok(image)
     } else {
-        let mut image = load_image_with_orientation(bytes, cancel_token)?;
+        let mut image = load_image_with_orientation(bytes, path_for_ext_check, cancel_token)?;
 
         if apply_to_non_raws && !use_fast_raw_dev && color_nr_amount > 0.0 {
             let start = Instant::now();
@@ -114,6 +113,7 @@ pub fn load_base_image_from_bytes(
 
 pub fn load_image_with_orientation(
     bytes: &[u8],
+    source_path: &str,
     cancel_token: Option<(Arc<AtomicUsize>, usize)>,
 ) -> Result<DynamicImage> {
     let check_cancel = || -> Result<()> {
@@ -162,22 +162,12 @@ pub fn load_image_with_orientation(
     }
     check_cancel()?;
 
-    let oriented_image = {
-        let exif_reader = ExifReader::new();
-        if let Ok(exif) = exif_reader.read_from_container(&mut cursor.clone()) {
-            if let Some(orientation) = exif
-                .get_field(Tag::Orientation, exif::In::PRIMARY)
-                .and_then(|f| f.value.get_uint(0))
-            {
-                check_cancel()?;
-                apply_orientation(image, Orientation::from_u16(orientation as u16))
-            } else {
-                image
-            }
-        } else {
-            image
-        }
-    };
+    let orientation = exif_processing::read_exif_data(source_path, bytes)
+        .get("Orientation")
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(1);
+    check_cancel()?;
+    let oriented_image = apply_orientation(image, Orientation::from_u16(orientation));
 
     Ok(DynamicImage::ImageRgb32F(oriented_image.to_rgb32f()))
 }
@@ -349,6 +339,23 @@ pub async fn load_image(
     }
 
     let (orig_width, orig_height) = pristine_arc.dimensions();
+    let lens_db = state.lens_db.lock().map_err(|e| e.to_string())?.clone();
+    let source_for_lens = source_path.clone();
+    let exif_for_lens = Some(exif_data.clone());
+    let metadata = tokio::task::spawn_blocking(move || {
+        let mut metadata = metadata;
+        if metadata.adjustments["lensCorrectionMode"].as_str() == Some("auto") {
+            crate::file_management::resolve_lens_params_in_adjustments(
+                &mut metadata.adjustments,
+                &exif_for_lens,
+                lens_db.as_deref(),
+                &source_for_lens,
+            );
+        }
+        metadata
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     let as_shot_white_balance = tokio::task::spawn_blocking(move || {
         crate::white_balance::as_shot_white_balance(&source_path_str)
     })

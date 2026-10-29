@@ -14,7 +14,9 @@ mod color_management;
 mod component_updates;
 mod culling;
 mod denoising;
+mod embedded_lens;
 mod exif_processing;
+mod exiftool;
 mod export_metadata;
 mod export_processing;
 mod file_management;
@@ -29,6 +31,7 @@ mod image_processing;
 mod launch_request;
 mod lens_blur;
 mod lens_correction;
+mod lens_metadata;
 #[cfg(debug_assertions)]
 mod logging;
 mod mask_generation;
@@ -1100,7 +1103,6 @@ fn saved_window_state_is_usable(state: &WindowState, monitors: &[MonitorBounds])
     })
 }
 
-#[cfg(not(target_os = "android"))]
 fn available_monitor_bounds(window: &tauri::WebviewWindow) -> Vec<MonitorBounds> {
     window
         .available_monitors()
@@ -1122,11 +1124,6 @@ fn available_monitor_bounds(window: &tauri::WebviewWindow) -> Vec<MonitorBounds>
         .unwrap_or_default()
 }
 
-#[cfg(target_os = "android")]
-fn available_monitor_bounds(_window: &tauri::WebviewWindow) -> Vec<MonitorBounds> {
-    Vec::new()
-}
-
 #[tauri::command]
 fn frontend_ready(
     app_handle: tauri::AppHandle,
@@ -1136,10 +1133,6 @@ fn frontend_ready(
     let is_first_run = !state
         .window_setup_complete
         .swap(true, std::sync::atomic::Ordering::Relaxed);
-    #[cfg(target_os = "android")]
-    let _ = (is_first_run, &window, &app_handle);
-
-    #[cfg(not(target_os = "android"))]
     {
         #[cfg(any(windows, target_os = "linux"))]
         let mut should_maximize = false;
@@ -1240,7 +1233,6 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_wayland_nvidia_quirk::init());
     }
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             log::info!(
@@ -1307,6 +1299,7 @@ pub fn run() {
             portable_paths::migrate_legacy_app_data(&app_handle)
                 .map_err(std::io::Error::other)?;
             component_updates::initialize_component_environment(&app_handle);
+            exiftool::initialize(&app_handle);
 
             if let Ok(cache_dir) = app_handle.path().app_cache_dir() {
                 crate::exif_processing::initialize_cache_dir(cache_dir);
@@ -1362,8 +1355,6 @@ pub fn run() {
 
             let window_cfg = app.config().app.windows.first().unwrap().clone();
             let decorations = settings.decorations.unwrap_or(window_cfg.decorations);
-            #[cfg(target_os = "android")]
-            let _ = decorations;
 
             let main_window_cfg = app
                 .config()
@@ -1378,7 +1369,6 @@ pub fn run() {
                 tauri::WebviewWindowBuilder::from_config(app.handle(), &main_window_cfg)
                     .unwrap();
 
-            #[cfg(not(target_os = "android"))]
             {
                 window_builder = window_builder.decorations(decorations).visible(false);
             }
@@ -1393,10 +1383,6 @@ pub fn run() {
                 }
             }
 
-            #[cfg(target_os = "android")]
-            android_integration::initialize_android(&window);
-
-            #[cfg(not(target_os = "android"))]
             {
                 let app_state = app.state::<AppState>();
                 if let Err(error) = get_or_init_gpu_context(&app_state, app.handle()) {
@@ -1660,6 +1646,7 @@ pub fn run() {
                     }
                 }
                 tauri::RunEvent::ExitRequested { api, .. } => {
+                    exiftool::shutdown();
                     api.prevent_exit();
 
                     #[cfg(target_os = "macos")]
@@ -1669,6 +1656,7 @@ pub fn run() {
                     std::process::exit(0);
                 }
                 tauri::RunEvent::Exit => {
+                    exiftool::shutdown();
                     #[cfg(target_os = "macos")]
                     unsafe { libc::_exit(0); }
 

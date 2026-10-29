@@ -1,0 +1,3 @@
+# Generated ExifTool downloads and runtime must not restart their own build.
+resources/.exiftool-staging-*/
+resources/exiftool/

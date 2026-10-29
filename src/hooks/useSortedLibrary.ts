@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { cameraIso } from '../utils/metadata';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useSettingsStore } from '../store/useSettingsStore';
 import { RawStatus, EditedStatus, SortDirection, ImageFile, GroupingMode } from '../components/ui/AppProperties';
@@ -96,8 +97,7 @@ function computeGroupedLibrary(libraryState: any, settingsState: any): GroupedLi
       let imgVal = 0;
       let qVal = parseFloat(value);
 
-      if (field === 'iso')
-        imgVal = parseInt(image.exif?.PhotographicSensitivity || image.exif?.ISOSpeedRatings || '0', 10) || 0;
+      if (field === 'iso') imgVal = Number(cameraIso(image.exif) || 0);
       else if (field === 'aperture' || field === 'f') imgVal = parseAperture(image.exif?.FNumber);
       else if (field === 'focal' || field === 'mm') imgVal = parseFocalLength(image.exif?.FocalLength);
       else if (field === 'rating') imgVal = imageRatings[image.path] || 0;
@@ -213,8 +213,8 @@ function computeGroupedLibrary(libraryState: any, settingsState: any): GroupedLi
         break;
       }
       case 'iso': {
-        const isoA = parseInt(a.exif?.PhotographicSensitivity || a.exif?.ISOSpeedRatings || '0', 10) || 0;
-        const isoB = parseInt(b.exif?.PhotographicSensitivity || b.exif?.ISOSpeedRatings || '0', 10) || 0;
+        const isoA = Number(cameraIso(a.exif) || 0);
+        const isoB = Number(cameraIso(b.exif) || 0);
         comparison = isoA - isoB;
         break;
       }

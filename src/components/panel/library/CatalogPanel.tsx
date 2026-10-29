@@ -133,11 +133,6 @@ export default function CatalogPanel({ isResizing, onSelectAlbum, onAlbumContext
       )}
       style={style}
     >
-      <div className="p-3 shrink-0 border-b border-surface">
-        <Text variant={TextVariants.title} className="flex items-center gap-2">
-          <CalendarDays size={18} /> {t('catalog.dates')}
-        </Text>
-      </div>
       <div className="flex-1 overflow-y-auto p-2">
         <button className={rowClass(catalogDateFilter === '')} onClick={() => selectDate('')}>
           <CalendarDays size={16} />

@@ -23,7 +23,6 @@ wgpu = { version = "30.0", default-features = false, features = ["std", "parking
 pollster = "1.0"
 bytemuck = { version = "1.25", features = ["derive"] }
 anyhow = "1.0.104"
-kamadak-exif = "0.6.1"
 rawler = { git = "https://github.com/dnglab/dnglab.git" }
 slowraw-rcd = { path = "rcd" }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
@@ -40,11 +39,11 @@ rand = "0.10"
 mimalloc = "0.1.52"
 image_hasher = "3.1.1"
 regex = "1.13.1"
+strsim = "0.11"
 memmap2 = "0.9.11"
 half = { version = "2.7.1", features = ["bytemuck"] }
 glam = "0.33.5"
 quick-xml = { version = "0.41", features = ["serialize"] }
-fuzzy-matcher = "0.3.7"
 image-hdr = { version = "0.6.0", default-features = false }
 mozjpeg-rs = "0.9.2"
 webp = "0.3"
@@ -56,6 +55,7 @@ rgb = "0.8.53"
 imgref = "1.12.2"
 sysinfo = { version = "0.39.6", default-features = false, features = ["disk", "system"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
+tempfile = "3.27.0"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 open = "5.4.1"
@@ -75,9 +75,6 @@ gtk = "0.18.2"
 webkit2gtk = "=2.0.2"
 tauri-plugin-wayland-nvidia-quirk = "0.1.0"
 wayland-client = { version = "=0.31.14", features = ["system"] }
-
-[dev-dependencies]
-tempfile = "3.27.0"
 
 [workspace]
 members = ["rcd"]

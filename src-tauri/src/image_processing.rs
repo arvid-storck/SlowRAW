@@ -83,6 +83,8 @@ pub struct Crop {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GeometryParams {
+    #[serde(default)]
+    pub embedded_lens: Option<crate::embedded_lens::EmbeddedLensProfile>,
     pub distortion: f32,
     pub vertical: f32,
     pub horizontal: f32,
@@ -115,6 +117,7 @@ pub struct GeometryParams {
 impl Default for GeometryParams {
     fn default() -> Self {
         Self {
+            embedded_lens: None,
             distortion: 0.0,
             vertical: 0.0,
             horizontal: 0.0,
@@ -160,6 +163,9 @@ pub fn get_geometry_params_from_json(adjustments: &serde_json::Value) -> Geometr
         .unwrap_or_default();
 
     GeometryParams {
+        embedded_lens: lens_params
+            .and_then(|p| p.get("embedded"))
+            .and_then(|p| serde_json::from_value(p.clone()).ok()),
         distortion: adjustments["transformDistortion"].as_f64().unwrap_or(0.0) as f32,
         vertical: adjustments["transformVertical"].as_f64().unwrap_or(0.0) as f32,
         horizontal: adjustments["transformHorizontal"].as_f64().unwrap_or(0.0) as f32,
@@ -693,11 +699,30 @@ pub fn warp_image_geometry(image: &DynamicImage, params: GeometryParams) -> Dyna
         && (lk1.abs() > 1e-6 || lk2.abs() > 1e-6 || lk3.abs() > 1e-6);
     let is_ptlens = params.lens_model == 1;
 
-    let auto_crop_scale = if has_lens_correction || k_distortion.abs() > 1e-5 {
+    let mut auto_crop_scale = if has_lens_correction || k_distortion.abs() > 1e-5 {
         compute_lens_auto_crop_scale(&params, width as f32, height as f32) as f32
     } else {
         1.0
     };
+    let embedded_distortion = if params.lens_distortion_enabled {
+        params.lens_distortion_amount as f64
+    } else {
+        0.0
+    };
+    let embedded_tca = if params.lens_tca_enabled {
+        params.lens_tca_amount as f64
+    } else {
+        0.0
+    };
+    let embedded_vignette = if params.lens_vignette_enabled {
+        params.lens_vignette_amount as f64
+    } else {
+        0.0
+    };
+    if let Some(profile) = &params.embedded_lens {
+        auto_crop_scale =
+            auto_crop_scale.max(profile.auto_crop_scale(embedded_distortion, embedded_tca) as f32);
+    }
 
     let vr = if (params.tca_vr - 1.0).abs() > 1e-5 {
         params.tca_vr + (1.0 - params.tca_vr) * (1.0 - params.lens_tca_amount)
@@ -789,7 +814,30 @@ pub fn warp_image_geometry(image: &DynamicImage, params: GeometryParams) -> Dyna
                         src_y = cy + (dy * f) as f32;
                     }
 
-                    if has_tca {
+                    if let Some(profile) = &params.embedded_lens {
+                        for channel in 0..3 {
+                            let (uv, gain) = profile.sample(
+                                [
+                                    src_x as f64 / (width - 1) as f64,
+                                    src_y as f64 / (height - 1) as f64,
+                                ],
+                                channel,
+                                embedded_distortion,
+                                embedded_tca,
+                                embedded_vignette,
+                            );
+                            let mut sample = [0.0; 3];
+                            interpolate_pixel(
+                                src_raw,
+                                width_usize,
+                                height_usize,
+                                (uv[0] * (width - 1) as f64) as f32,
+                                (uv[1] * (height - 1) as f64) as f32,
+                                &mut sample,
+                            );
+                            pixel[channel] = sample[channel] * gain;
+                        }
+                    } else if has_tca {
                         interpolate_pixel_with_tca(&tca_ctx, src_x, src_y, vr, vb, pixel);
                     } else {
                         interpolate_pixel(src_raw, width_usize, height_usize, src_x, src_y, pixel);
@@ -1012,6 +1060,17 @@ pub fn apply_flip<'a>(
 }
 
 pub fn is_geometry_identity(params: &GeometryParams) -> bool {
+    if let Some(profile) = &params.embedded_lens {
+        if (profile.has_warp()
+            && ((params.lens_distortion_enabled && params.lens_distortion_amount != 0.0)
+                || (params.lens_tca_enabled && params.lens_tca_amount != 0.0)))
+            || (profile.has_vignette()
+                && params.lens_vignette_enabled
+                && params.lens_vignette_amount != 0.0)
+        {
+            return false;
+        }
+    }
     if params.guided_perspective_enabled && params.guided_lines.len() >= 2 {
         return false;
     }
