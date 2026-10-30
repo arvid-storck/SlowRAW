@@ -22,12 +22,13 @@
   Sony: jag hittade ingen motsvarande saknad koefficient i de modeller vi stöder.
 - Use in nikon raw file for vigetting "Vignette Coefficient1", "Vignette Coefficient2", "Vignette Coefficient3"
 - Har Sony och olympus verkligen Distortion, Chromatic Aberration, och vignetting inbyggt i metadatan? Verkar inte troligt
-- Vissa bilder laddas upp och ned vid import?
+- Vissa bilder är fel roterade vid import
 
 ### Things to change
 
 - Lägg tillbacka titeln "Dates", Gör att titlarna inte lyser
 - Increase priority or threads to build cache when importing images, (thumbnails and/or EXIF loading is slow but that is all i can see)
+- Ta bort möjligheten att när panelerna är öppna att dra bort dem så att det försvinner
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
