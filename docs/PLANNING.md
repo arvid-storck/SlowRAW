@@ -1,13 +1,4 @@
 ### Bugs
-- Export discarded AI source-type assertions
-
-  Status: fix implemented for standard IPTC source-type assertions; awaiting developer verification.
-
-  The metadata-off path returned without transferring XMP. Other modes also did not transfer XMP source-type assertions.
-
-  Fix: independently preserve Digital Source Type in all six export containers, with author/copyright copied only when requested. Optional camera metadata remains controlled separately.
-
-  Developer check: export known AI-marked files to each format with metadata enabled and disabled. Inspect Digital Source Type with a metadata reader and check author/copyright and GPS behavior.
 - Highlights changed abruptly near zero
 - Camera calibration did not use the interpolated profile
 - Batch analysis could retain too many RAW decodes
@@ -31,12 +22,14 @@
   Sony: jag hittade ingen motsvarande saknad koefficient i de modeller vi stöder.
 - Use in nikon raw file for vigetting "Vignette Coefficient1", "Vignette Coefficient2", "Vignette Coefficient3"
 - Har Sony och olympus verkligen Distortion, Chromatic Aberration, och vignetting inbyggt i metadatan? Verkar inte troligt
+- Vissa bilder laddas upp och ned vid import?
 
 ### Things to change
 
 - Lägg tillbacka titeln "Dates", Gör att titlarna inte lyser
+- Increase priority or threads to build cache when importing images, (thumbnails and/or EXIF loading is slow but that is all i can see)
 
-### Things to consider (Do not implelent unless you need to or want to do i and its benfits the program)
+### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
 - Job Queue with Cancellation Tokens to Stop CPU Spikes
 
@@ -64,5 +57,6 @@
 - Test SlowRAW on linux
 - Test SlowRAW on mac
 - Test more file formats for compatability
+- If built in lens correction data exist that is not used currently
 
 ### Questions about the code
