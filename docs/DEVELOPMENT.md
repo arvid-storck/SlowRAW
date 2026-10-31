@@ -3,18 +3,23 @@
 ## Documentation responsibilities
 
 - README.md: project purpose, runtime requirements, basic development tools, compilation, packaging and updating common libraries and the RAW decoder.
-- docs/CODEMAP.md: current architecture, data flow, processing mechanisms and module ownership.
+- docs/CODEMAP.md: current architecture, data flow, processing mechanisms, module ownership and all development tools and compilation.
 - docs/CHANGELOG.md: dated summaries of completed changes, describing each day's final result.
 - docs/PLANNING.md: developer-owned bug tracking and priorities. AI records newly discovered bugs and adds fix notes for developer verification. The developer owns verification and existing entries.
-- This guide: contributor workflow, validation and documentation ownership, with links to build instructions and implementation details.
+- docs/DEVELOPMENT.md: contributor workflow, validation and documentation ownership.
 
 ## Contributor workflow
 
-Read CODEMAP before tracing a feature. Preserve unrelated work. When an IDE integration is available, use open IDE buffers as the source of truth. Components present controls and assemble requests; hooks/stores own frontend state; Rust owns native operations and processing. Reflect the capabilities of the linked encoder.
+Read CODEMAP to learn the structure and file resonability. Preserve unrelated work.
 
 Remove obsolete code, dependencies and files when replacing an implementation,
-and check remaining references. Record the final implementation in CODEMAP and
-the completed change in CHANGELOG. Keep build and dependency instructions in README.
+and check remaining references. 
+
+Keep the documents updated and relevant to the project. Especially CODEMAP if any of the files is changed/added/removed to keep it up to date.
+
+Keep compiling simple and understandable for the users, no need for details. This is for both README and CODEMAP.
+
+Dont add comments unless the function is completly unredable, but if the funktion is unredable, consider writing it in a more clearer way.
 
 ## Verification
 
