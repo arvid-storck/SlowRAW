@@ -24,6 +24,7 @@
 - Remove Neutral Grey Canvas
 - Add a Clear ".rrdata" files, but make it requied to confirm with warnings shown
 - Implement things from "https://github.com/CyberTimon/RapidRAW/releases/tag/v1.6.7" that benefits the program
+- Remove thank you part in the UI (atleast in settings there is a "thank you" thing), but keep it in the documentation
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
