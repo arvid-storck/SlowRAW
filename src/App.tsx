@@ -420,39 +420,14 @@ function App() {
       moveEvent.preventDefault();
 
       if (stateKey === 'left') {
-        let w = startSize + (moveEvent.clientX - startX);
-        if (w < 200) {
-          setUI((state) => ({ uiVisibility: { ...state.uiVisibility, leftPanel: false } }));
-        } else {
-          w = Math.min(w, 600);
-          setUI((state) => ({
-            leftPanelWidth: Math.round(w),
-            uiVisibility: { ...state.uiVisibility, leftPanel: true },
-          }));
-        }
+        const width = Math.max(200, Math.min(startSize + moveEvent.clientX - startX, 600));
+        setUI({ leftPanelWidth: Math.round(width) });
       } else if (stateKey === 'right') {
-        let w = startSize - (moveEvent.clientX - startX);
-        if (w < 200) {
-          setUI((state) => ({ uiVisibility: { ...state.uiVisibility, rightPanel: false } }));
-        } else {
-          w = Math.min(w, 600);
-          setUI((state) => ({
-            rightPanelWidth: Math.round(w),
-            uiVisibility: { ...state.uiVisibility, rightPanel: true },
-          }));
-        }
+        const width = Math.max(200, Math.min(startSize - moveEvent.clientX + startX, 600));
+        setUI({ rightPanelWidth: Math.round(width) });
       } else if (stateKey === 'bottom') {
         const newHeight = startSize - (moveEvent.clientY - startY);
-        if (newHeight < 100) {
-          setUI((state) => ({
-            uiVisibility: { ...state.uiVisibility, filmstrip: false },
-          }));
-        } else {
-          setUI((state) => ({
-            bottomPanelHeight: Math.round(Math.min(newHeight, 400)),
-            uiVisibility: { ...state.uiVisibility, filmstrip: true },
-          }));
-        }
+        setUI({ bottomPanelHeight: Math.round(Math.max(100, Math.min(newHeight, 400))) });
       }
     };
 
@@ -657,7 +632,7 @@ function App() {
           >
             <div className="flex flex-row grow h-full min-h-0">
               {activeView !== 'editor' && uiVisibility.leftPanel && (
-                <div className="w-64 shrink-0 min-h-0 overflow-hidden rounded-lg bg-bg-secondary">
+                <div className="w-64 shrink-0 min-h-0 overflow-hidden rounded-lg border border-surface shadow-xs">
                   {renderAppPanel(Panel.Catalog)}
                 </div>
               )}

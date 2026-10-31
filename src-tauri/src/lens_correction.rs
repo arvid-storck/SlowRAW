@@ -945,6 +945,33 @@ mod tests {
             assert_eq!(metadata.fields["ISO"], iso, "{name}");
             assert_eq!(metadata.fields["PhotographicSensitivity"], iso, "{name}");
             let requests = crate::exiftool::request_count();
+            if name.starts_with("Olympus") {
+                let embedded = metadata
+                    .lens_profile
+                    .as_ref()
+                    .expect("Olympus CA coefficients must remain complete");
+                let table = embedded.radial.as_ref().unwrap();
+                assert!(table.distortion.iter().all(|v| (*v - 1.0).abs() < 1e-12));
+                assert!(table.red.iter().any(|v| (*v - 1.0).abs() > 1e-12));
+                assert!(table.gain.is_empty());
+            }
+            if name.starts_with("Sony") {
+                let table = metadata
+                    .lens_profile
+                    .as_ref()
+                    .unwrap()
+                    .radial
+                    .as_ref()
+                    .unwrap();
+                for (values, neutral) in [
+                    (&table.distortion, 1.0),
+                    (&table.red, 1.0),
+                    (&table.blue, 1.0),
+                    (&table.gain, 1.0),
+                ] {
+                    assert!(values.iter().any(|value| (value - neutral).abs() > 1e-12));
+                }
+            }
             let profile =
                 select_auto_profile(Some(&db), &metadata.fields, metadata.lens_profile.as_ref());
             eprintln!(

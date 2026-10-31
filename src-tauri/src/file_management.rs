@@ -73,7 +73,7 @@ fn compute_thumbnail_cache_hash(path_str: &str, adjustments_bytes: &[u8]) -> Opt
 
     let mut hasher = blake3::Hasher::new();
     // Retire thumbnails made with the previous automatic lens matcher.
-    hasher.update(b"embedded-lens-exiftool-v16");
+    hasher.update(b"embedded-lens-exiftool-v17");
     hasher.update(path_str.as_bytes());
     hasher.update(&img_mod_time.to_le_bytes());
     hasher.update(adjustments_bytes);
@@ -1141,6 +1141,32 @@ fn try_load_embedded_raw_preview(source_path: &Path, target_res: u32) -> Option<
 #[cfg(test)]
 mod embedded_preview_tests {
     #[test]
+    fn large_thumbnail_requests_are_bounded_and_duplicates_do_not_use_slots() {
+        let requests = (0..60_000)
+            .flat_map(|i| [format!("{i}.nef"), format!("{i}.nef")])
+            .collect();
+        let unique = super::unique_thumbnail_requests(requests);
+        assert_eq!(unique.len(), 500);
+        assert_eq!(unique.first().unwrap(), "0.nef");
+        assert_eq!(unique.last().unwrap(), "499.nef");
+    }
+
+    #[test]
+    fn byte_preview_thumbnails_preserve_shape_and_constant_color() {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            1600,
+            800,
+            image::Rgb([80, 120, 180]),
+        ));
+        let bytes = super::encode_thumbnail(&image, 320).unwrap();
+        let thumbnail = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!(thumbnail.dimensions(), (320, 160));
+        for (actual, expected) in thumbnail.get_pixel(0, 0).0.iter().zip([80_i16, 120, 180]) {
+            assert!((*actual as i16 - expected).abs() <= 3);
+        }
+    }
+
+    #[test]
     #[ignore = "Uses the developer-provided RAW files in testbilder"]
     fn supplied_raw_previews_use_cached_exiftool_locations() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1498,7 +1524,17 @@ pub fn generate_thumbnail_data(
 }
 
 fn encode_thumbnail(image: &DynamicImage, target_width: u32) -> Result<Vec<u8>> {
-    let thumbnail = crate::image_processing::downscale_f32_image(image, target_width, target_width);
+    // Camera JPEG previews already contain display pixels. Avoid allocating a
+    // full-resolution RGB32F copy for each of the two cached thumbnail sizes.
+    let thumbnail = if matches!(
+        image,
+        DynamicImage::ImageRgb8(_) | DynamicImage::ImageRgba8(_)
+    ) && image.width().max(image.height()) > target_width
+    {
+        image.thumbnail(target_width, target_width)
+    } else {
+        crate::image_processing::downscale_f32_image(image, target_width, target_width)
+    };
     let mut buf = Cursor::new(Vec::new());
     let mut encoder = JpegEncoder::new_with_quality(&mut buf, 75);
     encoder.encode_image(&thumbnail.to_rgb8())?;
@@ -1660,6 +1696,15 @@ pub fn start_thumbnail_workers(app_handle: tauri::AppHandle) {
     }
 }
 
+fn unique_thumbnail_requests(paths: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    paths
+        .into_iter()
+        .filter(|path| seen.insert(path.clone()))
+        .take(500)
+        .collect()
+}
+
 #[tauri::command]
 pub fn update_thumbnail_queue(
     paths: Vec<String>,
@@ -1684,13 +1729,8 @@ pub fn update_thumbnail_queue(
         return Ok(());
     }
 
-    let mut unique_paths = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for path in paths {
-        if seen.insert(path.clone()) {
-            unique_paths.push(path);
-        }
-    }
+    let mut unique_paths = unique_thumbnail_requests(paths);
+    let seen: HashSet<_> = unique_paths.iter().collect();
 
     queue.retain(|p| !seen.contains(p));
 

@@ -23,7 +23,7 @@ fn neutral_camera_tables_are_not_builtin_corrections() {
         json!({"Make":"OLYMPUS", "Olympus_ImageProcessing_0x150a":[0,0,0,1], "Olympus_ImageProcessing_0x150c":[0,0,0,0,0,0]}),
         json!({"Make":"Panasonic", "DistortionScale":1,"DistortionParam08":0,"DistortionParam04":0,"DistortionParam11":0}),
         json!({"Make":"NIKON", "DistortionCorrectionVersion":"0100","RadialDistortionCoefficient1":0,"RadialDistortionCoefficient2":0,"RadialDistortionCoefficient3":0,
-            "VignetteCorrectionVersion":"0100","NikonVignetteCoefficientCount":8,"NikonVignetteCoefficients":[0,0,0,0,0,0,0,0]}),
+            "VignetteCorrectionVersion":"0100","VignetteCoefficient1":0,"VignetteCoefficient2":0,"VignetteCoefficient3":0}),
     ] {
         let mut fields = fields.as_object().unwrap().clone();
         fields.insert("ImageWidth".into(), json!(101));
@@ -226,11 +226,12 @@ fn official_reader_extracts_nikon_profile_in_the_shared_metadata_read() {
         .expect("ExifTool must decode Nikon correction coefficients");
     assert_eq!(p.source, "Nikon");
     assert!(!metadata.fields.contains_key("NikonNEFInfo"));
-    assert_eq!(metadata.fields["NikonVignetteCoefficientCount"], "8");
-    assert!(metadata.fields["NikonVignetteCoefficients"].contains("-0.123456789"));
+    assert_eq!(metadata.fields["VignetteCoefficient1"], "0.3");
+    assert_eq!(metadata.fields["VignetteCoefficient2"], "0.2");
+    assert_eq!(metadata.fields["VignetteCoefficient3"], "0.1");
     let requests = crate::exiftool::request_count();
     let (_, corner_gain) = p.sample([1.0, 1.0], 1, 0.0, 0.0, 1.0);
-    assert!((corner_gain - 1.476543211).abs() < 1e-12);
+    assert!((corner_gain - 1.6).abs() < 1e-12);
     assert_eq!(p.sample([0.5, 0.5], 1, 0.0, 0.0, 1.0).1, 1.0);
     assert_eq!(p.sample([1.0, 1.0], 1, 0.0, 0.0, 0.0).1, 1.0);
     assert!((p.sample([1.0, 1.0], 1, 0.0, 0.0, 0.5).1 - (1.0 + corner_gain) / 2.0).abs() < 1e-12);
@@ -253,12 +254,7 @@ fn official_reader_extracts_nikon_profile_in_the_shared_metadata_read() {
     let table = p.radial.unwrap();
     let r = 0.5_f64;
     assert!(
-        (table.gain(r, 1.0)
-            - (1.0 - 0.123456789 * r.powi(8)
-                + 0.3 * r.powi(6)
-                + 0.2 * r.powi(4)
-                + 0.1 * r.powi(2)))
-        .abs()
+        (table.gain(r, 1.0) - (1.0 + 0.3 * r.powi(6) + 0.2 * r.powi(4) + 0.1 * r.powi(2))).abs()
             < 1e-12
     );
     assert!(
@@ -272,8 +268,8 @@ fn official_reader_extracts_nikon_profile_in_the_shared_metadata_read() {
 #[test]
 fn nikon_vignette_only_profiles_require_complete_known_layouts() {
     let mut fields = json!({"Make":"NIKON", "ImageWidth":101, "ImageHeight":101,
-        "VignetteCorrectionVersion":"0100", "NikonVignetteCoefficientCount":8,
-        "NikonVignetteCoefficients":[0.2,0.0,0.0,0.0,0.0,0.0,0.0,0.0]});
+        "VignetteCorrectionVersion":"0100", "VignetteCoefficient1":0.2,
+        "VignetteCoefficient2":0.0,"VignetteCoefficient3":0.0});
     let p = from_metadata(&json!([fields.clone()])).unwrap();
     assert!(!p.has_warp());
     assert!(p.has_vignette());
@@ -281,9 +277,9 @@ fn nikon_vignette_only_profiles_require_complete_known_layouts() {
     fields["VignetteCorrectionVersion"] = json!("0200");
     assert!(from_metadata(&json!([fields.clone()])).is_none());
     fields["VignetteCorrectionVersion"] = json!("0100");
-    fields["NikonVignetteCoefficientCount"] = json!(7);
-    assert!(from_metadata(&json!([fields.clone()])).is_none());
-    fields["NikonVignetteCoefficientCount"] = json!(8);
-    fields["NikonVignetteCoefficients"] = json!([0.2, 0.0]);
+    fields
+        .as_object_mut()
+        .unwrap()
+        .remove("VignetteCoefficient3");
     assert!(from_metadata(&json!([fields])).is_none());
 }

@@ -50,7 +50,7 @@ impl ExifCacheState {
         let hash = blake3::hash(folder.to_string_lossy().as_bytes())
             .to_hex()
             .to_string();
-        Some(base_dir.join(format!("exiftool-v5-{}.json", hash)))
+        Some(base_dir.join(format!("exiftool-v6-{}.json", hash)))
     }
 }
 
@@ -188,6 +188,16 @@ fn get_exif_from_rrcache(image_path: &Path) -> Option<HashMap<String, String>> {
 
 /// Source fields and correction data share one read, file stamp and bounded cache.
 pub fn read_source_metadata(image_path: &Path) -> Result<SourceMetadata, String> {
+    if let Some(entry) = get_cached_metadata(image_path).filter(|entry| entry.source_read) {
+        return Ok(entry.metadata);
+    }
+    // Coalesce concurrent thumbnail/catalog misses without an unbounded path map.
+    static READ_LOCKS: OnceLock<[Mutex<()>; 64]> = OnceLock::new();
+    let locks = READ_LOCKS.get_or_init(|| std::array::from_fn(|_| Mutex::new(())));
+    let hash = blake3::hash(image_path.as_os_str().as_encoded_bytes());
+    let _read = locks[hash.as_bytes()[0] as usize % locks.len()]
+        .lock()
+        .map_err(|e| e.to_string())?;
     if let Some(entry) = get_cached_metadata(image_path).filter(|entry| entry.source_read) {
         return Ok(entry.metadata);
     }

@@ -15,6 +15,8 @@ import { useSettingsStore } from '../../../store/useSettingsStore';
 import { refreshCatalog, updateSmartGroup } from '../../../utils/catalog';
 import Button from '../../ui/Button';
 import Input from '../../ui/Input';
+import Text from '../../ui/Text';
+import { TextVariants } from '../../../types/typography';
 
 function Choices({
   label,
@@ -127,131 +129,135 @@ export default function CatalogFilterPanel() {
   };
 
   return (
-    <aside className="w-64 shrink-0 border-l border-border-color bg-surface p-3 overflow-y-auto space-y-3">
-      <div className="font-semibold">{t('catalog.filters')}</div>
-      <Input
-        value={filter.text}
-        placeholder={t('catalog.search')}
-        onChange={(event) => setFilter({ ...filter, text: event.target.value })}
-      />
-      <p className="text-xs text-text-secondary">{t('catalog.match')}</p>
-      <label className="block text-xs text-text-secondary">
-        {t('catalog.flags')}
-        <select
-          className="block w-full bg-bg-primary text-text-primary rounded p-2 mt-1"
-          value={filter.flag ?? ''}
-          onChange={(event) => setFilter({ ...filter, flag: event.target.value })}
-        >
-          <option value="">{t('catalog.allFlags')}</option>
-          <option value="pick">{t('catalog.picked')}</option>
-          <option value="reject">{t('catalog.rejected')}</option>
-          <option value="unflagged">{t('catalog.unflagged')}</option>
-        </select>
-      </label>
-      <Choices
-        label={t('catalog.cameras')}
-        selected={filter.cameras}
-        values={catalogFacets?.cameras ?? []}
-        onChange={(cameras) => setFilter({ ...filter, cameras, camera: '' })}
-      />
-      <Choices
-        label={t('catalog.lenses')}
-        selected={filter.lenses}
-        values={catalogFacets?.lenses ?? []}
-        onChange={(lenses) => setFilter({ ...filter, lenses, lens: '' })}
-      />
-      <Choices
-        label={t('catalog.ratings')}
-        selected={filter.ratings.map(String)}
-        values={['0', '1', '2', '3', '4', '5']}
-        onChange={(ratings) => setFilter({ ...filter, ratings: ratings.map(Number), minimumRating: null })}
-      />
-      <Choices
-        label={t('catalog.tags')}
-        selected={filter.tags}
-        values={catalogFacets?.tags ?? []}
-        onChange={(tags) => setFilter({ ...filter, tags, tag: '' })}
-      />
-      <Choices
-        label={t('catalog.colors')}
-        selected={filter.colors}
-        values={catalogFacets?.colors ?? []}
-        onChange={(colors) => setFilter({ ...filter, colors, color: '' })}
-      />
-      <Choices
-        label={t('catalog.fileTypes')}
-        selected={filter.fileTypes}
-        values={catalogFacets?.fileTypes ?? []}
-        onChange={(fileTypes) => setFilter({ ...filter, fileTypes, fileType: '' })}
-      />
-      <Button
-        className="w-full"
-        onClick={() => {
-          setFilter({ ...EMPTY_CATALOG_FILTER });
-          setLibrary({ catalogDateFilter: '' });
-        }}
-      >
-        {t('catalog.clear')}
-      </Button>
-      <div className="flex gap-1">
+    <aside className="w-64 shrink-0 min-h-0 h-full flex flex-col overflow-hidden rounded-lg border border-surface bg-bg-secondary shadow-xs">
+      <div className="p-3 flex justify-between items-center shrink-0 border-b border-surface">
+        <Text variant={TextVariants.title}>{t('catalog.filters')}</Text>
+      </div>
+      <div className="grow overflow-y-auto p-3 space-y-3">
         <Input
-          value={smartGroupName}
-          onChange={(event) => setSmartGroupName(event.target.value)}
-          placeholder={t('catalog.smartName')}
+          value={filter.text}
+          placeholder={t('catalog.search')}
+          onChange={(event) => setFilter({ ...filter, text: event.target.value })}
+        />
+        <p className="text-xs text-text-secondary">{t('catalog.match')}</p>
+        <label className="block text-xs text-text-secondary">
+          {t('catalog.flags')}
+          <select
+            className="block w-full bg-bg-primary text-text-primary rounded p-2 mt-1"
+            value={filter.flag ?? ''}
+            onChange={(event) => setFilter({ ...filter, flag: event.target.value })}
+          >
+            <option value="">{t('catalog.allFlags')}</option>
+            <option value="pick">{t('catalog.picked')}</option>
+            <option value="reject">{t('catalog.rejected')}</option>
+            <option value="unflagged">{t('catalog.unflagged')}</option>
+          </select>
+        </label>
+        <Choices
+          label={t('catalog.cameras')}
+          selected={filter.cameras}
+          values={catalogFacets?.cameras ?? []}
+          onChange={(cameras) => setFilter({ ...filter, cameras, camera: '' })}
+        />
+        <Choices
+          label={t('catalog.lenses')}
+          selected={filter.lenses}
+          values={catalogFacets?.lenses ?? []}
+          onChange={(lenses) => setFilter({ ...filter, lenses, lens: '' })}
+        />
+        <Choices
+          label={t('catalog.ratings')}
+          selected={filter.ratings.map(String)}
+          values={['0', '1', '2', '3', '4', '5']}
+          onChange={(ratings) => setFilter({ ...filter, ratings: ratings.map(Number), minimumRating: null })}
+        />
+        <Choices
+          label={t('catalog.tags')}
+          selected={filter.tags}
+          values={catalogFacets?.tags ?? []}
+          onChange={(tags) => setFilter({ ...filter, tags, tag: '' })}
+        />
+        <Choices
+          label={t('catalog.colors')}
+          selected={filter.colors}
+          values={catalogFacets?.colors ?? []}
+          onChange={(colors) => setFilter({ ...filter, colors, color: '' })}
+        />
+        <Choices
+          label={t('catalog.fileTypes')}
+          selected={filter.fileTypes}
+          values={catalogFacets?.fileTypes ?? []}
+          onChange={(fileTypes) => setFilter({ ...filter, fileTypes, fileType: '' })}
         />
         <Button
-          disabled={busy || !smartGroupName.trim()}
-          onClick={() => run(saveSmartGroup)}
-          data-tooltip={t(editingSmartGroupId ? 'catalog.saveChanges' : 'catalog.save')}
+          className="w-full"
+          onClick={() => {
+            setFilter({ ...EMPTY_CATALOG_FILTER });
+            setLibrary({ catalogDateFilter: '' });
+          }}
         >
-          <Sparkles size={16} />
+          {t('catalog.clear')}
         </Button>
-      </div>
-      {editingSmartGroupId && (
-        <Button onClick={() => setLibrary({ editingSmartGroupId: null })}>{t('catalog.cancelEdit')}</Button>
-      )}
-      <details className="border-t border-border-color pt-3">
-        <summary className="cursor-pointer text-sm">{t('catalog.folders')}</summary>
-        <div className="space-y-2 pt-2">
-          {(catalogStatus?.folders ?? []).map((path) => (
-            <div key={path} className="flex items-center gap-2 text-xs">
-              <span className="truncate grow" title={path}>
-                {path}
-              </span>
-              <button
-                disabled={busy}
-                title={t('catalog.removeFolder')}
-                onClick={() =>
-                  run(async () => {
-                    const status = await invoke<CatalogStatus>(Invokes.CatalogRemoveFolder, { path });
-                    const settings = useSettingsStore.getState();
-                    if (settings.appSettings)
-                      settings.setAppSettings({ ...settings.appSettings, catalogFolders: status.folders });
-                    setLibrary({ catalogPage: 0 });
-                    await refreshCatalog();
-                  })
-                }
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ))}
+        <div className="flex gap-1">
+          <Input
+            value={smartGroupName}
+            onChange={(event) => setSmartGroupName(event.target.value)}
+            placeholder={t('catalog.smartName')}
+          />
           <Button
-            disabled={busy}
-            onClick={() =>
-              run(async () => {
-                for (const path of catalogStatus?.folders ?? []) {
-                  await invoke(Invokes.CatalogAddFolder, { path });
-                }
-                setLibrary({ catalogPage: 0 });
-                await refreshCatalog();
-              })
-            }
+            disabled={busy || !smartGroupName.trim()}
+            onClick={() => run(saveSmartGroup)}
+            data-tooltip={t(editingSmartGroupId ? 'catalog.saveChanges' : 'catalog.save')}
           >
-            {t('catalog.rescan')}
+            <Sparkles size={16} />
           </Button>
         </div>
-      </details>
+        {editingSmartGroupId && (
+          <Button onClick={() => setLibrary({ editingSmartGroupId: null })}>{t('catalog.cancelEdit')}</Button>
+        )}
+        <details className="border-t border-border-color pt-3">
+          <summary className="cursor-pointer text-sm">{t('catalog.folders')}</summary>
+          <div className="space-y-2 pt-2">
+            {(catalogStatus?.folders ?? []).map((path) => (
+              <div key={path} className="flex items-center gap-2 text-xs">
+                <span className="truncate grow" title={path}>
+                  {path}
+                </span>
+                <button
+                  disabled={busy}
+                  title={t('catalog.removeFolder')}
+                  onClick={() =>
+                    run(async () => {
+                      const status = await invoke<CatalogStatus>(Invokes.CatalogRemoveFolder, { path });
+                      const settings = useSettingsStore.getState();
+                      if (settings.appSettings)
+                        settings.setAppSettings({ ...settings.appSettings, catalogFolders: status.folders });
+                      setLibrary({ catalogPage: 0 });
+                      await refreshCatalog();
+                    })
+                  }
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+            <Button
+              disabled={busy}
+              onClick={() =>
+                run(async () => {
+                  for (const path of catalogStatus?.folders ?? []) {
+                    await invoke(Invokes.CatalogAddFolder, { path });
+                  }
+                  setLibrary({ catalogPage: 0 });
+                  await refreshCatalog();
+                })
+              }
+            >
+              {t('catalog.rescan')}
+            </Button>
+          </div>
+        </details>
+      </div>
     </aside>
   );
 }

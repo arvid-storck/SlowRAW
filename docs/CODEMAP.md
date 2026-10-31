@@ -42,8 +42,8 @@ runs after optional EXIF handling regardless of the metadata switch.
 
 ## Metadata and lens profiles
 
-`exiftool.rs` drives Phil Harvey's official ExifTool through a persistent read-only
-`-stay_open` process. Requests use UTF-8 filenames, numbered response markers,
+`exiftool.rs` drives Phil Harvey's official ExifTool through up to four persistent
+read-only `-stay_open` processes, bounded by available CPU parallelism. Requests use UTF-8 filenames, numbered response markers,
 bounded output and a timeout. Windows bundles its Perl runtime; macOS/Linux
 require system Perl to compile and run SlowRAW. Desktop installations can use
 an explicit executable or PATH.
@@ -59,6 +59,10 @@ ExifTool supplies all source EXIF reads, including GPS and attribution.
 The shared metadata/profile
 cache holds at most eight folders with 512 entries each, in an ExifTool-specific
 cache namespace. Rawler continues to decode RAW sensor data.
+Concurrent misses for the same source share one read through bounded lock shards.
+Catalog indexing prepares metadata in batches of 256 on a dedicated pool of up
+to four workers, then commits each batch through one SQLite writer. Files whose
+source and sidecar timestamps match the catalog are skipped before metadata work.
 SlowRAW targets Windows, macOS and Linux.
 `image-hdr` still requires `kamadak-exif` transitively. SlowRAW supplies decoded
 pixels, exposure and ISO through `HDRInput::with_image`, bypassing that library's
@@ -75,6 +79,9 @@ Automatic selection consumes this cached data without a separate profile read.
 Thumbnail loading reads preview bytes from the source at cached offsets and
 uses the corresponding cached orientation. Preview pixels stay out of the
 metadata cache. Invalid or undersized previews fall back to RAW development.
+Byte-based JPEG previews resize directly without a full-resolution float copy.
+Thumbnail requests retain at most 500 unique paths so oversized requests cannot
+stall queue trimming.
 Standard EXIF ISO takes precedence over internal MakerNote sensitivity and is
 also saved under the legacy `PhotographicSensitivity` key. `utils/metadata.ts`
 shares the same ISO choice between the metadata panel, toolbar, library labels
@@ -86,14 +93,15 @@ models for Sony's 16-point tables, Fujifilm's 9/11-point tables, Olympus/OM Syst
 radial/channel coefficients, Panasonic/Leica's distortion polynomial and Nikon's
 version-0100 distortion and vignette coefficients. ExifTool performs EXIF/MakerNote decoding;
 these modules convert its values into rendering parameters. Nikon uses ExifTool's
-decoded coefficient fields, with no separate TIFF reader. The bundled
-`resources/exiftool.config` adds Nikon's complete eight-coefficient vignette
-series and its count to ExifTool's tag definitions. The persistent process loads
-this configuration once; the existing metadata request includes the unformatted
-values. The vignette model evaluates the polynomial with an implicit constant
-of one and supports profiles with vignette data alone. Unknown versions or
-incomplete coefficient arrays are skipped. Metadata and thumbnail cache revisions
-invalidate earlier profiles that contained distortion only. Panasonic's model
+decoded coefficient fields, with no separate TIFF reader or custom ExifTool tag
+configuration. Nikon uses the standard `VignetteCoefficient1/2/3` fields as the
+r^6/r^4/r^2 terms, with an implicit constant of one. Vignette-only profiles are
+supported. Unknown versions or incomplete coefficient sets are skipped.
+Olympus distortion/CA arrays are explicitly requested unformatted so ExifTool's
+60-character display limit cannot truncate them. Sony supports all three
+corrections when their tables are present; Olympus supports distortion/CA, with
+no additional metadata vignette model. Neutral tables do not enable controls.
+Metadata and thumbnail cache revisions invalidate earlier profile results. Panasonic's model
 currently supplies distortion only. Unknown layouts, including Canon proprietary
 correction models, fall back to Lensfun when no supported built-in profile exists.
 
@@ -607,7 +615,6 @@ are composited during image rendering; the source image remains intact.
 | `src-tauri/icons/` | App icons. |
 | `src-tauri/lensfun_db/` | Bundled lens profiles; separately updatable at runtime. |
 | `src-tauri/resources/` | Bundled runtime resources, licenses, and native libraries. |
-| `src-tauri/resources/exiftool.config` | Additional Nikon vignette tag definitions loaded by the persistent ExifTool process. |
 | `data/` | Linux desktop entry and AppStream metadata. |
 | `packaging/` | Linux/Flatpak and dependency-source packaging metadata. |
 
@@ -980,7 +987,7 @@ git fetch origin
 git reset --mixed origin/main
 git branch -M main
 git add -A
-git commit -m "Read docs/CHANGELOG.md"
+git commit -m "Read docs/CHANGELOG"
 git push -u origin main
 ```
 

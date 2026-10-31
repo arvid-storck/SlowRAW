@@ -104,10 +104,6 @@
   ) !important;
 }
 
-@utility text-shadow-shiny {
-  text-shadow: 0 0 18px rgba(255, 255, 255, 0.35);
-}
-
 @layer base {
   :where(button, [role='button']):not([disabled]) {
     cursor: pointer;
@@ -444,10 +440,4 @@
     hsl(var(--cg-hue), var(--cg-sat), 50%) 50%,
     hsl(var(--cg-hue), var(--cg-sat), 100%) 100%
   ) !important;
-}
-
-@layer utilities {
-  .text-shadow-shiny {
-    text-shadow: 0 0 18px rgba(255, 255, 255, 0.3);
-  }
 }

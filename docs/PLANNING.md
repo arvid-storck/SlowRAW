@@ -1,4 +1,10 @@
 ### Bugs
+
+- Thumbnail requests exceeding 500 unique paths could hang queue trimming.
+
+  Status: fix implemented; awaiting developer verification (2026-10-30).
+  Incoming requests are deduplicated and bounded before existing queue trimming.
+  A 60,000-path regression checks the bound and duplicate handling.
 - Highlights changed abruptly near zero
 - Camera calibration did not use the interpolated profile
 - Batch analysis could retain too many RAW decodes
@@ -11,24 +17,9 @@
   data. A separate 60,000-file fixture passes with a concurrent database writer.
   Developer check: repeat the real 60,000-photo import, verify its final row count,
   then rescan while browsing and updating ratings.
-- Olympus/OM System: distorsion och färgfel stöds, men inbyggd vinjetteringskorrigering saknas.
-  
-  Panasonic/Leica: den inbyggda modellen korrigerar bara distorsion.
-  
-  Fujifilm: vissa tabellformat stöds; andra avvisas trots att ExifTool kan läsa värdena.
-  
-  Canon: egna inbyggda profilmodeller saknar implementation och använder Lensfun som reserv.
-  
-  Sony: jag hittade ingen motsvarande saknad koefficient i de modeller vi stöder.
-- Use in nikon raw file for vigetting "Vignette Coefficient1", "Vignette Coefficient2", "Vignette Coefficient3"
-- Har Sony och olympus verkligen Distortion, Chromatic Aberration, och vignetting inbyggt i metadatan? Verkar inte troligt
-- Vissa bilder är fel roterade vid import
 
 ### Things to change
 
-- Lägg tillbacka titeln "Dates", Gör att titlarna inte lyser
-- Increase priority or threads to build cache when importing images, (thumbnails and/or EXIF loading is slow but that is all i can see)
-- Ta bort möjligheten att när panelerna är öppna att dra bort dem så att det försvinner
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 

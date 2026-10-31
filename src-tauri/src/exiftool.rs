@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use tauri::Manager;
 
 static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
-static CONFIGURATION: OnceLock<PathBuf> = OnceLock::new();
 static SESSION: OnceLock<Result<Mutex<Session>, String>> = OnceLock::new();
+static WORKERS: OnceLock<Vec<Mutex<Option<Session>>>> = OnceLock::new();
 
 pub fn initialize(app: &tauri::AppHandle) {
     let name = if cfg!(windows) {
@@ -43,20 +43,6 @@ pub fn initialize(app: &tauri::AppHandle) {
         })
         .unwrap_or_else(|| name.into());
     let _ = PROGRAM.set(program);
-    let configuration = app
-        .path()
-        .resolve(
-            "resources/exiftool.config",
-            tauri::path::BaseDirectory::Resource,
-        )
-        .ok()
-        .filter(|path| path.is_file())
-        .unwrap_or_else(development_configuration);
-    let _ = CONFIGURATION.set(configuration);
-}
-
-fn development_configuration() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/exiftool.config")
 }
 
 struct Session {
@@ -90,12 +76,7 @@ impl Session {
         let mut command = Command::new(program);
         command
             .arg("-config")
-            .arg(
-                CONFIGURATION
-                    .get()
-                    .cloned()
-                    .unwrap_or_else(development_configuration),
-            )
+            .arg("")
             .args(["-stay_open", "True", "-@", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -160,7 +141,7 @@ impl Session {
         self.request += 1;
         // Keep previews out of the read; explicitly requested correction blocks
         // still use binary JSON. Preserve unformatted correction coefficients.
-        let tags = "-b\n-api\nBinary=0\n-u\n-Orientation#\n-PreviewImageStart#\n-PreviewImageLength#\n-JpgFromRawStart#\n-JpgFromRawLength#\n-ThumbnailOffset#\n-ThumbnailLength#\n-GPSLatitude#\n-GPSLongitude#\n-GPSLatitudeRef#\n-GPSLongitudeRef#\n-GPSAltitude#\n-GPSAltitudeRef#\n-ShutterSpeedValue#\n-ExposureCompensation#\n-Flash#\n-MeteringMode#\n-WhiteBalance#\n-ExposureProgram#\n-FocalLength#\n-FNumber#\n-SubjectDistance#\n-OpcodeList2#\n-OpcodeList3#\n-DistortionCorrectionVersion\n-RadialDistortionCoefficient1#\n-RadialDistortionCoefficient2#\n-RadialDistortionCoefficient3#\n-VignetteCorrectionVersion\n-NikonVignetteCoefficientCount#\n-NikonVignetteCoefficients#\n-ActiveArea#\n-DefaultCropOrigin#\n-DefaultCropSize#\n-DefaultScale#\n-DistortionCorrParams#\n-DistortionCorrParamsNumber#\n-DistortionCorrParamsPresent#\n-ChromaticAberrationCorrParams#\n-VignettingCorrParams#\n-GeometricDistortionParams#\n-ChromaticAberrationParams#\n-VignettingParams#\n-CropMode#\n-DistortionScale#\n-DistortionParam08#\n-DistortionParam04#\n-DistortionParam11#\n-all";
+        let tags = "-b\n-api\nBinary=0\n-u\n-Orientation#\n-Olympus_ImageProcessing_0x150a#\n-Olympus_ImageProcessing_0x150c#\n-PreviewImageStart#\n-PreviewImageLength#\n-JpgFromRawStart#\n-JpgFromRawLength#\n-ThumbnailOffset#\n-ThumbnailLength#\n-GPSLatitude#\n-GPSLongitude#\n-GPSLatitudeRef#\n-GPSLongitudeRef#\n-GPSAltitude#\n-GPSAltitudeRef#\n-ShutterSpeedValue#\n-ExposureCompensation#\n-Flash#\n-MeteringMode#\n-WhiteBalance#\n-ExposureProgram#\n-FocalLength#\n-FNumber#\n-SubjectDistance#\n-OpcodeList2#\n-OpcodeList3#\n-DistortionCorrectionVersion\n-RadialDistortionCoefficient1#\n-RadialDistortionCoefficient2#\n-RadialDistortionCoefficient3#\n-VignetteCorrectionVersion\n-VignetteCoefficient1#\n-VignetteCoefficient2#\n-VignetteCoefficient3#\n-ActiveArea#\n-DefaultCropOrigin#\n-DefaultCropSize#\n-DefaultScale#\n-DistortionCorrParams#\n-DistortionCorrParamsNumber#\n-DistortionCorrParamsPresent#\n-ChromaticAberrationCorrParams#\n-VignettingCorrParams#\n-GeometricDistortionParams#\n-ChromaticAberrationParams#\n-VignettingParams#\n-CropMode#\n-DistortionScale#\n-DistortionParam08#\n-DistortionParam04#\n-DistortionParam11#\n-all";
         writeln!(
             self.input,
             "-j\n-G1\n-struct\n-charset\nfilename=UTF8\n{tags}\n{path}\n-execute{}",
@@ -249,14 +230,27 @@ pub fn read(path: &Path) -> Result<crate::exif_processing::SourceMetadata, Strin
 
 #[cfg(test)]
 pub(crate) fn request_count() -> u64 {
-    SESSION
+    let primary = SESSION
         .get()
         .unwrap()
         .as_ref()
         .unwrap()
         .lock()
         .unwrap()
-        .request
+        .request;
+    primary
+        + WORKERS.get().map_or(0, |workers| {
+            workers
+                .iter()
+                .map(|worker| {
+                    worker
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .map_or(0, |session| session.request)
+                })
+                .sum::<u64>()
+        })
 }
 
 pub fn ensure_available() -> Result<(), String> {
@@ -276,12 +270,42 @@ pub fn shutdown() {
             let _ = session.child.wait();
         }
     }
+    if let Some(workers) = WORKERS.get() {
+        for worker in workers {
+            if let Ok(mut session) = worker.try_lock() {
+                session.take();
+            }
+        }
+    }
 }
 
 fn request(path: &Path) -> Result<String, String> {
     let session = SESSION.get_or_init(|| Session::start().map(Mutex::new));
     let session = session.as_ref().map_err(Clone::clone)?;
+    if let Ok(mut session) = session.try_lock() {
+        return read_session(&mut session, path);
+    }
+    // Separate processes allow import and visible thumbnails to read concurrently.
+    // Keep the pool small: RAW pixel buffers already use the CPU/RAM budget.
+    let workers = WORKERS.get_or_init(|| {
+        let count = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .clamp(1, 4);
+        (1..count).map(|_| Mutex::new(None)).collect()
+    });
+    for worker in workers {
+        if let Ok(mut slot) = worker.try_lock() {
+            if slot.is_none() {
+                *slot = Some(Session::start()?);
+            }
+            return read_session(slot.as_mut().unwrap(), path);
+        }
+    }
     let mut session = session.lock().map_err(|e| e.to_string())?;
+    read_session(&mut session, path)
+}
+
+fn read_session(session: &mut Session, path: &Path) -> Result<String, String> {
     if session
         .child
         .try_wait()
@@ -373,6 +397,47 @@ fn normalize(json: &str) -> Result<HashMap<String, String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn concurrent_cache_misses_read_the_same_file_once() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("shared.jpg");
+        image::RgbImage::new(24, 16).save(&path).unwrap();
+        ensure_available().unwrap();
+        let before = request_count();
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    let metadata = crate::exif_processing::read_source_metadata(&path).unwrap();
+                    assert_eq!(metadata.fields["ImageWidth"], "24");
+                });
+            }
+        });
+        assert_eq!(request_count(), before + 1);
+    }
+
+    #[test]
+    fn another_reader_can_work_while_the_primary_session_is_busy() {
+        if std::thread::available_parallelism().map_or(1, usize::from) == 1 {
+            return;
+        }
+        ensure_available().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("parallel.jpg");
+        image::RgbImage::new(31, 19).save(&path).unwrap();
+        let primary = SESSION.get().unwrap().as_ref().unwrap().lock().unwrap();
+        let (send, receive) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _ = send.send(read(&path));
+        });
+        let result = receive.recv_timeout(Duration::from_secs(15));
+        drop(primary);
+        worker.join().unwrap();
+        assert_eq!(result.unwrap().unwrap().fields["ImageWidth"], "31");
+        assert!(WORKERS.get().unwrap().len() <= 3);
+    }
+
     #[test]
     fn iso_uses_camera_reported_value_not_internal_or_iso_speed_fields() {
         let fields =

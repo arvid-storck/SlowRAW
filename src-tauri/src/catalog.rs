@@ -332,7 +332,7 @@ fn index_folder(
 
     crate::exiftool::ensure_available()?;
     let mut seen = HashSet::new();
-    let mut pending = Vec::with_capacity(INDEX_BATCH_SIZE);
+    let mut candidates = Vec::with_capacity(INDEX_BATCH_SIZE);
     let mut indexed = 0u64;
     for entry in WalkDir::new(folder).follow_links(false).into_iter() {
         let entry = entry.map_err(|e| e.to_string())?;
@@ -377,77 +377,21 @@ fn index_folder(
         if enable_xmp_sync {
             crate::file_management::sync_metadata_from_xmp(path, &mut sidecar_data);
         }
-        let exif = if is_supported_video_file(path) {
-            HashMap::new()
-        } else if let Some(exif) = sidecar_data.exif.clone().filter(|_| !force_metadata) {
-            exif
-        } else {
-            read_exif_data(&path_text, &[])
-        };
-        let tags = sidecar_data.tags.unwrap_or_default();
-        let color = tags
-            .iter()
-            .find_map(|tag| tag.strip_prefix("color:"))
-            .map(str::to_owned);
-        let flag = tags
-            .iter()
-            .find_map(|tag| tag.strip_prefix("flag:"))
-            .map(str::to_owned);
-        let camera = {
-            let make = metadata_value(&exif, &["Make"]).unwrap_or("");
-            let model = metadata_value(&exif, &["Model", "CameraModelName"]).unwrap_or("");
-            let value = format!("{} {}", make, model).trim().to_string();
-            (!value.is_empty()).then_some(value)
-        };
-        let lens = metadata_value(&exif, &["LensModel", "Lens", "LensInfo"]).map(str::to_owned);
-        let date_taken = metadata_value(&exif, &["DateTimeOriginal", "CreateDate", "DateTime"])
-            .and_then(normalized_capture_date)
-            .or_else(|| {
-                file_meta.modified().ok().map(|time| {
-                    let date: DateTime<Utc> = time.into();
-                    date.format("%Y-%m-%d %H:%M:%S").to_string()
-                })
-            });
-        let focal =
-            metadata_value(&exif, &["FocalLength", "FocalLengthIn35mmFilm"]).map(str::to_owned);
-        let extension = path
-            .extension()
-            .and_then(|v| v.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let filename = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
-        use rusqlite::types::Value;
-        let optional = |text: Option<String>| text.map(Value::from).unwrap_or(Value::Null);
-        pending.push(vec![
-            path_text.into(),
-            folder_text.clone().into(),
-            filename.to_owned().into(),
-            extension.into(),
-            modified.into(),
-            sidecar_modified.into(),
-            optional(date_taken),
-            optional(camera),
-            optional(lens),
-            optional(focal),
-            i64::from(sidecar_data.rating).into(),
-            optional(color),
-            optional(flag),
-            serde_json::to_string(&tags)
-                .map_err(|e| e.to_string())?
-                .into(),
-            serde_json::to_string(&exif.iter().collect::<BTreeMap<_, _>>())
-                .map_err(|e| e.to_string())?
-                .into(),
-            i64::from(is_raw_file(path)).into(),
-            i64::from(sidecar.exists()).into(),
-            unix_seconds(SystemTime::now()).into(),
-        ]);
-        if pending.len() == INDEX_BATCH_SIZE {
-            write_catalog_batch(conn, &mut pending, UPSERT_IMAGE)?;
+        candidates.push(IndexCandidate {
+            path: path.to_path_buf(),
+            file_meta,
+            modified,
+            sidecar_modified,
+            sidecar_data,
+        });
+        if candidates.len() == INDEX_BATCH_SIZE {
+            let mut rows = prepare_catalog_rows(&mut candidates, &folder_text, force_metadata)?;
+            write_catalog_batch(conn, &mut rows, UPSERT_IMAGE)?;
         }
         indexed += 1;
     }
-    write_catalog_batch(conn, &mut pending, UPSERT_IMAGE)?;
+    let mut rows = prepare_catalog_rows(&mut candidates, &folder_text, force_metadata)?;
+    write_catalog_batch(conn, &mut rows, UPSERT_IMAGE)?;
 
     let mut stale = conn
         .prepare("SELECT path FROM catalog_images WHERE folder_path=?1")
@@ -471,6 +415,120 @@ fn index_folder(
         transaction.commit().map_err(|e| e.to_string())?;
     }
     Ok(indexed)
+}
+
+struct IndexCandidate {
+    path: PathBuf,
+    file_meta: fs::Metadata,
+    modified: i64,
+    sidecar_modified: i64,
+    sidecar_data: crate::image_processing::ImageMetadata,
+}
+
+// Metadata reads run outside the SQLite writer and never retain a whole import.
+fn prepare_catalog_rows(
+    candidates: &mut Vec<IndexCandidate>,
+    folder_text: &str,
+    force_metadata: bool,
+) -> Result<Vec<Vec<rusqlite::types::Value>>, String> {
+    use rayon::prelude::*;
+    static WORKERS: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    let workers = WORKERS.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(
+                std::thread::available_parallelism()
+                    .map_or(1, usize::from)
+                    .clamp(1, 4),
+            )
+            .thread_name(|i| format!("catalog-cache-{i}"))
+            .build()
+            .expect("Create metadata workers")
+    });
+    let candidates = std::mem::take(candidates);
+    workers.install(|| {
+        candidates
+            .into_par_iter()
+            .map(|candidate| {
+                let IndexCandidate {
+                    path,
+                    file_meta,
+                    modified,
+                    sidecar_modified,
+                    sidecar_data,
+                } = candidate;
+                let path = path.as_path();
+                let path_text = path.to_string_lossy().into_owned();
+                let sidecar = get_primary_sidecar_path(path);
+                let exif = if is_supported_video_file(path) {
+                    HashMap::new()
+                } else if let Some(exif) = sidecar_data.exif.clone().filter(|_| !force_metadata) {
+                    exif
+                } else {
+                    read_exif_data(&path_text, &[])
+                };
+                let tags = sidecar_data.tags.unwrap_or_default();
+                let color = tags
+                    .iter()
+                    .find_map(|tag| tag.strip_prefix("color:"))
+                    .map(str::to_owned);
+                let flag = tags
+                    .iter()
+                    .find_map(|tag| tag.strip_prefix("flag:"))
+                    .map(str::to_owned);
+                let camera = {
+                    let make = metadata_value(&exif, &["Make"]).unwrap_or("");
+                    let model = metadata_value(&exif, &["Model", "CameraModelName"]).unwrap_or("");
+                    let value = format!("{} {}", make, model).trim().to_string();
+                    (!value.is_empty()).then_some(value)
+                };
+                let lens =
+                    metadata_value(&exif, &["LensModel", "Lens", "LensInfo"]).map(str::to_owned);
+                let date_taken =
+                    metadata_value(&exif, &["DateTimeOriginal", "CreateDate", "DateTime"])
+                        .and_then(normalized_capture_date)
+                        .or_else(|| {
+                            file_meta.modified().ok().map(|time| {
+                                let date: DateTime<Utc> = time.into();
+                                date.format("%Y-%m-%d %H:%M:%S").to_string()
+                            })
+                        });
+                let focal = metadata_value(&exif, &["FocalLength", "FocalLengthIn35mmFilm"])
+                    .map(str::to_owned);
+                let extension = path
+                    .extension()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let filename = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+                use rusqlite::types::Value;
+                let optional = |text: Option<String>| text.map(Value::from).unwrap_or(Value::Null);
+                Ok(vec![
+                    path_text.into(),
+                    folder_text.to_owned().into(),
+                    filename.to_owned().into(),
+                    extension.into(),
+                    modified.into(),
+                    sidecar_modified.into(),
+                    optional(date_taken),
+                    optional(camera),
+                    optional(lens),
+                    optional(focal),
+                    i64::from(sidecar_data.rating).into(),
+                    optional(color),
+                    optional(flag),
+                    serde_json::to_string(&tags)
+                        .map_err(|e| e.to_string())?
+                        .into(),
+                    serde_json::to_string(&exif.iter().collect::<BTreeMap<_, _>>())
+                        .map_err(|e| e.to_string())?
+                        .into(),
+                    i64::from(is_raw_file(path)).into(),
+                    i64::from(sidecar.exists()).into(),
+                    unix_seconds(SystemTime::now()).into(),
+                ])
+            })
+            .collect()
+    })
 }
 
 fn write_catalog_batch(
@@ -988,6 +1046,36 @@ fn facets_from_connection(conn: &Connection) -> Result<CatalogFacets, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parallel_import_keeps_metadata_with_its_source_and_skips_unchanged_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let photos = directory.path().join("photos");
+        fs::create_dir(&photos).unwrap();
+        let mut conn = open_db_path(&directory.path().join("catalog.sqlite")).unwrap();
+        for width in 12..36 {
+            image::RgbImage::new(width, 8)
+                .save(photos.join(format!("{width}.jpg")))
+                .unwrap();
+        }
+        assert_eq!(index_folder(&mut conn, &photos, false, false).unwrap(), 24);
+        for width in 12..36 {
+            let path = photos.join(format!("{width}.jpg"));
+            let json: String = conn
+                .query_row(
+                    "SELECT exif_json FROM catalog_images WHERE path=?1",
+                    [path.to_string_lossy().as_ref()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let fields: HashMap<String, String> = serde_json::from_str(&json).unwrap();
+            assert_eq!(fields["ImageWidth"], width.to_string());
+            assert_eq!(fields["ImageHeight"], "8");
+        }
+        let requests = crate::exiftool::request_count();
+        assert_eq!(index_folder(&mut conn, &photos, false, false).unwrap(), 0);
+        assert_eq!(crate::exiftool::request_count(), requests);
+    }
+
     #[test]
     fn sixty_thousand_files_commit_and_rescan_with_a_concurrent_writer() {
         use std::sync::{
