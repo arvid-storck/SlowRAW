@@ -21,6 +21,10 @@ Keep compiling simple and understandable for the users, no need for details. Thi
 
 Dont add comments unless the function is completly unredable, but if the funktion is unredable, consider writing it in a more clearer way.
 
+If a function does not work for one of the supported OS, DO NOT IMPLEMENT IT.
+
+Make the implementation work for all supported OS with one path only if possible, try to not make a special version for one OS.
+
 ## Verification
 
 Use focused checks for changed behavior.
