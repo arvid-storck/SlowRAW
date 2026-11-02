@@ -10,7 +10,7 @@
 
 ## Contributor workflow
 
-Read CODEMAP to learn the structure and file resonability. Preserve unrelated work.
+Consider reading CODEMAP.md to learn the structure and file resonability.
 
 Remove obsolete code, dependencies and files when replacing an implementation,
 and check remaining references. 
@@ -24,6 +24,10 @@ Dont add comments unless the function is completly unredable, but if the funktio
 If a function does not work for one of the supported OS, DO NOT IMPLEMENT IT.
 
 Make the implementation work for all supported OS with one path only if possible, try to not make a special version for one OS.
+
+Try to reuse existing functions and dont write several functions that do almost the same thing.
+
+If a problem can be solved with a well made external libary, concider using it, unless a custom solution is way esier and more efficent. Only use well regarded external libary that is proven to work and tested by time and/or other software and users.
 
 ## Verification
 
