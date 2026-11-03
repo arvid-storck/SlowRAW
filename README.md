@@ -206,8 +206,6 @@ npm run clean:deep -- --dry-run
 npm run clean:deep
 ```
 
-Both commands remove interrupted ExifTool downloads. `clean:deep` also removes downloaded ExifTool.
-
 ### Updating the RAW decoder
 
 ```powershell
