@@ -10,7 +10,7 @@
 
 ## Contributor workflow
 
-Consider reading CODEMAP.md to learn the structure and file resonability.
+Consider reading CODEMAP.md to learn the structure and file responsibility.
 
 Remove obsolete code, dependencies and files when replacing an implementation,
 and check remaining references. 
@@ -19,7 +19,7 @@ Keep the documents updated and relevant to the project. Especially CODEMAP if an
 
 Keep compiling simple and understandable for the users, no need for details. This is for both README and CODEMAP.
 
-Dont add comments unless the function is completly unredable, but if the funktion is unredable, consider writing it in a more clearer way.
+Dont add comments unless the function is completely unreadable, but if the function is unredable, consider writing it in a more clearer way.
 
 If a function does not work for one of the supported OS, DO NOT IMPLEMENT IT.
 
@@ -27,9 +27,9 @@ Make the implementation work for all supported OS with one path only if possible
 
 Try to reuse existing functions and dont write several functions that do almost the same thing.
 
-If a problem can be solved with a well made external libary, concider using it, unless a custom solution is way esier and more efficent. Only use well regarded external libary that is proven to work and tested by time and/or other software and users.
+If a problem can be solved with a well made external library, consider using it, unless a custom solution is way easier and more efficient. Only use well regarded external library that is proven to work and tested by time and/or other software and users.
 
-Write variables and functions and classes in camel case.
+Write variable and function names in camel case. Class names in UpperCamelCase.
 
 ## Verification
 
