@@ -26,6 +26,7 @@
 - Fix "src\i18n\locales\en.json", keys: "filteredTotal", "total", "total_one", "total_other". Add key: "filteredTotalOne", should read "x images" or "x image" if its one
 - Rename variables, fuctions and classes to to camel case, and upper camel case.
 - Fix general ineffiencies left
+- Fix compiling documantation
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
