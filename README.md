@@ -47,9 +47,6 @@ This project is based on RapidRAW v1.6.3 by CyberTimon (Timon Käch):
 
 https://github.com/CyberTimon/RapidRAW/tree/v1.6.3
 
-The original RapidRAW project provides the foundation for this version.
-Selected processing, healing and grain code is also adapted from [RapidRAW v1.6.9](https://github.com/CyberTimon/RapidRAW/tree/v1.6.9).
-
 This version has been modified substantially, especially in the following areas:
 
 * local SQLite catalog architecture
@@ -62,11 +59,9 @@ This version has been modified substantially, especially in the following areas:
 * local photo processing
 * stability and performance improvements
 
-Development and maintenance of these modifications have been made by ChatGPT. I dislike that i had to use ChatGPT but i did not have the knowledge or expetice to do this myself. The changes i did from the original projekt is vibecoded, i hate that. But i decided the direction and scope of the projekt. 
+Development and maintenance of these modifications have been made by ChatGPT. I dislike that i had to use ChatGPT but i did not have the knowledge or expetice to do this myself. The changes i did from the original projekt is vibecoded, i hate that.
 
 I would have prefered to use someone else not vibecoded projekt or purchase one instead.
-
-See the upstream repository for the original project, its contributors, and its complete historical development record.
 
 ## The Idea
 
