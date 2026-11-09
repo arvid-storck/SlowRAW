@@ -125,6 +125,8 @@ Editing requires a supported native GPU and a current graphics driver.
 | macOS | macOS 13 Ventura or newer; Metal-capable GPU | Vulkan through bundled MoltenVK |
 | Linux | Modern 64-bit distribution with Wayland, Vulkan drivers, GTK 3 and WebKitGTK 4.1 | Vulkan |
 
+If it's not listed above, it might work anyways. There is no code that specifically stops it working artificially.
+
 ## Maintainer Documentation
 
 Build and library-update help is below. Read [DEVELOPMENT](docs/DEVELOPMENT.md)
