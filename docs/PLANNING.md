@@ -22,6 +22,7 @@
 - Remove Clear ".rrdata" files button
 - Make a build cashe button
 - Remove "xx matching yy total" text, just list the number of images currently filtred as it did before
+- Add all dev tools on CODEMAP.md
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
