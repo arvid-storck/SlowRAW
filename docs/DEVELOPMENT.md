@@ -29,7 +29,7 @@ Try to reuse existing functions and dont write several functions that do almost 
 
 If a problem can be solved with a well made external library, consider using it, unless a custom solution is way easier and more efficient. Only use well regarded external library that is proven to work and tested by time and/or other software and users.
 
-Write variable and function names in camel case. Class names in UpperCamelCase.
+Write functions, varaibles, ... in an constant style to whatever language requiers. When there is no established style please use camelCase and UpperCamelCase.
 
 ## Verification
 
