@@ -117,8 +117,6 @@ See [System Requirements](#system-requirements) for supported desktop platforms.
 
 ## System Requirements
 
-Editing requires a supported native GPU and a current graphics driver.
-
 | Platform | Requirements | Graphics backend |
 | --- | --- | --- |
 | Windows | Windows 10 22H2 or Windows 11, 64-bit; Microsoft Edge WebView2 runtime | Vulkan |
