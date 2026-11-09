@@ -23,6 +23,7 @@
 - Make a build cashe button
 - Remove "xx matching yy total" text, just list the number of images currently filtred as it did before
 - Add all dev tools on CODEMAP.md
+- Fix "src\i18n\locales\en.json", keys: "filteredTotal", "total", "total_one", "total_other". Add key: "filteredTotalOne", should read "x images" or "x image" if its one
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
