@@ -24,6 +24,8 @@
 - Remove "xx matching yy total" text, just list the number of images currently filtred as it did before
 - Add all dev tools on CODEMAP.md
 - Fix "src\i18n\locales\en.json", keys: "filteredTotal", "total", "total_one", "total_other". Add key: "filteredTotalOne", should read "x images" or "x image" if its one
+- Rename variables, fuctions and classes to to camel case, and upper camel case.
+- Fix general ineffiencies left
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
@@ -58,4 +60,5 @@
 ### Questions about the code
 
 - How does the queue part work?
+- Is there still android code left?
 
