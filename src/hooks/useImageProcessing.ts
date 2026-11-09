@@ -40,21 +40,25 @@ export function useImageProcessing(
   const appSettings = useSettingsStore((state) => state.appSettings);
   const multiSelectedPaths = useLibraryStore((state) => state.multiSelectedPaths);
 
+  const viewerResolutionRef = useRef(0);
   const uncroppedJobIdRef = useRef(0);
   const latestUncroppedJobIdRef = useRef(0);
 
   const inFlightCountRef = useRef(0);
   const lastAnalyticsTimeRef = useRef<number>(0);
   const pendingApplyRef = useRef<{ adjustments: Adjustments; targetRes?: number } | null>(null);
-  const displayErrorText = useCallback((code: string) => {
-    const errors: Record<string, string> = {
-      NATIVE_DISPLAY_UNAVAILABLE: t('colorManagement.nativeDisplayUnavailable'),
-      NATIVE_DISPLAY_COLOR_SPACE_UNSUPPORTED: t('colorManagement.nativeDisplayUnsupported'),
-      NATIVE_DISPLAY_LOST: t('colorManagement.nativeDisplayLost'),
-      NATIVE_DISPLAY_PROFILE_INVALID: t('colorManagement.nativeDisplayProfileInvalid'),
-    };
-    return errors[code] || code;
-  }, [t]);
+  const displayErrorText = useCallback(
+    (code: string) => {
+      const errors: Record<string, string> = {
+        NATIVE_DISPLAY_UNAVAILABLE: t('colorManagement.nativeDisplayUnavailable'),
+        NATIVE_DISPLAY_COLOR_SPACE_UNSUPPORTED: t('colorManagement.nativeDisplayUnsupported'),
+        NATIVE_DISPLAY_LOST: t('colorManagement.nativeDisplayLost'),
+        NATIVE_DISPLAY_PROFILE_INVALID: t('colorManagement.nativeDisplayProfileInvalid'),
+      };
+      return errors[code] || code;
+    },
+    [t],
+  );
 
   const dragIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeWaveformChannelRef = useRef(activeWaveformChannel);
@@ -146,13 +150,13 @@ export function useImageProcessing(
       const payload = structuredClone(currentAdjustments);
       if (currentPath !== selectedImagePathRef.current) return;
       const jobId = ++previewJobIdRef.current;
-      const roi = calculateROI();
+      const roi = viewerResolutionRef.current ? null : calculateROI();
 
       try {
         await invoke(Invokes.ApplyAdjustments, {
           jsAdjustments: payload,
           isInteractive: dragging,
-          targetResolution: targetRes || null,
+          targetResolution: Math.max(targetRes || 0, viewerResolutionRef.current) || null,
           roi: roi || null,
           requestAnalytics: shouldRequestAnalytics,
           computeWaveform: requestAnalytics && !!isWaveformVisible,
@@ -176,8 +180,36 @@ export function useImageProcessing(
         }
       }
     },
-    [selectedImage?.path, calculateROI, isWaveformVisible, setEditor, previewJobIdRef, latestRenderedJobIdRef, displayErrorText],
+    [
+      selectedImage?.path,
+      calculateROI,
+      isWaveformVisible,
+      setEditor,
+      previewJobIdRef,
+      latestRenderedJobIdRef,
+      displayErrorText,
+    ],
   );
+
+  useEffect(() => {
+    let active = true;
+    const unlisten = listen<number>('viewer-demand', ({ payload }) => {
+      if (!active) return;
+      viewerResolutionRef.current = payload;
+      const state = useEditorStore.getState();
+      if (state.selectedImage?.isReady)
+        void executeApplyAdjustments(
+          state.previewOverride ?? state.adjustments,
+          false,
+          Math.max(payload, currentResRef.current),
+          false,
+        );
+    });
+    return () => {
+      active = false;
+      void unlisten.then((stop) => stop());
+    };
+  }, [executeApplyAdjustments, currentResRef]);
 
   const flushPipeline = useCallback(() => {
     if (inFlightCountRef.current >= 3) return;

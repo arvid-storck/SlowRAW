@@ -1,7 +1,7 @@
 import { t as translate } from 'i18next';
 import { normalizeCatalogFilter } from '../utils/catalog';
 import { useCallback, useMemo } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../utils/jobInvoke';
 import {
   Aperture,
   Check,
@@ -31,7 +31,6 @@ import {
   Gauge,
   Layers,
   Grip,
-  Film,
   Home,
   Plane,
   Mountain,
@@ -181,6 +180,13 @@ export function useAppContextMenus(props: UseAppContextMenusProps) {
 
       const options: Array<Option> = [
         {
+          label: t('viewer.title'),
+          icon: Images,
+          onClick: () => {
+            void invoke('toggle_viewer_window').catch((error) => toast.error(String(error)));
+          },
+        },
+        {
           label: t('contextMenus.editor.exportImage'),
           icon: FileInput,
           onClick: () => setPanel(Panel.Export),
@@ -230,15 +236,6 @@ export function useAppContextMenus(props: UseAppContextMenusProps) {
                     progressMessage: null,
                   },
                 });
-              },
-            },
-            {
-              label: t('contextMenus.editor.convertNegative'),
-              icon: Film,
-              onClick: () => {
-                if (selectedImage) {
-                  setUI({ negativeModalState: { isOpen: true, targetPaths: [selectedImage.path] } });
-                }
               },
             },
             {
@@ -448,7 +445,6 @@ export function useAppContextMenus(props: UseAppContextMenusProps) {
       const cullLabel = t('contextMenus.thumbnail.cullImage', { count: selectionCount });
       const collageLabel = t('contextMenus.thumbnail.collage', { count: selectionCount });
       const stitchLabel = t('contextMenus.editor.stitchPanorama');
-      const conversionLabel = t('contextMenus.thumbnail.convertNegative', { count: selectionCount });
       const denoiseLabel = t('contextMenus.thumbnail.denoise', { count: selectionCount });
       const mergeLabel = t('contextMenus.editor.mergeHdr');
 
@@ -617,14 +613,6 @@ export function useAppContextMenus(props: UseAppContextMenusProps) {
                     progressMessage: null,
                   },
                 });
-              },
-            },
-            {
-              label: conversionLabel,
-              icon: Film,
-              disabled: selectionCount === 0,
-              onClick: () => {
-                setUI({ negativeModalState: { isOpen: true, targetPaths: finalSelection } });
               },
             },
             {

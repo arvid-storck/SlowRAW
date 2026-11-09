@@ -1,3 +1,5 @@
+import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'react-toastify';
 import { type ChangeEvent, useState, useEffect, useRef, useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { v4 as uuidv4 } from 'uuid';
@@ -90,6 +92,10 @@ const SUB_MASK_CONFIG: Partial<Record<Mask, any>> = {
     parameters: [{ key: 'feather', min: 0, max: 100, step: 1, multiplier: 100, defaultValue: 50 }],
   },
   [Mask.Brush]: { showBrushTools: true },
+  [Mask.MatchBrush]: {
+    showBrushTools: true,
+    parameters: [{ key: 'tolerance', min: 1, max: 100, step: 1, defaultValue: 30 }],
+  },
   [Mask.Clone]: { showBrushTools: true },
   [Mask.Heal]: { showBrushTools: true },
   [Mask.Flow]: { showBrushTools: true, showFlowControl: true },
@@ -444,7 +450,13 @@ export default function MasksPanel() {
     onSelectContainer(newContainer.id);
     onSelectMask(subMask.id);
     setExpandedContainers((prev) => new Set(prev).add(newContainer.id));
-    if (type === Mask.Brush || type === Mask.Flow || type === Mask.Clone || type === Mask.Heal)
+    if (
+      type === Mask.Brush ||
+      type === Mask.MatchBrush ||
+      type === Mask.Flow ||
+      type === Mask.Clone ||
+      type === Mask.Heal
+    )
       selectBrushToolForNewMask();
   };
 
@@ -473,7 +485,13 @@ export default function MasksPanel() {
     onSelectContainer(containerId);
     onSelectMask(subMask.id);
     setExpandedContainers((prev) => new Set(prev).add(containerId));
-    if (type === Mask.Brush || type === Mask.Flow || type === Mask.Clone || type === Mask.Heal)
+    if (
+      type === Mask.Brush ||
+      type === Mask.MatchBrush ||
+      type === Mask.Flow ||
+      type === Mask.Clone ||
+      type === Mask.Heal
+    )
       selectBrushToolForNewMask();
   };
 
@@ -1986,9 +2004,53 @@ function SettingsPanel({
                   />
                 ))}
               {(activeSubMask.type === Mask.Clone || activeSubMask.type === Mask.Heal) && (
-                <Text as="div" variant={TextVariants.small} className="text-text-secondary">
-                  {t('editor.masks.tooltips.selectNewSourcePoint', { modifier: 'Ctrl/Cmd' })}
-                </Text>
+                <div className="flex flex-col gap-2">
+                  <Text as="div" variant={TextVariants.small} className="text-text-secondary">
+                    {t('editor.masks.tooltips.autoSource')}
+                  </Text>
+                  <button
+                    className="text-sm text-text-primary hover:bg-hover-color p-2"
+                    disabled={!activeSubMask.parameters?.lines?.length}
+                    onClick={async () => {
+                      const path = useEditorStore.getState().selectedImage?.path;
+                      if (!path) return;
+                      const variant = (activeSubMask.parameters.sourceVariant || 0) + 1;
+                      try {
+                        const source = await invoke<[number, number] | null>('find_spot_source', {
+                          path,
+                          parameters: activeSubMask.parameters,
+                          heal: activeSubMask.type === Mask.Heal,
+                          variant,
+                        });
+                        const current = useEditorStore.getState();
+                        if (
+                          current.selectedImage?.path !== path ||
+                          !current.adjustments.masks.some((mask) =>
+                            mask.subMasks.some(
+                              (sub) => sub.id === activeSubMask.id && sub.parameters === activeSubMask.parameters,
+                            ),
+                          )
+                        )
+                          return;
+                        if (source)
+                          updateSubMask(activeSubMask.id, {
+                            parameters: {
+                              ...activeSubMask.parameters,
+                              sourceX: source[0],
+                              sourceY: source[1],
+                              sourceVariant: variant,
+                              manualSource: false,
+                            },
+                          });
+                        else toast.info(t('editor.masks.noSource'));
+                      } catch (error) {
+                        toast.error(String(error));
+                      }
+                    }}
+                  >
+                    {t('editor.masks.findAnotherSource')}
+                  </button>
+                </div>
               )}
             </>
           )}

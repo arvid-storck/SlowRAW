@@ -80,9 +80,9 @@ pub fn load_base_image_from_bytes(
             1000.0,
             settings.linear_raw_mode.clone(),
             cancel_token,
+            highlight_compression,
         )
         .with_context(|| format!("RAW development failed for '{}'", path_for_ext_check))?;
-        crate::highlight_recovery::apply_highlight_recovery(&mut image, highlight_compression);
         if !use_fast_raw_dev && color_nr_amount > 0.0 {
             let start = Instant::now();
             reduce_raw_color_noise(&mut image, color_nr_amount);
@@ -200,10 +200,6 @@ pub async fn load_image(
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         *state
-            .cached_preview
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-        *state
             .gpu_image_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
@@ -211,18 +207,9 @@ pub async fn load_image(
             .full_warped_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
-        *state
-            .full_transformed_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
 
         state
             .mask_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-        state
-            .geometry_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clear();

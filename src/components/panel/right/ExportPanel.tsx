@@ -2,7 +2,7 @@ import { COLOR_SPACES } from '../../../utils/colorSpaces';
 import { allowsProPhoto } from '../../../utils/exportEncoding';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { save, open } from '@tauri-apps/plugin-dialog';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../../../utils/jobInvoke';
 import { FileInput, CheckCircle, XCircle, Loader, Ban, ChevronDown, ChevronRight, Settings } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';

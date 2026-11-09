@@ -26,7 +26,7 @@ pub const GEOMETRY_KEYS: &[&str] = &[
     "guidedPerspective",
 ];
 
-fn hash_spot_removals(adjustments: &serde_json::Value, hasher: &mut DefaultHasher) {
+pub(crate) fn hash_spot_removals(adjustments: &serde_json::Value, hasher: &mut DefaultHasher) {
     let Some(containers) = adjustments.get("masks").and_then(|value| value.as_array()) else {
         return;
     };
@@ -62,43 +62,6 @@ fn hash_spot_removals(adjustments: &serde_json::Value, hasher: &mut DefaultHashe
     }
 }
 
-pub fn calculate_thumbnail_base_hash(adjustments: &serde_json::Value) -> u64 {
-    let mut hasher = DefaultHasher::new();
-
-    calculate_geometry_hash(adjustments).hash(&mut hasher);
-
-    let effects_visible = adjustments
-        .get("sectionVisibility")
-        .and_then(|v| v.get("effects"))
-        .and_then(|s| s.as_bool())
-        .unwrap_or(true);
-
-    let blur_enabled = effects_visible && adjustments["lensBlurEnabled"].as_bool().unwrap_or(false);
-    blur_enabled.hash(&mut hasher);
-
-    if blur_enabled {
-        let blur_keys = [
-            "lensBlurAmount",
-            "lensBlurDiffusion",
-            "lensBlurShape",
-            "lensBlurMinDepth",
-            "lensBlurMaxDepth",
-            "lensBlurMinFade",
-            "lensBlurMaxFade",
-            "lensBlurDepthMap",
-        ];
-
-        for key in blur_keys {
-            if let Some(val) = adjustments.get(key) {
-                key.hash(&mut hasher);
-                val.to_string().hash(&mut hasher);
-            }
-        }
-    }
-
-    hasher.finish()
-}
-
 pub fn calculate_geometry_hash(adjustments: &serde_json::Value) -> u64 {
     let mut hasher = DefaultHasher::new();
 
@@ -110,29 +73,6 @@ pub fn calculate_geometry_hash(adjustments: &serde_json::Value) -> u64 {
         if let Some(val) = adjustments.get(key) {
             key.hash(&mut hasher);
             val.to_string().hash(&mut hasher);
-        }
-    }
-
-    hasher.finish()
-}
-
-pub fn calculate_visual_hash(path: &str, adjustments: &serde_json::Value) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-
-    if let Some(obj) = adjustments.as_object() {
-        for (key, value) in obj {
-            if GEOMETRY_KEYS.contains(&key.as_str()) {
-                continue;
-            }
-
-            match key.as_str() {
-                "crop" | "rotation" | "orientationSteps" | "flipHorizontal" | "flipVertical" => (),
-                _ => {
-                    key.hash(&mut hasher);
-                    value.to_string().hash(&mut hasher);
-                }
-            }
         }
     }
 
@@ -187,7 +127,7 @@ pub fn calculate_transform_hash(adjustments: &serde_json::Value) -> u64 {
             val.to_string().hash(&mut hasher);
         }
         if let Some(val) = adjustments.get("lensBlurDepthMap") {
-            val.as_str().unwrap_or("").len().hash(&mut hasher);
+            val.as_str().unwrap_or("").hash(&mut hasher);
         }
     }
 
@@ -216,11 +156,21 @@ pub fn calculate_full_job_hash(path: &str, adjustments: &serde_json::Value) -> u
 
 #[cfg(test)]
 mod spot_cache_tests {
-    use super::{calculate_geometry_hash, calculate_thumbnail_base_hash, calculate_transform_hash};
+    use super::{calculate_geometry_hash, calculate_transform_hash};
     use serde_json::json;
 
     #[test]
-    fn spot_strokes_invalidate_preview_and_thumbnail_bases() {
+    fn equal_length_depth_maps_have_different_render_keys() {
+        let first = serde_json::json!({"lensBlurEnabled":true,"lensBlurDepthMap":"AAAA"});
+        let second = serde_json::json!({"lensBlurEnabled":true,"lensBlurDepthMap":"BBBB"});
+        assert_ne!(
+            calculate_transform_hash(&first),
+            calculate_transform_hash(&second)
+        );
+    }
+
+    #[test]
+    fn spot_strokes_invalidate_geometry_and_render_caches() {
         let first = json!({"masks": [{"visible": true, "opacity": 100, "subMasks": [{
             "type": "heal", "parameters": {"sourceX": 10, "sourceY": 10,
             "lines": [{"points": [{"x": 20, "y": 20}]}]}
@@ -237,10 +187,6 @@ mod spot_cache_tests {
         assert_ne!(
             calculate_transform_hash(&first),
             calculate_transform_hash(&second)
-        );
-        assert_ne!(
-            calculate_thumbnail_base_hash(&first),
-            calculate_thumbnail_base_hash(&second)
         );
     }
 }
@@ -300,20 +246,17 @@ pub fn clear_image_caches(state: tauri::State<AppState>) {
     if let Ok(mut decoded_cache) = state.decoded_image_cache.lock() {
         decoded_cache.clear();
     }
-    if let Ok(mut thumbnail_cache) = state.thumbnail_geometry_cache.lock() {
-        thumbnail_cache.clear();
-    }
     if let Ok(mut gpu_cache) = state.gpu_image_cache.lock() {
         *gpu_cache = None;
     }
-    if let Ok(mut preview_cache) = state.cached_preview.lock() {
-        *preview_cache = None;
+    if let Some(context) = state.gpu_context.lock().unwrap().as_ref() {
+        context.source.lock().unwrap().take();
+        if let Some(compute) = context.compute.get() {
+            compute.clear();
+        }
     }
     if let Ok(mut warped_cache) = state.full_warped_cache.lock() {
         *warped_cache = None;
-    }
-    if let Ok(mut transformed_cache) = state.full_transformed_cache.lock() {
-        *transformed_cache = None;
     }
 }
 
@@ -321,8 +264,5 @@ pub fn clear_image_caches(state: tauri::State<AppState>) {
 pub fn clear_session_caches(state: tauri::State<AppState>) {
     if let Ok(mut mask_cache) = state.mask_cache.lock() {
         mask_cache.clear();
-    }
-    if let Ok(mut geometry_cache) = state.geometry_cache.lock() {
-        geometry_cache.clear();
     }
 }

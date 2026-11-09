@@ -15,7 +15,9 @@ import {
   Touchpad,
   RefreshCw,
 } from 'lucide-react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../../utils/jobInvoke';
+import { invoke as nativeInvoke } from '@tauri-apps/api/core';
+import { enqueueJob } from '../../store/useJobStore';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
@@ -41,10 +43,13 @@ import { TextColors, TextVariants, TextWeights } from '../../types/typography';
 import { useOsPlatform } from '../../hooks/useOsPlatform';
 import { RotateCcw } from 'lucide-react';
 import { useUIStore } from '../../store/useUIStore';
+import { useEditorStore } from '../../store/useEditorStore';
+import { useProcessStore } from '../../store/useProcessStore';
 import { MAX_ZOOM_PERCENT_OPTIONS } from '../../utils/zoom';
 import AdjustmentSectionsSubMenu from './right/AdjustmentSectionsSubMenu';
 
 interface ConfirmModalState {
+  confirmationLabel?: string;
   confirmText: string;
   confirmVariant: string;
   isOpen: boolean;
@@ -571,19 +576,29 @@ export default function SettingsPanel({
     onSettingsChange({ ...appSettings, myLenses: newLenses });
   };
 
-  const effectiveRootPaths = rootPaths?.length > 0 ? rootPaths : appSettings?.rootFolders || [];
+  const effectiveRootPaths = Array.from(
+    new Set([...(rootPaths || []), ...(appSettings?.rootFolders || []), ...(appSettings?.catalogFolders || [])]),
+  );
 
   const executeClearSidecars = async () => {
     setIsClearing(true);
     setClearMessage(t('settings.data.statuses.deleting'));
     try {
-      let totalCount = 0;
-      for (const root of effectiveRootPaths) {
-        const count: number = await invoke(Invokes.ClearAllSidecars, { rootPath: root });
-        totalCount += count;
-      }
-      setClearMessage(t('settings.data.statuses.sidecarSuccess', { count: totalCount }));
-      onLibraryRefresh();
+      await enqueueJob('cleanup', async () => {
+        let totalCount = 0;
+        for (const root of effectiveRootPaths) {
+          const count: number = await nativeInvoke(Invokes.ClearAllSidecars, { rootPath: root, confirmed: true });
+          totalCount += count;
+        }
+        await nativeInvoke('clear_image_caches');
+        await nativeInvoke(Invokes.ClearThumbnailCache);
+        useEditorStore.getState().setEditor({ selectedImage: undefined });
+        useProcessStore.getState().clearPreviews();
+        useProcessStore.getState().setProcess({ thumbnails: {}, mediumThumbnails: {} });
+        await nativeInvoke(Invokes.CatalogRebuild);
+        setClearMessage(t('settings.data.statuses.sidecarSuccess', { count: totalCount }));
+        onLibraryRefresh();
+      });
     } catch (err: any) {
       console.error('Failed to clear sidecars:', err);
       setClearMessage(`Error: ${err}`);
@@ -635,7 +650,8 @@ export default function SettingsPanel({
       confirmText: t('settings.data.modals.confirmDeleteAllEdits'),
       confirmVariant: 'destructive',
       isOpen: true,
-      message: t('settings.data.modals.sidecarMessage'),
+      message: t('settings.data.modals.sidecarMessage') + '\n\n' + effectiveRootPaths.join('\n'),
+      confirmationLabel: t('settings.data.modals.acknowledgeDeleteEdits'),
       onConfirm: executeClearSidecars,
       title: t('settings.data.modals.confirmTitle'),
     });
@@ -879,18 +895,6 @@ export default function SettingsPanel({
                       </div>
 
                       <SettingItem
-                        label={t('settings.general.neutralGreyCanvas')}
-                        description={t('settings.general.neutralGreyCanvasDesc')}
-                      >
-                        <Switch
-                          checked={appSettings?.editorNeutralGreyBg ?? false}
-                          id="neutral-grey-bg-toggle"
-                          label={t('settings.general.enableNeutralGreyCanvas')}
-                          onChange={(checked) => onSettingsChange({ ...appSettings, editorNeutralGreyBg: checked })}
-                        />
-                      </SettingItem>
-
-                      <SettingItem
                         label={t('settings.general.displayEditIcon')}
                         description={t('settings.general.displayEditIconDesc')}
                       >
@@ -1102,63 +1106,6 @@ export default function SettingsPanel({
                         </div>
                       </SettingItem>
                     </div>
-                  </div>
-
-                  <div className="p-6 bg-surface rounded-xl shadow-md">
-                    <Text variant={TextVariants.title} color={TextColors.accent} className="mb-6">
-                      {t('settings.thanks.title')}
-                    </Text>
-                    <Text className="mb-4">{t('settings.thanks.description')}</Text>
-                    <Text as="ul" className="space-y-3 list-disc ml-5 pl-1">
-                      <li>
-                        <a
-                          href="https://github.com/dnglab/dnglab/tree/main/rawler"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-semibold text-accent hover:underline"
-                        >
-                          {t('uiText.SettingsPanel.rawler')}
-                        </a>
-                        : {t('settings.thanks.list.rawler')}
-                      </li>
-                      <li>
-                        <a
-                          href="https://lensfun.github.io/"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-semibold text-accent hover:underline"
-                        >
-                          {t('uiText.SettingsPanel.lensfun')}
-                        </a>
-                        : {t('settings.thanks.list.lensfun')}
-                      </li>
-                      <li>
-                        <a
-                          href="https://github.com/marcinz606/NegPy"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-semibold text-accent hover:underline"
-                        >
-                          {t('uiText.SettingsPanel.negpy')}
-                        </a>
-                        : {t('settings.thanks.list.negpy')}
-                      </li>
-                      <li>
-                        <a
-                          href="https://github.com/darktable-org/darktable"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="font-semibold text-accent hover:underline"
-                        >
-                          {t('uiText.SettingsPanel.darktable_co')}
-                        </a>
-                        : {t('settings.thanks.list.darktable')}
-                      </li>
-                      <li>
-                        <span className="font-semibold text-accent">{t('settings.thanks.list.youLabel')}</span>:{' '}
-                        {t('settings.thanks.list.you')}
-                      </li>
-                    </Text>
                   </div>
                 </motion.div>
               )}

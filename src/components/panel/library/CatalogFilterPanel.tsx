@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../../../utils/jobInvoke';
 import { Trash2, Sparkles } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { toast } from 'react-toastify';

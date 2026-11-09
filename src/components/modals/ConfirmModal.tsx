@@ -6,6 +6,7 @@ import Text from '../ui/Text';
 import { TextVariants } from '../../types/typography';
 
 interface ConfirmModalProps {
+  confirmationLabel?: string;
   cancelText?: string;
   confirmText?: string;
   confirmVariant?: string;
@@ -17,6 +18,7 @@ interface ConfirmModalProps {
 }
 
 export default function ConfirmModal({
+  confirmationLabel,
   cancelText,
   confirmText,
   confirmVariant = 'primary',
@@ -29,6 +31,8 @@ export default function ConfirmModal({
   const { t } = useTranslation();
   const [isMounted, setIsMounted] = useState(false);
   const [show, setShow] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+  useEffect(() => setAcknowledged(false), [isOpen]);
 
   const resolvedCancelText = cancelText || t('modals.confirm.cancel');
   const resolvedConfirmText = confirmText || t('modals.confirm.confirm');
@@ -50,11 +54,12 @@ export default function ConfirmModal({
   }, [isOpen]);
 
   const handleConfirm = useCallback(() => {
+    if (confirmationLabel && !acknowledged) return;
     if (onConfirm) {
       onConfirm();
     }
     onClose();
-  }, [onConfirm, onClose]);
+  }, [onConfirm, onClose, confirmationLabel, acknowledged]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -103,6 +108,12 @@ export default function ConfirmModal({
           {title}
         </Text>
         <Text className="mb-6 whitespace-pre-wrap">{message}</Text>
+        {confirmationLabel && (
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
+            {confirmationLabel}
+          </label>
+        )}
         <div className="flex justify-end gap-3 mt-5">
           <Button
             className="bg-bg-primary shadow-transparent hover:bg-bg-primary text-white shadow-none focus:outline-hidden focus:ring-0"
@@ -114,6 +125,7 @@ export default function ConfirmModal({
           </Button>
           <Button
             onClick={handleConfirm}
+            disabled={!!confirmationLabel && !acknowledged}
             variant={confirmVariant}
             autoFocus={true}
             className="focus:outline-hidden focus:ring-0 focus:ring-offset-0"

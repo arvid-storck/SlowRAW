@@ -5,7 +5,6 @@
   Status: fix implemented; awaiting developer verification (2026-10-30).
   Incoming requests are deduplicated and bounded before existing queue trimming.
   A 60,000-path regression checks the bound and duplicate handling.
-- Highlights changed abruptly near zero
 - Camera calibration did not use the interpolated profile
 - Batch analysis could retain too many RAW decodes
 - Decoded cache could reuse externally changed files
@@ -20,11 +19,9 @@
 
 ### Things to change
 
-- Make "Extended EXIF" the same style as "Ratings & Labels" and "Creator Detailes" (by that i mean the way its looks)
-- Remove Neutral Grey Canvas
-- Add a Clear ".rrdata" files, but make it requied to confirm with warnings shown
-- Implement things from "https://github.com/CyberTimon/RapidRAW/releases/tag/v1.6.7" that benefits the program
-- Remove thank you part in the UI (atleast in settings there is a "thank you" thing), but keep it in the documentation
+- Remove Clear ".rrdata" files button
+- Make a build cashe button
+- Remove "xx matching yy total" text, just list the number of images currently filtred as it did before
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
@@ -57,3 +54,6 @@
 - If built in lens correction data exist that is not used currently
 
 ### Questions about the code
+
+- How does the queue part work?
+

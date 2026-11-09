@@ -124,3 +124,30 @@ fn gf_pack(@builtin(global_invocation_id) id: vec3<u32>) {
     let s = textureLoad(src_b, p, 0).xy;
     textureStore(dst, id.xy, vec4<f32>(c, s));
 }
+
+@compute @workgroup_size(1, 1, 1)
+fn haze_scene() {
+    let dims = vec2<i32>(textureDimensions(src_a));
+    let step = max(vec2<i32>(1), (dims + 63) / 64);
+    var scene = vec3<f32>(0.0);
+    var air = vec3<f32>(0.0);
+    var count = 0.0;
+    var weights = 0.0;
+    for (var y = 0; y < dims.y; y += step.y) {
+        for (var x = 0; x < dims.x; x += step.x) {
+            var rgb = textureLoad(src_a, vec2<i32>(x, y), 0).rgb;
+            if (params.is_raw == 0u) { rgb = srgb_to_linear(rgb); }
+            rgb = max(rgb, vec3<f32>(0.0));
+            let dark = min(rgb.r, min(rgb.g, rgb.b));
+            let weight = pow(clamp(dark, 0.0, 1.0), 4.0) + 0.00001;
+            scene += rgb;
+            air += rgb * weight;
+            weights += weight;
+            count += 1.0;
+        }
+    }
+    let mean = scene / max(count, 1.0);
+    let atmosphere = max(air / weights, vec3<f32>(0.02));
+    textureStore(dst, vec2<i32>(0, 0), vec4<f32>(atmosphere, max(dot(atmosphere, LUMA_COEFF), 0.02)));
+    textureStore(dst, vec2<i32>(1, 0), vec4<f32>(mean, max(dot(mean, LUMA_COEFF), 0.0001)));
+}

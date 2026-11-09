@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { t as translate } from 'i18next';
 import { useCallback, useEffect, useRef } from 'react';
 import { toast } from 'react-toastify';
@@ -641,11 +642,14 @@ export const useKeyboardShortcuts = ({
         execute: (e: KeyboardEvent, s: any) => {
           e.preventDefault();
           const isNext = e.code === 'ArrowRight' || e.code === 'ArrowDown';
+          const vertical = e.code === 'ArrowUp' || e.code === 'ArrowDown';
+          const step = vertical ? Math.max(1, s.library.libraryColumnCount) : 1;
           const activePath = s.library.libraryActivePath;
           if (!activePath || sortedListRef.current.length === 0) return;
           const currentIndex = sortedListRef.current.findIndex((img) => img.path === activePath);
           if (currentIndex === -1) return;
-          let nextIndex = isNext ? currentIndex + 1 : currentIndex - 1;
+          let nextIndex = currentIndex + (isNext ? step : -step);
+          if (vertical) nextIndex = Math.max(0, Math.min(sortedListRef.current.length - 1, nextIndex));
           if (nextIndex >= sortedListRef.current.length) nextIndex = 0;
           if (nextIndex < 0) nextIndex = sortedListRef.current.length - 1;
           const nextImage = sortedListRef.current[nextIndex];
@@ -668,8 +672,7 @@ export const useKeyboardShortcuts = ({
         state.ui.panoramaModalState.isOpen ||
         state.ui.cullingModalState.isOpen ||
         state.ui.collageModalState.isOpen ||
-        state.ui.denoiseModalState.isOpen ||
-        state.ui.negativeModalState.isOpen;
+        state.ui.denoiseModalState.isOpen;
 
       if (isModalOpen) return;
 
@@ -684,6 +687,19 @@ export const useKeyboardShortcuts = ({
       const isInputFocused =
         document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA';
       if (isInputFocused) return;
+
+      if (
+        event.code === 'KeyF' &&
+        event.shiftKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey &&
+        state.ui.activeView === 'editor'
+      ) {
+        event.preventDefault();
+        if (!event.repeat) void invoke('toggle_viewer_window').catch((error) => toast.error(String(error)));
+        return;
+      }
 
       for (const builtin of builtinShortcuts) {
         if (builtin.match(event, state)) {

@@ -268,6 +268,8 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
       if (filter) return; // Shared catalog loader owns paged smart-group queries.
       try {
         const files: ImageFile[] = await invoke(Invokes.GetAlbumImages, { paths: imagePaths });
+        const current = useLibraryStore.getState();
+        if (current.activeAlbumId !== albumId || current.isCatalogMode) return;
 
         const initialRatings: Record<string, number> = {};
         files.forEach((f) => {
@@ -280,10 +282,11 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
           ...(preserveEditor ? {} : { multiSelectedPaths: [], libraryActivePath: null }),
         });
       } catch (err) {
+        if (useLibraryStore.getState().activeAlbumId !== albumId) return;
         console.error('Failed to load album images:', err);
         toast.error(translate('messages.useAppNavigation.failed_to_load_album', { value1: String(err) }));
       } finally {
-        setLibrary({ isViewLoading: false });
+        if (useLibraryStore.getState().activeAlbumId === albumId) setLibrary({ isViewLoading: false });
       }
     },
     [clearThumbnailQueue],

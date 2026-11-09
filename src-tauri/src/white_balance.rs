@@ -223,6 +223,57 @@ impl WhiteBalance {
     }
 }
 
+fn camera_to_xyz(xyz_to_camera: &[f32]) -> Option<Vec<DVec3>> {
+    let rows: Vec<DVec3> = xyz_to_camera
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|row| DVec3::from_array(row.map(f64::from)))
+        .collect();
+    if rows.len() < 3 {
+        return None;
+    }
+    let normal = rows.iter().fold(DMat3::ZERO, |normal, r| {
+        normal + DMat3::from_cols(*r * r.x, *r * r.y, *r * r.z)
+    });
+    if normal.determinant().abs() < 1e-12 {
+        return None;
+    }
+    let inverse = normal.inverse();
+    Some(rows.iter().map(|r| inverse * *r).collect())
+}
+
+fn neutral_xyz(camera_to_xyz: &[DVec3], neutral: &[f32]) -> Option<DVec3> {
+    (neutral.len() >= camera_to_xyz.len()).then(|| {
+        camera_to_xyz
+            .iter()
+            .zip(neutral)
+            .map(|(column, &n)| *column * n as f64)
+            .sum()
+    })
+}
+
+pub fn camera_to_srgb(xyz_to_camera: &[f32], neutral: &[f32]) -> Option<Vec<[f32; 3]>> {
+    let columns = camera_to_xyz(xyz_to_camera)?;
+    let white_lms = BRADFORD * neutral_xyz(&columns, neutral)?;
+    if !white_lms.is_finite() || white_lms.min_element() <= 0.0 {
+        return None;
+    }
+    let (x, y) = (WP_D65.x as f64, WP_D65.y as f64);
+    let d65_lms = BRADFORD * DVec3::new(x / y, 1.0, (1.0 - x - y) / y);
+    let xyz_to_srgb = primaries_to_xyz_matrix(&PRIMARIES_SRGB, WP_D65)
+        .as_dmat3()
+        .inverse();
+    let transform =
+        xyz_to_srgb * BRADFORD.inverse() * DMat3::from_diagonal(d65_lms / white_lms) * BRADFORD;
+    Some(
+        columns
+            .iter()
+            .map(|column| (transform * *column).as_vec3().to_array())
+            .collect(),
+    )
+}
+
 pub fn adaptation_log_gains(current: WhiteBalance, target: WhiteBalance) -> [f32; 3] {
     (current.lms() / target.lms())
         .to_array()
@@ -295,6 +346,22 @@ pub fn as_shot_white_balance(path: &str) -> WhiteBalance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_matrix_preserves_reference_rgb_and_extended_components() {
+        let xyz_to_rgb = primaries_to_xyz_matrix(&PRIMARIES_SRGB, WP_D65).inverse();
+        let rows: Vec<f32> = (0..3)
+            .flat_map(|r| (0..3).map(move |c| xyz_to_rgb.col(c)[r]))
+            .collect();
+        let columns = camera_to_srgb(&rows, &[1.0; 3]).unwrap();
+        for sample in [[0.2, 0.4, 0.7], [-0.1, 1.4, 0.3]] {
+            let output: [f32; 3] =
+                std::array::from_fn(|c| columns.iter().zip(sample).map(|(m, v)| m[c] * v).sum());
+            for (actual, expected) in output.iter().zip(sample) {
+                assert!((actual - expected).abs() < 0.002, "{output:?}");
+            }
+        }
+    }
 
     #[test]
     fn values_are_stored_as_f32_and_coordinates_calculated_as_f64() {

@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../utils/jobInvoke';
 import { useUIStore } from '../store/useUIStore';
 import { Invokes } from '../components/ui/AppProperties';
 

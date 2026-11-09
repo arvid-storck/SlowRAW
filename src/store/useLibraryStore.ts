@@ -68,6 +68,7 @@ export const EMPTY_CATALOG_FILTER: CatalogFilterState = {
 };
 
 interface LibraryState {
+  libraryColumnCount: number;
   // Paths & Trees
   rootPaths: string[];
   currentFolderPath: string | null;
@@ -115,6 +116,7 @@ interface LibraryState {
 }
 
 export const useLibraryStore = create<LibraryState>((set) => ({
+  libraryColumnCount: 1,
   rootPaths: [],
   currentFolderPath: 'Catalog',
   isCatalogMode: true,
@@ -158,7 +160,36 @@ export const useLibraryStore = create<LibraryState>((set) => ({
     focal: 15,
   },
 
-  setLibrary: (updater) => set((state) => (typeof updater === 'function' ? updater(state) : updater)),
+  setLibrary: (updater) =>
+    set((state) => {
+      const changes = typeof updater === 'function' ? updater(state) : updater;
+      if (!changes.albumTree && !changes.activeAlbumId) return changes;
+      const next = { ...state, ...changes };
+      const contains = (items: AlbumItem[], id: string): boolean =>
+        items.some((item) => item.id === id || (item.type === 'group' && contains(item.children, id)));
+      if (next.activeAlbumId && !contains(next.albumTree, next.activeAlbumId)) {
+        return {
+          ...changes,
+          activeAlbumId: null,
+          editingSmartGroupId: null,
+          isCatalogMode: true,
+          currentFolderPath: 'Catalog',
+          catalogFilter: { ...EMPTY_CATALOG_FILTER },
+          catalogDateFilter: '',
+          catalogPage: 0,
+          imageList: [],
+          multiSelectedPaths: [],
+          libraryActivePath: null,
+          selectionAnchorPath: null,
+          libraryScrollTop: 0,
+          isViewLoading: false,
+        };
+      }
+      if (next.editingSmartGroupId && !contains(next.albumTree, next.editingSmartGroupId)) {
+        return { ...changes, editingSmartGroupId: null };
+      }
+      return changes;
+    }),
 
   clearSelection: () => set({ multiSelectedPaths: [], libraryActivePath: null }),
 

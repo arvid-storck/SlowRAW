@@ -48,6 +48,7 @@ This project is based on RapidRAW v1.6.3 by CyberTimon (Timon Käch):
 https://github.com/CyberTimon/RapidRAW/tree/v1.6.3
 
 The original RapidRAW project provides the foundation for this version.
+Selected processing, healing and grain code is also adapted from [RapidRAW v1.6.9](https://github.com/CyberTimon/RapidRAW/tree/v1.6.9).
 
 This version has been modified substantially, especially in the following areas:
 
@@ -230,7 +231,6 @@ This project is based on and builds upon the following open-source projects:
 * **[rawler](https://github.com/dnglab/dnglab/tree/main/rawler):** RAW decoding infrastructure.
 * **[librtprocess](https://github.com/CarVac/librtprocess):** RCD Bayer demosaicing and border interpolation.
 * **[lensfun](https://lensfun.github.io/):** Lens-correction library and profile database.
-* **[NegPy](https://github.com/marcinz606/NegPy):** Inspiration for film-negative conversion.
 * **[pixls.us](https://discuss.pixls.us/):** Open-source photography community and technical reference.
 * **[darktable](https://github.com/darktable-org/darktable):** Reference implementations for parts of the image-processing workflow.
 * **[vldk](https://github.com/hanatos/vkdt):** Refrence image to display method.

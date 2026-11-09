@@ -63,6 +63,8 @@ const common = {
   i18next: { t: (key) => key },
   react: { useCallback: (callback) => callback },
   '@tauri-apps/api/core': { invoke },
+  './jobInvoke': { invoke },
+  '../utils/jobInvoke': { invoke },
   '@tauri-apps/plugin-dialog': { open: async () => null },
   'react-toastify': { toast: { error: (error) => errors.push(error) } },
   '../components/ui/AppProperties': { Invokes: invokes },

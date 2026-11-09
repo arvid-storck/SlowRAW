@@ -229,7 +229,8 @@ RAW file bytes
   -> Rawler: decode sensor samples and camera metadata
   -> black-level subtraction and floating-point normalization
   -> demosaicing: RCD for supported 2x2 RGB Bayer; Rawler for X-Trans/other layouts
-  -> Rawler: camera white balance, color calibration and sensor crop
+  -> sensor crop and camera-space highlight reconstruction
+  -> illuminant-interpolated camera matrix and Bradford adaptation
   -> linear RGB (32-bit float per channel), then EXIF orientation
   -> configured Highlight Recovery and optional color noise reduction
   -> in-memory base-image cache
@@ -275,33 +276,39 @@ and update command.
 
 #### 3. Camera color becomes working RGB
 
-The normal calibrated path uses Rawler's camera white-balance coefficients and
-camera color matrix to convert sensor-dependent colors to linear working RGB.
-These are global color operations: demosaicing has supplied three channels, but
-the matrix is still needed to interpret what the camera's red, green and blue
-measurements mean. `multi_exposure.rs` handles the special Canon multi-exposure
-white-balance case.
+The three-channel path uses camera white-balance coefficients to estimate the
+illuminant. The A/D65 matrices are blended in reciprocal-temperature space.
+`white_balance.rs::camera_to_srgb` inverts the camera matrix and applies Bradford
+adaptation to D65, producing linear working RGB with extended channel values.
+Rawler handles calibration for other channel layouts. `multi_exposure.rs` supplies
+the Canon multi-exposure white-balance coefficients.
+
+`highlight_reconstruction.rs` analyzes channel histograms for clipping plateaus
+in camera RGB before calibration. Nearby unclipped samples supply channel
+relationships through a multiresolution offset grid. Partially clipped pixels
+retain their measured channels; fully clipped areas use nearby chroma with
+conservative blending. The recovery setting controls reconstruction strength.
 
 Rawler handles the sensor-specific rotation/crop where applicable and the default
-image crop. SlowRAW restores the original sensor-range scale, bounds negative
-values and limits highlight headroom. The normal editor requests a high limit
+image crop. SlowRAW restores the original sensor-range scale and bounds extended RGB
+channels by the configured highlight headroom. The normal editor requests a high limit
 of 1000; fast loading uses a limit of 1. The result is an `ImageRgb32F` buffer,
 with three `f32` channels per pixel, rotated/flipped according to EXIF orientation.
 
-Rawler's sRGB gamma step is omitted here, so the normal base image remains linear.
+The base image uses linear RGB values.
 The Linear RAW Processing setting controls optional inverse-gamma handling and
 whether calibration runs for files already identified as Linear RAW.
 
 #### 4. Base-image processing and caching
 
-Back in `image_loader.rs`, `highlight_recovery.rs` applies the configured Highlight
-Recovery setting. Optional RAW color noise reduction runs for non-fast loading
+`raw_processing.rs` applies camera-space reconstruction during RAW development;
+`highlight_recovery.rs` supplies post-development recovery for other sensor paths. Optional RAW color noise reduction runs for non-fast loading
 when its amount is above zero; its default is zero. The resulting base image and
 EXIF are cached in memory, and `LoadedImage` retains a shared image reference plus
 the camera's reference white balance. Here, "original image" in application state
-means this developed base image, not the untouched sensor mosaic.
+means this developed base image.
 
-RCD reconstructs color detail; the base loader adds no separate sharpening pass.
+RCD reconstructs color detail during demosaicing. The adjustment pipeline applies sharpening.
 Sharpness and Blur default to zero, which bypasses their detail filter. Clarity
 and Structure are independent controls and also default to zero. Demosaicing and
 later preview resampling still affect the appearance of fine detail, even when
@@ -341,6 +348,45 @@ their existing encoding; they are separate UI assets, not an alternative editor
 preview renderer. preview_encoding.rs owns lossless PNG16/JPEG XL encoding
 for auxiliary images; export_processing.rs configures export encoders separately.
 Library thumbnails use their own cache.
+
+### Geometry and depth effects on the GPU
+
+`gpu_geometry.rs::Plan` derives output dimensions, crop offsets and mask scale
+without allocating a transformed CPU image. A weak source identity and spot hash
+key one resident source texture. Preview, export, thumbnails, size estimates and
+auxiliary previews feed the resulting GPU texture directly into the color pipeline.
+
+`image_processing.rs::geometry_mapping` supplies the shared perspective, Lensfun
+and embedded-camera mathematics. Bounded per-channel coordinate/gain grids are
+cached as RGBA32Float textures; the GPU samples the image and applies vignette
+gain, rotation, flips and crop. Area downsampling bounds preview work.
+The CPU uses the same mapping for image-dependent mask analysis. Sources wider
+than the device texture limit are reduced once for bounded previews.
+
+`gpu_compute.rs` owns lazy compute pipelines, uniform uploads and reusable scratch
+textures, retaining at most 192 MiB of free textures and 64 MiB of map textures.
+`gpu_lens_blur.rs` prepares the cached depth map and aperture kernels; WGSL builds
+a guided depth field, signed blur radii and separate near/far bokeh layers.
+The source and transformed pixels remain in floating-point GPU textures through
+the color stage. Readback serves encoded outputs and analysis.
+
+### Secondary display
+
+`viewer_window.rs` creates a second native surface on the shared Vulkan device.
+Both displays bind the latest rendered texture, while each owns its viewport,
+zoom/pan transform and monitor color transform. `main.tsx` mounts
+`window/ViewerWindow.tsx` in the secondary webview. Frame and resolution-demand
+events keep rendering synchronized; an open viewer requests a complete image
+rather than the main canvas's visible ROI. Display errors are routed to the affected window. Window state is stored in
+`viewer_window.json` and restored when it intersects an available monitor.
+The Wayland surface owner routes sizing and lifecycle callbacks by window label.
+
+### Film grain
+
+The main color shader synthesizes overlapping grain layers from absolute image
+coordinates. Grain size follows render scale, roughness blends the layers, and a
+luminance response controls its strength in shadows and highlights. Preview,
+tiles and export share the same deterministic grain field.
 
 ### Color spaces and ICC conversion
 
@@ -383,7 +429,7 @@ PQ uses a fixed 80-nit SDR reference white, not HDR highlight expansion.
 SDR prefers an advertised 10-bit UNORM format over 8-bit; actual scan-out precision
 also depends on the OS and driver.
 
-windows_display.rs associates the main window with its current monitor, queries
+windows_display.rs associates each display window with its current monitor, queries
 active DisplayConfig paths and prefers GET_ADVANCED_COLOR_INFO_2 activeColorMode
 (SDR/WCG/HDR), with the older enabled/enforced flags on older Windows.
 With Advanced Color active, or an inconclusive query, the app uses compositor-managed
@@ -417,6 +463,12 @@ extended input colors, native display shader transfer/matrix/alpha behavior,
 surface selection, monitor TRC round-trips and EXIF/ICC consistency.
 
 ### Noise reduction
+
+The Details filter in `shaders/shader.wgsl` compares local luminance patches in
+exposure-scaled square-root RGB. Patch similarity controls luminance averaging;
+spatial, luminance and chroma distances guide color filtering. Global and mask
+amounts share this path, and zero returns the input. Sharpening uses smooth
+thresholding and bounds its luminance change by neighboring extrema.
 
 Details adjustments apply luminance/color noise reduction in the GPU processing
 pipeline. The RAW loader optionally reduces chroma noise after demosaicing,
@@ -464,11 +516,25 @@ Run `node scripts/test-white-balance.mjs` for frontend defaults, limits and slid
 
 ### Brush interactions
 
-`ImageCanvas.tsx` keeps active Clone/Heal stroke points in local refs. A Konva
-line previews the unfinished stroke; release commits one sidecar mask update.
-Changing the image or active mask cancels an unfinished stroke. Normal Brush/Flow
-masks retain live previews. Image processing and thumbnail invalidation follow
-the normal adjustment path.
+`ImageCanvas.tsx` keeps unfinished stroke points in local refs. On release,
+`utils/spotRemoval.ts` creates an independent Clone/Heal sub-mask and resolves its
+source against a bounded floating-point preview. Asynchronous results check the
+image and container identity before committing. Source and destination outlines
+update the stored spot parameters when dragged; source search variants retain
+the existing stroke.
+
+`spot_removal.rs` maps stored display coordinates back through their captured
+geometry and composites feathered stroke coverage from the immutable source.
+Erasers reduce that spot's coverage, preserving underlying spots.
+`healing.rs` searches compatible source regions and solves a multiresolution
+Poisson difference field, preserving source texture with destination boundary
+lighting. Pixel values remain floating point.
+
+Match Brush combines brush coverage with perceptual color, tone and local
+texture similarity to the stroke's starting point. `match_brush.rs` caches
+bounded floating-point image features; `mask_generation.rs` handles coordinate
+mapping, tolerance, feathering and erasure. Image-dependent mask analysis shares
+the warped source cache. Brush, Flow and Match Brush support live previews.
 
 Legacy `quick-selection` sidecar masks load as ordinary Brush masks, retaining
 their painted strokes, opacity and combination mode. The frontend normalizes
@@ -484,6 +550,35 @@ The native `legacy_brush_tests` test verifies the same bitmap as an ordinary bru
 mounts. PNG supports 8/16-bit RGB/RGBA output with the selected embedded output profile.
 PNG 16-bit uses the GPU's 16-bit render output.
 EXIF extraction omits binary fields; readable values pass to the metadata panel.
+
+### Background jobs
+
+`store/useJobStore.ts` owns a FIFO of executable tasks and their status. One task
+runs at a time; up to 50 finished records remain in memory. Cancelling a queued
+task removes it before execution. Running exports delegate cancellation to the
+native export token and finish after the worker reports cancellation.
+
+`utils/jobInvoke.ts` submits imports, exports, transfers, catalog scans, batch
+Auto and composite/denoise operations. Commands with background workers remain
+active until their terminal event arrives; event listeners supply progress and
+are released when the task ends. `components/ui/JobQueue.tsx` presents these
+records through BottomBar. Batch Auto waits for its native worker and uses a
+RAM-bounded pool of one to four decoding workers.
+
+### Library grid and edit sidecars
+
+`LibraryGrid.tsx` calculates a uniform column count from viewport width,
+thumbnail size and spacing. It publishes that number as `libraryColumnCount`;
+`useKeyboardShortcuts.ts` moves the current sorted-list index by that many images
+for up/down, bounded by the current page. List mode uses one column. Persisted
+aspect preferences resolve to Cover or Contain on startup.
+
+`SettingsPanel.tsx` collects photo roots and catalog folders for edit-file
+cleanup. `ConfirmModal.tsx` requires a warning acknowledgement before enabling
+confirmation. The native `clear_all_sidecars` command requires confirmation and
+walks regular files recursively with symbolic-link following disabled, deleting
+`.rrdata` files. Cleanup runs as a queued job, then clears image/thumbnail caches and rebuilds
+the catalog.
 
 ### Workspace panel layout
 
@@ -505,6 +600,12 @@ stacking level to remain visible above the thumbnail grid.
 
 ### Catalog panels, paging and smart groups
 
+`useLibraryStore.ts` reconciles active album and smart-group IDs against each
+updated album tree. Removing the active item or its parent group resets the
+library to the unfiltered catalog. `useAppNavigation.ts` accepts album-load
+results only while that album is active, so delayed replies preserve the current
+catalog or album view.
+
 `CatalogPanel.tsx` renders capture-date years/months/days and the recursive album
 hierarchy. Groups use persisted `expandedAlbumGroups`; creating a group expands
 it and its parent. The saved panel ID `folderTree` is retained only as a workspace
@@ -525,6 +626,19 @@ group ID in the hierarchy; cancellation discards the draft. Legacy single-value 
 Catalog-folder rescans incrementally check disk changes; internal
 refreshes reload index/facet data. The export panel handles GUI export, and external
 edit sessions coordinate round trips with other editors.
+
+### Auto levels and tonal processing
+
+`perform_auto_analysis` measures a bounded image histogram.
+`auto_results_to_json` applies a fixed 0.5 strength and clamps the resulting tone
+and color values; editor and batch actions call the same conversion.
+Whites uses a 0.4 pivot, 0.35 positive gain and a 0.1-to-0.9 ramp.
+Highlights blends its detail reconstruction continuously with adjustment strength.
+
+Dehaze uses cached guided dark-channel coefficients and a GPU-computed scene
+mean and atmospheric color from bounded source sampling. Positive amounts
+recover transmission with highlight and chroma protection; negative amounts
+blend scene-tinted mist. This stage runs before exposure in the shared shader.
 
 ## Application overview
 
@@ -583,7 +697,7 @@ are composited during image rendering; the source image remains intact.
 | Video import and system-player opening | `src/hooks/useFileOperations.ts`, `src/hooks/useAppNavigation.ts`, `src/utils/mediaTypes.ts` | `src-tauri/src/formats.rs`, `src-tauri/src/catalog.rs`, `src/components/panel/library/LibraryItems.tsx` |
 | Thumbnails and large-library performance | `src/hooks/useThumbnails.ts`, `src/components/panel/library/LibraryGrid.tsx` | `src-tauri/src/image_loader.rs`, `src-tauri/src/cache_utils.rs`, `src-tauri/src/catalog.rs` |
 | Editor adjustment or preview | `src/components/panel/Editor.tsx`, `src/components/adjustments/` | `src/hooks/useImageProcessing.ts`, `src-tauri/src/image_processing.rs`, `src-tauri/src/gpu_processing.rs` |
-| Clone/Heal spot removal | `src/components/panel/right/MasksPanel.tsx`, `src/components/panel/editor/ImageCanvas.tsx` | `src/utils/maskUtils.ts`, `src-tauri/src/spot_removal.rs`, `src-tauri/src/image_loader.rs` |
+| Clone/Heal spot removal | `src/components/panel/right/MasksPanel.tsx`, `src/components/panel/editor/ImageCanvas.tsx` | `src/utils/spotRemoval.ts`, `src-tauri/src/spot_removal.rs`, `src-tauri/src/healing.rs` |
 | Highlight Recovery | `src/components/panel/SettingsPanel.tsx` | `src-tauri/src/app_settings.rs`, `src-tauri/src/image_loader.rs`, `src-tauri/src/highlight_recovery.rs` |
 | Noise reduction | `src/components/modals/DenoiseModal.tsx` | `src-tauri/src/denoising.rs` |
 | RAW dependency update | `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` | `src-tauri/src/raw_processing.rs`, `src-tauri/src/exif_processing.rs`; rebuild the app |
@@ -627,6 +741,8 @@ are composited during image rendering; the source image remains intact.
 | `scripts/update-rcd.mjs` | Updates the pinned upstream librtprocess revision used by the RCD adapter. |
 | `scripts/clean.mjs` | Removes explicit generated build paths; `--dependencies` also removes node_modules, with project-boundary and symlink checks. |
 | `scripts/test-desktop-workflow.mjs` | Zoom focus/scale, export-session persistence, metadata and branding regression checks. |
+| `scripts/test-job-queue.mjs` | FIFO, cancellation, failure, background completion and listener-lifetime checks. |
+| `scripts/test-library-arrows.mjs` | Column-count movement and page-boundary checks against the keyboard handler. |
 | `scripts/test-catalog.mjs` | In-memory catalog paging/count/stale-reply, smart-filter editing and album-group creation checks. |
 | `scripts/test-logging.mjs` | Production console suppression, debug console availability and diagnostic configuration checks. |
 | `scripts/test-image-flags.mjs` | In-memory flag selection, write queue and rollback regression checks. |
@@ -635,6 +751,7 @@ are composited during image rendering; the source image remains intact.
 | `scripts/test-export-settings.mjs` | Format-specific options, preset/session persistence and ProPhoto policy checks. |
 | `scripts/test-neutral-processing.mjs` | Neutral detail controls and monotonic curve checks. |
 | `scripts/test-mask-compat.mjs` | Normalizes legacy mask types while preserving stored brush data. |
+| `scripts/test-spot-removal.mjs` | Independent strokes, concurrent source searches and stale-result handling. |
 | `scripts/test-lens-metadata.mjs` | Camera ISO selection and available embedded/Lensfun corrections. |
 | `scripts/test-dev-sidecars.mjs` | Isolated Vite/Tailwind regression for autosave-triggered page reloads. |
 | `scripts/test-exiftool-staging.mjs` | Platform layouts, offline reuse, checksum rejection and staging cleanup. |
@@ -738,7 +855,6 @@ are composited during image rendering; the source image remains intact.
 | `components/modals/FocusStackModal.tsx` | Focus-stacking dialog. |
 | `components/modals/HdrModal.tsx` | HDR merge dialog. |
 | `components/modals/ImportSettingsModal.tsx` | Import source/destination, copy/move, and folder structure choices. |
-| `components/modals/NegativeConversionModal.tsx` | Film negative conversion dialog. |
 | `components/modals/PanoramaModal.tsx` | Panorama stitching dialog. |
 | `components/modals/RenameFileModal.tsx` | File rename dialog. |
 | `components/modals/RenameFolderModal.tsx` | Folder rename dialog. |
@@ -749,6 +865,7 @@ are composited during image rendering; the source image remains intact.
 | --- | --- |
 | `components/ui/AppProperties.tsx` | Shared frontend types, enums, and Tauri command names. |
 | `components/ui/Button.tsx` | Shared button. |
+| `components/ui/JobQueue.tsx` | Job status, progress, cancellation and output-location actions. |
 | `components/ui/CollapsibleSection.tsx` | Expandable settings/control section. |
 | `components/ui/IndeterminateProgress.tsx` | Animated progress indicator shared by HDR, panorama and denoising dialogs. |
 | `components/ui/ColorWheel.tsx` | Color-wheel control. |
@@ -766,6 +883,8 @@ are composited during image rendering; the source image remains intact.
 | `components/ui/Switch.tsx` | Shared toggle switch. |
 | `components/ui/Text.tsx` | Typography wrapper. |
 | `types/typography.ts` | Text variants/color/weight types. |
+| `utils/jobInvoke.ts` | FIFO dispatch and terminal-event handling for background commands. |
+| `store/useJobStore.ts` | Queue execution, job state and bounded history. |
 | `utils/adjustments.ts` | Adjustment defaults, color labels, and conversion helpers. |
 | `utils/catalog.ts` | Catalog IPC helpers, page loading, refresh, request handling, and preserving the edited image's visible rating when it leaves an active filter. |
 | `utils/CollageVariants.tsx` | Collage layout definitions/icons. |
@@ -774,6 +893,8 @@ are composited during image rendering; the source image remains intact.
 | `utils/ImageLRUCache.ts` | Frontend image LRU cache. |
 | `utils/keyboardUtils.ts` | Shortcut definitions, parsing, and normalization. |
 | `utils/maskUtils.ts` | Mask conversion and helper functions. |
+| `utils/spotRemoval.ts` | Independent spot creation, geometry snapshots and guarded asynchronous source resolution. |
+| `window/ViewerWindow.tsx` | Secondary display viewport, pointer interaction, fullscreen and frame events. |
 | `utils/mediaTypes.ts` | Recognizes video paths for frontend media dispatch. |
 | `utils/metadata.ts` | Shared camera-reported ISO selection with legacy metadata-key fallbacks. |
 | `utils/lensProfile.ts` | Derives distortion, chromatic-aberration and vignette availability from embedded or Lensfun parameters. |
@@ -799,7 +920,9 @@ are composited during image rendering; the source image remains intact.
 | --- | --- |
 | `main.rs` | Native executable entry point; calls `rapidraw_lib::run()`. |
 | `lib.rs` | Tauri setup, command implementations/registration and application wiring. |
-| `adjustment_utils.rs` | Shared adjustment-processing helpers. |
+| `gpu_geometry.rs` | GPU source residency, geometry maps, output framing and render planning. |
+| `gpu_compute.rs` | Compute pipelines, bounded texture reuse, cached maps and dispatch. |
+| `gpu_lens_blur.rs` | Depth-map preparation, aperture kernels and GPU depth-blur passes. |
 | `app_settings.rs` | Persistent settings schema, defaults, loading/saving, workspace defaults. |
 | `app_state.rs` | Shared native application state and caches. |
 | `cache_utils.rs` | Image/render cache keys and cache containers. |
@@ -827,12 +950,13 @@ are composited during image rendering; the source image remains intact.
 | `windows_display.rs` | Window-to-monitor lookup, Advanced Color state and legacy SDR ICC profile discovery. |
 | `vulkan_instance.rs` | Vulkan-only instance creation; direct bundled MoltenVK loading on macOS. |
 | `wayland_display.rs` | Linux GTK/Wayland child-surface ownership, input transparency, viewport sizing and event dispatch. |
-| `shaders/guided.wgsl` | GPU log-statistics, box filtering and guided coefficient passes. |
+| `shaders/guided.wgsl` | GPU log statistics, guided coefficient passes and bounded scene/atmosphere reduction. |
 | `../icc/sRGB-v2-magic.icc`, `../icc/README.md` | Embedded export profile and CC0 attribution. |
 | `guided_perspective.rs` | Guided perspective correction. |
 | `hdr_deghosting.rs` | HDR input alignment/deghosting. |
 | `image_loader.rs` | Image decoding/loading, in-process RAW dispatch, Highlight Recovery, and composite preview support. |
-| `highlight_recovery.rs` | Adjustable highlight recovery applied after RAW development. |
+| `highlight_recovery.rs` | Post-development highlight recovery for sensor paths using the fallback. |
+| `highlight_reconstruction.rs` | Camera-channel clipping detection, multiresolution reconstruction and chroma propagation. |
 | `color_management.rs` | Built-in RGB profiles, extended-range ICC transforms and GPU output matrices. |
 | `preview_encoding.rs` | Shared ICC-tagged lossless PNG16/JPEG XL encoding for exports and auxiliary images. |
 | `raw_processing.rs` | Rawler decoding/development, Bayer RCD dispatch, Rawler X-Trans path, Linear RAW modes and orientation. |
@@ -841,20 +965,24 @@ are composited during image rendering; the source image remains intact.
 | `multi_exposure.rs` | Canon in-camera multi-exposure white-balance handling used by RAW development. |
 | `image_processing.rs` | Core adjustment pipeline, geometry, color, masks, histogram/waveform data. |
 | `launch_request.rs` | File/open and external editor round-trip requests. |
-| `lens_blur.rs` | Lens/portrait blur processing. |
+| `viewer_window.rs` | Secondary native surface, shared-frame binding, render demand and window persistence. |
 | `lens_correction.rs` | Shared profile selection, exact/fixed-camera/guarded fuzzy Lensfun matching and coefficient interpolation. |
 | `logging.rs` | Sends debug diagnostics to stderr with the configured log level. |
 | `mask_generation.rs` | Mask definitions/generation with legacy type aliases for sidecar compatibility. |
-| `negative_conversion.rs` | Film-negative conversion. |
 | `panorama_stitching.rs` | Panorama commands and stitching workflow. |
 | `panorama_utils/mod.rs` | Panorama utility module exports. |
 | `panorama_utils/processing.rs` | Panorama image-processing helpers. |
 | `panorama_utils/stitching.rs` | Panorama matching/stitching helpers. |
 | `portable_paths.rs` | Portable marker detection and app-data/config paths. |
-| `spot_removal.rs` | Non-destructive source-based Clone and Heal compositing for mask strokes. |
+| `spot_removal.rs` | Coordinate mapping, source-preview caching and floating-point spot compositing. |
+| `healing.rs` | Automatic source matching and multiresolution Poisson healing. |
+| `match_brush.rs` | Cached perceptual color/tone/texture features for Match Brush. |
 | `tagging.rs` | Per-image tag add/remove and sidecar synchronization. |
 | `window_customizer.rs` | Window/webview customization, including square macOS content layers. |
 | `shaders/blur.wgsl` | GPU blur shader. |
+| `shaders/compute_common.wgsl` | Shared GPU sampling, area downsampling and box filtering. |
+| `shaders/geometry.wgsl` | Per-channel geometry sampling and image framing. |
+| `shaders/lens_blur.wgsl` | Guided depth, near/far bokeh and diffusion passes. |
 | `shaders/display.wgsl` | GPU display shader. |
 | `shaders/flare.wgsl` | GPU flare shader. |
 | `shaders/shader.wgsl` | Main GPU image-processing shader. |

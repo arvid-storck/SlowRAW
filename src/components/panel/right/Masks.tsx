@@ -1,5 +1,6 @@
 import {
   Brush,
+  BrushCleaning,
   Circle,
   Droplet,
   Droplets,
@@ -18,6 +19,7 @@ import i18n from 'i18next';
 export enum Mask {
   All = 'all',
   Brush = 'brush',
+  MatchBrush = 'match-brush',
   Flow = 'flow',
   Color = 'color',
   Linear = 'linear',
@@ -59,6 +61,7 @@ export interface SubMask {
 
 export function formatMaskTypeName(type: string) {
   if (type === Mask.All) return i18n.t('masks.types.all');
+  if (type === Mask.MatchBrush) return i18n.t('masks.types.matchBrush');
   if (type === Mask.Brush) return i18n.t('masks.types.brush');
   if (type === Mask.Flow) return i18n.t('masks.types.flow');
   if (type === Mask.Color) return i18n.t('masks.types.color');
@@ -82,6 +85,7 @@ export function getSubMaskName(subMask: Pick<SubMask, 'name' | 'type'>) {
 export const MASK_ICON_MAP: Record<Mask, any> = {
   [Mask.All]: RectangleHorizontal,
   [Mask.Brush]: Brush,
+  [Mask.MatchBrush]: BrushCleaning,
   [Mask.Flow]: Droplets,
   [Mask.Color]: Droplet,
   [Mask.Linear]: TriangleRight,
@@ -93,6 +97,7 @@ export const MASK_ICON_MAP: Record<Mask, any> = {
 
 export const MASK_BASIC_TYPES: Array<MaskType> = [
   { disabled: false, icon: Brush, name: 'Brush', type: Mask.Brush },
+  { disabled: false, icon: BrushCleaning, name: 'Match Brush', type: Mask.MatchBrush },
   { disabled: false, icon: Stamp, name: 'Clone', type: Mask.Clone },
   { disabled: false, icon: Bandage, name: 'Heal', type: Mask.Heal },
   { disabled: false, icon: TriangleRight, name: 'Linear', type: Mask.Linear },

@@ -5,7 +5,6 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-mod adjustment_utils;
 mod app_settings;
 mod app_state;
 mod cache_utils;
@@ -22,22 +21,26 @@ mod export_processing;
 mod file_management;
 mod focus_stacking;
 mod formats;
+mod gpu_compute;
+mod gpu_geometry;
+mod gpu_lens_blur;
 mod gpu_processing;
 mod guided_perspective;
 mod hdr_deghosting;
+mod healing;
+mod highlight_reconstruction;
 mod highlight_recovery;
 mod image_loader;
 mod image_processing;
 mod launch_request;
-mod lens_blur;
 mod lens_correction;
 mod lens_metadata;
 #[cfg(debug_assertions)]
 mod logging;
 mod mask_generation;
+mod match_brush;
 mod multi_exposure;
 mod native_display;
-mod negative_conversion;
 mod panorama_stitching;
 mod panorama_utils;
 mod portable_paths;
@@ -45,6 +48,7 @@ mod preview_encoding;
 mod raw_processing;
 mod spot_removal;
 mod tagging;
+mod viewer_window;
 mod vulkan_instance;
 #[cfg(target_os = "linux")]
 mod wayland_display;
@@ -64,7 +68,6 @@ use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -79,25 +82,18 @@ use tauri::{Emitter, Manager, ipc::Response};
 
 use crate::cache_utils::{
     DecodedImageCache, calculate_full_job_hash, calculate_geometry_hash, calculate_transform_hash,
-    calculate_visual_hash,
 };
 use crate::file_management::{parse_virtual_path, read_file_mapped};
 use crate::formats::is_raw_file;
 use crate::hdr_deghosting::{align_hdr_frames, assert_uniform_dimensions, load_hdr_frames};
 use crate::image_loader::load_and_composite;
 use crate::image_processing::{
-    RenderRequest, apply_coarse_rotation, apply_cpu_default_raw_processing, apply_flip,
-    apply_geometry_warp, apply_linear_to_srgb, downscale_f32_image, get_all_adjustments_from_json,
-    get_or_init_gpu_context, process_and_get_dynamic_image, resolve_tonemapper_override,
-    resolve_tonemapper_override_from_handle, warp_image_geometry,
+    RenderRequest, apply_linear_to_srgb, get_all_adjustments_from_json, get_or_init_gpu_context,
+    process_and_get_dynamic_image, resolve_tonemapper_override,
+    resolve_tonemapper_override_from_handle,
 };
-use crate::mask_generation::{
-    MaskDefinition, generate_mask_bitmap, get_cached_or_generate_mask,
-    resolve_warped_image_for_masks,
-};
-use crate::spot_removal::composite_spot_removals;
+use crate::mask_generation::{MaskDefinition, generate_mask_bitmap, get_cached_or_generate_mask};
 use crate::window_customizer::PinchZoomDisablePlugin;
-pub use adjustment_utils::*;
 pub use app_settings::*;
 pub use app_state::*;
 pub use launch_request::*;
@@ -141,66 +137,6 @@ pub struct WgpuTransformPayload {
     pub bg_primary: [f32; 4],
     pub bg_secondary: [f32; 4],
     pub pixelated: bool,
-}
-
-pub fn generate_transformed_preview(
-    state: &tauri::State<AppState>,
-    loaded_image: &LoadedImage,
-    adjustments: &serde_json::Value,
-    preview_dim: u32,
-) -> Result<(DynamicImage, f32, (f32, f32)), String> {
-    let transform_hash = calculate_transform_hash(adjustments);
-
-    let (transformed_full_res, unscaled_crop_offset) = {
-        let mut cache_lock = state
-            .full_transformed_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if let Some((hash, img, offset)) = cache_lock.as_ref() {
-            if *hash == transform_hash {
-                (Arc::clone(img), *offset)
-            } else {
-                let (arc_img, offset) = compute_full_transformed_res(loaded_image, adjustments)?;
-                *cache_lock = Some((transform_hash, Arc::clone(&arc_img), offset));
-                (arc_img, offset)
-            }
-        } else {
-            let (arc_img, offset) = compute_full_transformed_res(loaded_image, adjustments)?;
-            *cache_lock = Some((transform_hash, Arc::clone(&arc_img), offset));
-            (arc_img, offset)
-        }
-    };
-
-    let (full_res_w, full_res_h) = transformed_full_res.dimensions();
-
-    let final_preview_base = if full_res_w > preview_dim || full_res_h > preview_dim {
-        downscale_f32_image(&transformed_full_res, preview_dim, preview_dim)
-    } else {
-        (*transformed_full_res).clone()
-    };
-
-    let scale_for_gpu = if full_res_w > 0 {
-        final_preview_base.width() as f32 / full_res_w as f32
-    } else {
-        1.0
-    };
-
-    Ok((final_preview_base, scale_for_gpu, unscaled_crop_offset))
-}
-
-fn compute_full_transformed_res(
-    loaded_image: &LoadedImage,
-    adjustments: &serde_json::Value,
-) -> Result<(Arc<DynamicImage>, (f32, f32)), String> {
-    let has_patches = crate::spot_removal::has_spot_removals(adjustments);
-    let patched_original_image = if has_patches {
-        Cow::Owned(composite_spot_removals(&loaded_image.image, adjustments))
-    } else {
-        Cow::Borrowed(loaded_image.image.as_ref())
-    };
-
-    let (transformed_img, offset) = apply_all_transformations(patched_original_image, adjustments);
-    Ok((Arc::new(transformed_img.into_owned()), offset))
 }
 
 #[tauri::command]
@@ -251,13 +187,8 @@ pub fn get_cached_full_warped_image(
     }
 
     let (base_arc, is_raw) = get_original_image(state)?;
-    let mut cow_image = Cow::Borrowed(base_arc.as_ref());
-
-    if is_raw {
-        apply_cpu_default_raw_processing(cow_image.to_mut());
-    }
-
-    let warped_image = apply_geometry_warp(cow_image, js_adjustments).into_owned();
+    let warped_image =
+        crate::mask_generation::prepare_mask_source(&base_arc, js_adjustments, is_raw);
     let warped_arc = Arc::new(warped_image);
 
     {
@@ -273,8 +204,8 @@ pub fn get_cached_full_warped_image(
 
 #[tauri::command]
 async fn update_wgpu_transform(
+    window: tauri::WebviewWindow,
     payload: WgpuTransformPayload,
-    app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let context = match state
@@ -288,7 +219,13 @@ async fn update_wgpu_transform(
     };
 
     tokio::task::spawn_blocking(move || {
-        let mut display_lock = context.display.lock().unwrap_or_else(|e| e.into_inner());
+        let mut display_lock = (if window.label() == "viewer" {
+            &context.viewer_display
+        } else {
+            &context.display
+        })
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
         if let Some(display) = display_lock.as_mut() {
             display.latest_transform.rect = [payload.x, payload.y, payload.width, payload.height];
             display.latest_transform.clip = [
@@ -311,7 +248,7 @@ async fn update_wgpu_transform(
                 if error == "NATIVE_DISPLAY_LOST" {
                     display_lock.take();
                 }
-                let _ = app_handle.emit("wgpu-display-unavailable", error);
+                let _ = window.emit_to(window.label(), "wgpu-display-unavailable", error);
             }
         }
     })
@@ -348,7 +285,14 @@ fn process_preview_job(
     let live_quality = settings.live_preview_quality.as_deref().unwrap_or("high");
 
     let default_preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
-    let preview_dim = target_resolution.unwrap_or(default_preview_dim);
+    let preview_dim = target_resolution
+        .unwrap_or(default_preview_dim)
+        .max(viewer_window::resolution());
+    let roi = if viewer_window::resolution() > 0 {
+        None
+    } else {
+        roi
+    };
     {
         let mut display = context.display.lock().unwrap_or_else(|e| e.into_inner());
         let display = display.as_mut().ok_or("NATIVE_DISPLAY_UNAVAILABLE")?;
@@ -378,92 +322,15 @@ fn process_preview_job(
         }
     };
 
-    let mut cached_preview_lock = state
-        .cached_preview
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-
-    let base_valid = cached_preview_lock
-        .as_ref()
-        .is_some_and(|c| c.transform_hash == new_transform_hash && c.preview_dim == preview_dim);
-    let small_valid = base_valid
-        && cached_preview_lock
-            .as_ref()
-            .is_some_and(|c| c.interactive_divisor == interactive_divisor);
-
-    let (final_preview_base, scale_for_gpu, unscaled_crop_offset) = if base_valid {
-        let cached = cached_preview_lock.as_ref().unwrap();
-        (
-            Arc::clone(&cached.image),
-            cached.scale,
-            cached.unscaled_crop_offset,
-        )
+    let target_dim = if is_interactive {
+        (preview_dim as f32 / interactive_divisor).round() as u32
     } else {
-        *state
-            .gpu_image_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = None;
-
-        let (base, scale, offset) =
-            generate_transformed_preview(&state, &loaded_image, &adjustments_clone, preview_dim)?;
-        (Arc::new(base), scale, offset)
+        preview_dim
     };
-
-    let small_preview_base = if small_valid {
-        Arc::clone(&cached_preview_lock.as_ref().unwrap().small_image)
-    } else {
-        let small = if interactive_divisor > 1.0 {
-            let target_size = (preview_dim as f32 / interactive_divisor) as u32;
-            let (w, h) = final_preview_base.dimensions();
-            let (small_w, small_h) = if w > h {
-                let ratio = h as f32 / w as f32;
-                (target_size, (target_size as f32 * ratio) as u32)
-            } else {
-                let ratio = w as f32 / h as f32;
-                ((target_size as f32 * ratio) as u32, target_size)
-            };
-            Arc::new(image_processing::downscale_f32_image(
-                &final_preview_base,
-                small_w,
-                small_h,
-            ))
-        } else {
-            Arc::clone(&final_preview_base)
-        };
-
-        if is_interactive && base_valid {
-            *state
-                .gpu_image_cache
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = None;
-        }
-
-        small
-    };
-
-    *cached_preview_lock = Some(CachedPreview {
-        image: Arc::clone(&final_preview_base),
-        small_image: Arc::clone(&small_preview_base),
-        transform_hash: new_transform_hash,
-        scale: scale_for_gpu,
-        unscaled_crop_offset,
-        preview_dim,
-        interactive_divisor,
-    });
-
-    drop(cached_preview_lock);
-
-    let (processing_image, effective_scale) = if is_interactive {
-        let orig_w = final_preview_base.width() as f32;
-        let small_w = small_preview_base.width() as f32;
-        let scale_factor = if orig_w > 0.0 { small_w / orig_w } else { 1.0 };
-        let new_scale = scale_for_gpu * scale_factor;
-        (small_preview_base, new_scale)
-    } else {
-        (final_preview_base, scale_for_gpu)
-    };
-
-    let (preview_width, preview_height) = processing_image.dimensions();
+    let plan = crate::gpu_geometry::Plan::new(&loaded_image.image, &adjustments_clone, target_dim);
+    let (preview_width, preview_height) = plan.size;
+    let effective_scale = plan.scale;
+    let unscaled_crop_offset = plan.offset;
 
     let pixel_roi = if is_interactive {
         roi.map(|(nx, ny, nw, nh)| crate::gpu_processing::Roi {
@@ -538,9 +405,10 @@ fn process_preview_job(
     crate::image_processing::process_and_get_dynamic_image_with_analytics(
         &context,
         &state,
-        &processing_image,
+        &loaded_image.image,
         new_transform_hash,
         RenderRequest {
+            source: Some(&plan),
             adjustments: final_adjustments,
             mask_bitmaps: &mask_bitmaps,
             roi: pixel_roi,
@@ -556,6 +424,12 @@ fn process_preview_job(
         .is_none()
     {
         return Err("NATIVE_DISPLAY_LOST".into());
+    }
+    let _ = app_handle.emit_to("viewer", "viewer-frame", [preview_width, preview_height]);
+    if app_handle.get_webview_window("viewer").is_some()
+        && context.viewer_display.lock().unwrap().is_none()
+    {
+        let _ = app_handle.emit_to("viewer", "viewer-error", "NATIVE_DISPLAY_UNAVAILABLE");
     }
     let _ = app_handle.emit(
         "wgpu-frame-ready",
@@ -704,61 +578,13 @@ async fn generate_uncropped_preview(
                     .max(loaded_image.image.height())
                     .max(512),
             );
-        let mut geometry_hasher = std::collections::hash_map::DefaultHasher::new();
-        calculate_visual_hash(&path, &adjustments_clone).hash(&mut geometry_hasher);
-        target_dim.hash(&mut geometry_hasher);
-        let visual_hash = geometry_hasher.finish();
-
-        let pre_geometry_base = {
-            let mut cache = state.geometry_cache.lock().unwrap();
-            if let Some(cached) = cache.get(&visual_hash).cloned() {
-                cached
-            } else {
-                let has_patches = crate::spot_removal::has_spot_removals(&adjustments_clone);
-                let patched_image = if has_patches {
-                    Cow::Owned(composite_spot_removals(
-                        &loaded_image.image,
-                        &adjustments_clone,
-                    ))
-                } else {
-                    Cow::Borrowed(loaded_image.image.as_ref())
-                };
-
-                let blurred_image =
-                    crate::lens_blur::apply_lens_blur(patched_image, &adjustments_clone);
-
-                let downscaled = downscale_f32_image(&blurred_image, target_dim, target_dim);
-
-                if cache.len() > 5 {
-                    cache.clear();
-                }
-                cache.insert(visual_hash, downscaled.clone());
-                downscaled
-            }
-        };
-
-        let scale_for_gpu = if loaded_image.image.width() > 0 {
-            pre_geometry_base.width() as f32 / loaded_image.image.width() as f32
-        } else {
-            1.0
-        };
-
-        let params = crate::image_processing::get_geometry_params_from_json(&adjustments_clone);
-        let mut adjusted_params = params;
-        adjusted_params.lens_vignette_amount *= if is_raw { 0.4 } else { 0.8 };
-
-        let warped_image = warp_image_geometry(&pre_geometry_base, adjusted_params);
-        let orientation_steps = adjustments_clone["orientationSteps"].as_u64().unwrap_or(0) as u8;
-        let flipped_image = apply_flip(
-            apply_coarse_rotation(Cow::Owned(warped_image), orientation_steps),
-            adjustments_clone["flipHorizontal"]
-                .as_bool()
-                .unwrap_or(false),
-            adjustments_clone["flipVertical"].as_bool().unwrap_or(false),
-        )
-        .into_owned();
-
-        let (preview_width, preview_height) = flipped_image.dimensions();
+        let mut frame_adjustments = adjustments_clone.clone();
+        frame_adjustments["crop"] = Value::Null;
+        frame_adjustments["rotation"] = serde_json::json!(0);
+        let plan =
+            crate::gpu_geometry::Plan::new(&loaded_image.image, &frame_adjustments, target_dim);
+        let (preview_width, preview_height) = plan.size;
+        let scale_for_gpu = plan.scale;
 
         let mask_definitions: Vec<MaskDefinition> = adjustments_clone
             .get("masks")
@@ -799,9 +625,10 @@ async fn generate_uncropped_preview(
         if let Ok(processed_image) = image_processing::process_and_get_dynamic_image_with_precision(
             &context,
             &state,
-            &flipped_image,
+            &loaded_image.image,
             full_hash,
             RenderRequest {
+                source: Some(&plan),
                 adjustments: uncropped_adjustments,
                 mask_bitmaps: &mask_bitmaps,
                 roi: None,
@@ -1007,16 +834,26 @@ async fn generate_preview_for_path(
             }
         };
 
-        let (transformed_image, unscaled_crop_offset) =
-            apply_all_transformations(Cow::Borrowed(&base_image), &js_adjustments);
-        let (img_w, img_h) = transformed_image.dimensions();
+        let source = Arc::new(base_image);
+        let mut plan = crate::gpu_geometry::Plan::new(&source, &js_adjustments, u32::MAX);
+        plan.patches_applied = true;
+        let unscaled_crop_offset = plan.offset;
+        let (img_w, img_h) = plan.size;
         let mask_definitions: Vec<MaskDefinition> = js_adjustments
             .get("masks")
             .and_then(|m| serde_json::from_value(m.clone()).ok())
             .unwrap_or_default();
 
-        let warped_image =
-            resolve_warped_image_for_masks(&state, &js_adjustments, &mask_definitions);
+        let warped_image = mask_definitions
+            .iter()
+            .any(|mask| mask.requires_warped_image())
+            .then(|| {
+                crate::mask_generation::prepare_mask_source(
+                    source.as_ref(),
+                    &js_adjustments,
+                    is_raw,
+                )
+            });
         let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
             .iter()
             .filter_map(|def| {
@@ -1026,7 +863,7 @@ async fn generate_preview_for_path(
                     img_h,
                     1.0,
                     unscaled_crop_offset,
-                    warped_image.as_deref(),
+                    warped_image.as_ref(),
                 )
             })
             .collect();
@@ -1044,9 +881,10 @@ async fn generate_preview_for_path(
         let final_image = process_and_get_dynamic_image(
             &context,
             &state,
-            transformed_image.as_ref(),
+            source.as_ref(),
             unique_hash,
             RenderRequest {
+                source: Some(&plan),
                 adjustments: all_adjustments,
                 mask_bitmaps: &mask_bitmaps,
                 roi: None,
@@ -1259,21 +1097,22 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(PinchZoomDisablePlugin)
         .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::CloseRequested { .. }) { if let Some(viewer) = window.app_handle().get_webview_window("viewer") { let _ = viewer.close(); } }
             if !matches!(event, tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) | tauri::WindowEvent::ScaleFactorChanged { .. }) { return; }
             let Ok(size) = window.inner_size() else { return; };
             let state = window.state::<AppState>();
             if let Some(ctx) = state.gpu_context.lock().unwrap().as_ref()
-                && let Ok(mut display_lock) = ctx.display.try_lock()
+                && let Ok(mut display_lock) = (if window.label() == "viewer" { &ctx.viewer_display } else { &ctx.display }).try_lock()
                     && let Some(display) = display_lock.as_mut() {
                         #[cfg(target_os = "linux")]
-                        let size = state.wayland_display.lock().unwrap().as_ref().map(|target| target.size()).unwrap_or(size);
+                        let size = if window.label() == "main" { state.wayland_display.lock().unwrap().as_ref().map(|target| target.size()).unwrap_or(size) } else { size };
                         display.invalidate();
                         display.config.width = size.width.max(1);
                         display.config.height = size.height.max(1);
                         display.surface.configure(&ctx.device, &display.config);
                         if let Err(error) = display.render(&ctx.device, &ctx.queue) {
                             if error == "NATIVE_DISPLAY_LOST" { display_lock.take(); }
-                            let _ = window.emit("wgpu-display-unavailable", error);
+                            let _ = window.emit_to(window.label(), "wgpu-display-unavailable", error);
                         }
                     }
         })
@@ -1520,7 +1359,6 @@ pub fn run() {
             wayland_display: Mutex::new(None),
             gpu_crash_flag_path: Mutex::new(None),
             original_image: Mutex::new(None),
-            cached_preview: Mutex::new(None),
             gpu_context: Mutex::new(None),
             gpu_image_cache: Mutex::new(None),
             gpu_processor: Mutex::new(None),
@@ -1537,12 +1375,9 @@ pub fn run() {
             preview_worker_tx: Mutex::new(None),
             analytics_worker_tx: Mutex::new(None),
             mask_cache: Mutex::new(HashMap::new()),
-            geometry_cache: Mutex::new(HashMap::new()),
-            thumbnail_geometry_cache: Mutex::new(HashMap::new()),
             lens_db: Mutex::new(None),
             load_image_generation: Arc::new(AtomicUsize::new(0)),
             full_warped_cache: Mutex::new(None),
-            full_transformed_cache: Mutex::new(None),
             decoded_image_cache: Mutex::new(DecodedImageCache::new(5)),
             thumbnail_manager: ThumbnailManager::new(),
             metadata_manager: MetadataManager::new(),
@@ -1550,6 +1385,10 @@ pub fn run() {
             disks_cache_refreshing: AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
+            spot_removal::find_spot_source,
+            viewer_window::toggle_viewer_window,
+            viewer_window::viewer_frame,
+            viewer_window::viewer_resolution,
             apply_adjustments,
             generate_preview_for_path,
             generate_uncropped_preview,
@@ -1626,8 +1465,6 @@ pub fn run() {
             lens_correction::get_lensfun_lenses_for_maker,
             lens_correction::autodetect_lens,
             lens_correction::get_lens_distortion_params,
-            negative_conversion::preview_negative_conversion,
-            negative_conversion::convert_negatives,
             guided_perspective::calculate_guided_perspective,
         ])
         .build(tauri::generate_context!())

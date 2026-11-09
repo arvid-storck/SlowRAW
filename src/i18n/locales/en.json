@@ -160,7 +160,6 @@
     "list": "List",
     "loadError": "Could not load catalog: {{error}}",
     "loading": "Loading catalog…",
-    "masonry": "Masonry",
     "match": "Match any selection within a list; match all lists.",
     "medium": "Medium",
     "modifiedDate": "Modified date",
@@ -254,7 +253,6 @@
       "cancel": "Cancel",
       "colorLabel": "Color Label",
       "confirmReset": "Confirm Reset",
-      "convertNegative": "Convert Negative",
       "copyAdjustments": "Copy Adjustments",
       "cullImage": "Cull Image",
       "denoise": "Denoise Image",
@@ -319,8 +317,6 @@
       "collage_other": "Create Collage",
       "confirmDelete": "Confirm Delete",
       "confirmDeleteVc": "Confirm Delete + Virtual Copies",
-      "convertNegative_one": "Convert Negative",
-      "convertNegative_other": "Convert Negatives",
       "copyImage_one": "Copy Image",
       "copyImage_other": "Copy {{count}} Images",
       "cullImage_one": "Cull Image",
@@ -532,9 +528,11 @@
       },
       "comingSoon": "Coming Soon",
       "dropzoneText": "Drop here to create a new mask",
+      "findAnotherSource": "Find Another Source",
       "maskAdjustmentsTitle": "Mask Adjustments",
       "maskingTitle": "Masking",
       "masksTitle": "Masks",
+      "noSource": "No suitable source found. Ctrl/Cmd-click to choose one.",
       "params": {
         "feather": "Feather",
         "globalFeather": "Global Feather",
@@ -566,8 +564,8 @@
       "toggleAnalyticsTooltip": "Toggle Analytics Display",
       "tooltips": {
         "addToCurrent": "Add {{name}} to Current Mask or Create New (Right-click)",
-        "createNew": "Create New {{name}} Mask",
-        "selectNewSourcePoint": "{{modifier}} + Click to select a new source point"
+        "autoSource": "Paint a spot to choose a source automatically. Ctrl/Cmd-click or drag the source to change it.",
+        "createNew": "Create New {{name}} Mask"
       }
     },
     "metadata": {
@@ -756,6 +754,33 @@
       "watermarkImage": "Watermark Image"
     }
   },
+  "jobs": {
+    "cancel": "Cancel job",
+    "clearFinished": "Clear finished",
+    "empty": "No jobs",
+    "kinds": {
+      "auto": "Auto Adjust Levels",
+      "catalog": "Catalog scan",
+      "cleanup": "Clear edit files",
+      "copy": "Copy files",
+      "denoise": "Noise reduction",
+      "export": "Export",
+      "focus": "Focus stack",
+      "hdr": "HDR merge",
+      "import": "Import",
+      "move": "Move files",
+      "panorama": "Panorama"
+    },
+    "showFiles": "Show files",
+    "status": {
+      "cancelled": "Cancelled",
+      "completed": "Completed",
+      "failed": "Failed",
+      "queued": "Queued",
+      "running": "Running"
+    },
+    "title": "Job queue"
+  },
   "library": {
     "filters": {
       "edited": {
@@ -887,6 +912,7 @@
       "heal": "Heal",
       "linear": "Linear",
       "luminance": "Luminance",
+      "matchBrush": "Match Brush",
       "others": "Others",
       "radial": "Radial"
     }
@@ -1165,30 +1191,6 @@
       "zoomInTooltip": "Zoom In",
       "zoomOutTooltip": "Zoom Out"
     },
-    "negativeConversion": {
-      "blueWeight": "Blue (Yellow)",
-      "cancel": "Cancel",
-      "colorTiming": "Color Timing",
-      "compareTooltip": "Hold to View Original",
-      "contrast": "Contrast (Grade)",
-      "convertAndSave": "Convert & Save",
-      "convertAndSaveAll": "Convert & Save All ({{count}})",
-      "convertAndSaveAll_one": "Convert & Save All ({{count}})",
-      "convertAndSaveAll_other": "Convert & Save All ({{count}})",
-      "converting": "Converting",
-      "convertingProgress": "Converting {{current}}/{{total}}",
-      "exposure": "Exposure",
-      "greenWeight": "Green (Magenta)",
-      "noticeText": "Inversion logic inspired by <0>NegPy</0> created by marcinz606 (<1>GPL-3.0</1>).",
-      "originalLabel": "Original Negative",
-      "printGrade": "Print Grade",
-      "redWeight": "Red (Cyan)",
-      "resetTooltip": "Reset",
-      "resetViewTooltip": "Reset View",
-      "title": "Negative Conversion",
-      "zoomInTooltip": "Zoom In",
-      "zoomOutTooltip": "Zoom Out"
-    },
     "panorama": {
       "cancel": "Cancel",
       "close": "Close",
@@ -1292,13 +1294,14 @@
       "zoomDesc": "Adjust how fast the canvas zooms in and out when using the scroll wheel or pinch gesture."
     },
     "data": {
-      "clearSidecars": "Clear All Sidecar Files",
-      "clearSidecarsButton": "Clear",
-      "clearSidecarsDesc": "This will delete all <code>.rrdata</code> files (containing your edits) within your root folders:",
+      "clearSidecars": "Clear .rrdata files",
+      "clearSidecarsButton": "Delete .rrdata files",
+      "clearSidecarsDesc": "Delete <code>.rrdata</code> files in the photo folders below and their subfolders. This permanently removes saved edits, masks, ratings, labels, tags, creator details and virtual copies stored in these files. Original photos, XMP files and ExifTool metadata caches are kept.",
       "clearThumbnail": "Clear Thumbnail Cache",
       "clearThumbnailButton": "Clear",
       "clearThumbnailDesc": "This will delete all cached thumbnail images. They will be regenerated automatically as you browse your library.",
       "modals": {
+        "acknowledgeDeleteEdits": "I understand that these saved edits and metadata will be permanently deleted.",
         "cacheMessage": "Are you sure you want to clear the thumbnail cache?\n\nAll thumbnails will need to be regenerated, which may be slow for large folders.",
         "confirmAllTitle": "Confirm All Tag Deletion",
         "confirmCacheTitle": "Confirm Cache Deletion",
@@ -1310,7 +1313,7 @@
         "confirmResetLayoutTitle": "Reset Workspace Layout",
         "confirmTitle": "Confirm Deletion",
         "resetLayoutMessage": "Are you sure you want to reset the workspace layout? All docked panels, widths, and switcher positions will be restored to their defaults.",
-        "sidecarMessage": "Are you sure you want to delete all sidecar files?\n\nThis will permanently remove all your edits for all images inside all active root folders and their subfolders."
+        "sidecarMessage": "Warning: this permanently deletes every .rrdata file in the listed folders and all subfolders. Saved edits, masks, ratings, labels, tags, creator details and virtual copies stored there will be lost. This cannot be undone. Back up these files before continuing."
       },
       "noFolders": "No folders selected",
       "resetLayoutButton": "Reset Layout",
@@ -1340,7 +1343,6 @@
       "displayEditIcon": "Display Edit Icon",
       "displayEditIconDesc": "Show a small slider icon on thumbnails that have been edited.",
       "enableFocusMode": "Enable Focus Mode",
-      "enableNeutralGreyCanvas": "Enable Neutral Grey Canvas",
       "enableOsTitlebar": "Enable OS Titlebar",
       "enableXmpSync": "Enable XMP Sync",
       "focusMode": "Focus Mode",
@@ -1351,8 +1353,6 @@
       "fontDesc": "Change the application font.",
       "nativeTitlebar": "Native Titlebar",
       "nativeTitlebarDesc": "Use your system's default window titlebar instead of SlowRAW's custom one.",
-      "neutralGreyCanvas": "Neutral Grey Canvas",
-      "neutralGreyCanvasDesc": "Use a neutral middle-grey editing canvas without changing the app theme.",
       "poppins": "Poppins",
       "showImageCounts": "Show Image Counts",
       "system": "System Default",
@@ -1531,18 +1531,6 @@
       "shortcutsDesc": "A list of tags that will appear as shortcuts in the tagging context menu.",
       "title": "Tagging"
     },
-    "thanks": {
-      "description": "A huge thank you to the following projects that were very important in the development of SlowRAW:",
-      "list": {
-        "darktable": "For some reference implementations that guided parts of this work.",
-        "lensfun": "For its invaluable open-source library and comprehensive database for automatic lens correction.",
-        "negpy": "For the inspiration behind the negative conversion logic.",
-        "rawler": "For the excellent Rust crate that provides the foundation for RAW file processing in this project.",
-        "you": "For using and supporting SlowRAW. Your interest keeps this project alive and evolving.",
-        "youLabel": "You"
-      },
-      "title": "Special Thanks"
-    },
     "themes": {
       "dark": "Dark",
       "grey": "Grey",
@@ -1683,22 +1671,15 @@
     "MetadataPanel": {
       "vc": "VC"
     },
-    "NegativeConversionModal": {
-      "preview": "Preview"
-    },
     "PanoramaModal": {
       "source_preview": "Source preview",
       "stitched_panorama": "Stitched Panorama"
     },
     "SettingsPanel": {
-      "darktable_co": "darktable & co.",
       "download_the_current_xml_database_directly_from_the_official_lensfun_lensfun_source": "Download the current XML database directly from the official lensfun/lensfun source.",
-      "lensfun": "lensfun",
       "lensfun_database": "Lensfun database",
       "maximum_zoom": "Maximum zoom",
       "minimum_zoom_is_always_fit_to_screen": "Minimum zoom is always Fit to Screen.",
-      "negpy": "NegPy",
-      "rawler": "rawler",
       "update_lensfun": "Update Lensfun"
     },
     "TitleBar": {
@@ -1707,6 +1688,12 @@
       "minimize_window": "Minimize window",
       "rapidraw": "SlowRAW"
     }
+  },
+  "viewer": {
+    "empty": "Open an image in the editor",
+    "fit": "Fit",
+    "fullscreen": "Fullscreen",
+    "title": "Second Window"
   },
   "workspace": {
     "panels": {

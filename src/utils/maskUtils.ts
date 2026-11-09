@@ -38,6 +38,8 @@ export const createSubMask = (
       };
     case Mask.Brush:
       return { ...common, parameters: { lines: [] } };
+    case Mask.MatchBrush:
+      return { ...common, parameters: { lines: [], tolerance: 30 } };
     case Mask.Clone:
     case Mask.Heal:
       return { ...common, parameters: { lines: [] } };

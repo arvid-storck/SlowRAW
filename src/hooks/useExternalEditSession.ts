@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../utils/jobInvoke';
 import { exit } from '@tauri-apps/plugin-process';
 
 import { useProcessStore } from '../store/useProcessStore';

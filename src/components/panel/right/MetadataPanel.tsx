@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { cameraIso } from '../../../utils/metadata';
 import { invoke } from '@tauri-apps/api/core';
-import { Check, ChevronDown, ChevronRight, Plus, Star, Tag, X, User } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Plus, Star, Tag, X, User, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
@@ -183,9 +183,11 @@ export default function MetadataPanel() {
   const { t } = useTranslation();
   const [isOrganizationExpanded, setIsOrganizationExpanded] = useState(false);
   const [isAuthorExpanded, setIsAuthorExpanded] = useState(false);
+  const [isExifExpanded, setIsExifExpanded] = useState(false);
   const [tagInputValue, setTagInputValue] = useState('');
   const [isTagInputFocused, setIsTagInputFocused] = useState(false);
   const selectedImage = useEditorStore((s) => s.selectedImage);
+  useEffect(() => setIsExifExpanded(false), [selectedImage?.path]);
   const multiSelectedPaths = useLibraryStore((s) => s.multiSelectedPaths);
   const imageRatings = useLibraryStore((s) => s.imageRatings);
   const appSettings = useSettingsStore((s) => s.appSettings);
@@ -702,16 +704,42 @@ export default function MetadataPanel() {
             </div>
 
             {otherExifEntries.length > 0 && (
-              <details key={selectedImage.path} className="bg-surface rounded-xl">
-                <summary className="cursor-pointer p-3 text-text-primary font-medium">
-                  {t('editor.metadata.extendedExif.title')}
-                </summary>
-                <div className="max-h-80 overflow-y-auto custom-scrollbar p-3 flex flex-col gap-0.5">
-                  {otherExifEntries.map(([tag, value]) => (
-                    <MetadataItem key={tag} label={formatExifTag(tag)} value={value} />
-                  ))}
-                </div>
-              </details>
+              <div className="bg-surface rounded-xl overflow-hidden">
+                <button
+                  onClick={() => setIsExifExpanded(!isExifExpanded)}
+                  aria-expanded={isExifExpanded}
+                  className="w-full flex items-center justify-between p-3 hover:bg-card-active transition-colors"
+                >
+                  <Text
+                    as="span"
+                    variant={TextVariants.label}
+                    color={TextColors.primary}
+                    className="flex items-center gap-2"
+                  >
+                    <Info size={16} /> {t('editor.metadata.extendedExif.title')}
+                  </Text>
+                  <Text color={TextColors.secondary}>
+                    {isExifExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  </Text>
+                </button>
+                <AnimatePresence initial={false}>
+                  {isExifExpanded && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
+                      className="overflow-hidden"
+                    >
+                      <div className="max-h-80 overflow-y-auto custom-scrollbar px-4 pb-4 pt-2 border-t border-surface/50 flex flex-col gap-0.5">
+                        {otherExifEntries.map(([tag, value]) => (
+                          <MetadataItem key={tag} label={formatExifTag(tag)} value={value} />
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
             )}
           </div>
         ) : (

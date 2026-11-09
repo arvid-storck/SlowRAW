@@ -9,7 +9,6 @@ import CopyPasteSettingsModal from './CopyPasteSettingsModal';
 import PanoramaModal from './PanoramaModal';
 import HdrModal from './HdrModal';
 import FocusStackModal from './FocusStackModal';
-import NegativeConversionModal from './NegativeConversionModal';
 import DenoiseModal from './DenoiseModal';
 import CreateFolderModal from './CreateFolderModal';
 import RenameFolderModal from './RenameFolderModal';
@@ -66,7 +65,6 @@ export default function AppModals(props: AppModalsProps) {
     panoramaModalState,
     hdrModalState,
     focusStackModalState,
-    negativeModalState,
     denoiseModalState,
     cullingModalState,
     collageModalState,
@@ -86,7 +84,6 @@ export default function AppModals(props: AppModalsProps) {
       panoramaModalState: state.panoramaModalState,
       hdrModalState: state.hdrModalState,
       focusStackModalState: state.focusStackModalState,
-      negativeModalState: state.negativeModalState,
       denoiseModalState: state.denoiseModalState,
       cullingModalState: state.cullingModalState,
       collageModalState: state.collageModalState,
@@ -230,18 +227,6 @@ export default function AppModals(props: AppModalsProps) {
         onSave={props.handleSaveFocusStack}
         onMerge={() => props.handleStartFocusStack(focusStackModalState.sourcePaths)}
         progressMessage={focusStackModalState.progressMessage}
-      />
-      <NegativeConversionModal
-        isOpen={negativeModalState.isOpen}
-        onClose={() => setUI((state) => ({ negativeModalState: { ...state.negativeModalState, isOpen: false } }))}
-        targetPaths={negativeModalState.targetPaths}
-        onSave={(savedPaths) => {
-          props.refreshImageList().then(() => {
-            if (selectedImage && negativeModalState.targetPaths.includes(selectedImage.path) && savedPaths.length > 0) {
-              props.handleImageSelect(savedPaths[0]);
-            }
-          });
-        }}
       />
       <DenoiseModal
         isOpen={denoiseModalState.isOpen}

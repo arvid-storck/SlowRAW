@@ -10,7 +10,6 @@ import { Adjustments, Coord, MaskContainer, GuideLine, GuideOrientation } from '
 import { Mask, SubMask, SubMaskMode, ToolType } from '../right/Masks';
 import { BrushSettings, Invokes, SelectedImage } from '../../ui/AppProperties';
 import { RenderSize } from '../../../hooks/useImageRenderSize';
-import { useOsPlatform } from '../../../hooks/useOsPlatform';
 import { useTranslation } from 'react-i18next';
 import { useEditorStore } from '../../../store/useEditorStore';
 import type { OverlayMode } from '../right/CropPanel';
@@ -18,6 +17,7 @@ import CompositionOverlays from './overlays/CompositionOverlays';
 import { calculateStraightenAngle } from '../../../utils/cropUtils';
 import { toast } from 'react-toastify';
 import { withKelvinWhiteBalance } from '../../../utils/whiteBalance';
+import { createSpot } from '../../../utils/spotRemoval';
 
 const EMPTY_STROKE_POINTS: number[] = [];
 
@@ -767,6 +767,7 @@ const MaskOverlay = memo(
 
     if (
       subMask.type === Mask.Brush ||
+      subMask.type === Mask.MatchBrush ||
       subMask.type === Mask.Flow ||
       subMask.type === Mask.Clone ||
       subMask.type === Mask.Heal
@@ -783,23 +784,10 @@ const MaskOverlay = memo(
         sourceY !== undefined &&
         lines.length > 0
       ) {
-        let minX = Infinity,
-          minY = Infinity,
-          maxX = -Infinity,
-          maxY = -Infinity;
-        for (const line of lines) {
-          for (const pt of line.points) {
-            if (pt.x < minX) minX = pt.x;
-            if (pt.x > maxX) maxX = pt.x;
-            if (pt.y < minY) minY = pt.y;
-            if (pt.y > maxY) maxY = pt.y;
-          }
-        }
-        if (minX !== Infinity) {
-          const cx = (minX + maxX) / 2;
-          const cy = (minY + maxY) / 2;
-          dx = sourceX - cx;
-          dy = sourceY - cy;
+        const anchor = lines.find((line: DrawnLine) => line.tool !== ToolType.Eraser)?.points[0];
+        if (anchor) {
+          dx = sourceX - anchor.x;
+          dy = sourceY - anchor.y;
           hasSource = true;
         }
       }
@@ -810,29 +798,103 @@ const MaskOverlay = memo(
           onTap={handleSelect}
           onTouchEnd={handleMaskTouchEnd}
           onTouchStart={handleMaskTouchStart}
+          draggable={isSelected && (subMask.type === Mask.Clone || subMask.type === Mask.Heal)}
+          onMouseDown={(e) => {
+            if (subMask.type === Mask.Clone || subMask.type === Mask.Heal) e.cancelBubble = true;
+          }}
+          onDragStart={(e) => {
+            e.cancelBubble = true;
+            onMaskInteractionStart();
+          }}
+          onDragEnd={(e) => {
+            e.cancelBubble = true;
+            const dx = e.target.x() / scale;
+            const dy = e.target.y() / scale;
+            e.target.position({ x: 0, y: 0 });
+            onUpdate(subMask.id, {
+              parameters: {
+                ...pRef.current,
+                lines: lines.map((line: DrawnLine) => ({
+                  ...line,
+                  points: line.points.map((p: Coord) => ({ x: p.x + dx, y: p.y + dy })),
+                })),
+              },
+            });
+            onMaskInteractionEnd();
+          }}
         >
           <Group visible={showBrushStrokes !== false}>
             {lines.map((line: DrawnLine, i: number) => (
               <OptimizedBrushLine key={i} line={line} scale={scale} cropX={cropX} cropY={cropY} />
             ))}
 
-            {hasSource &&
-              isSelected &&
-              lines.map((line: DrawnLine, i: number) => (
-                <SourcePreviewLine
-                  key={`source-${i}`}
-                  line={line}
-                  scale={scale}
-                  cropX={cropX}
-                  cropY={cropY}
-                  dx={dx}
-                  dy={dy}
-                />
-              ))}
+            {hasSource && isSelected && (
+              <Group
+                draggable
+                onMouseDown={(e) => {
+                  e.cancelBubble = true;
+                }}
+                onTouchStart={(e) => {
+                  e.cancelBubble = true;
+                }}
+                onDragStart={(e) => {
+                  e.cancelBubble = true;
+                  onMaskInteractionStart();
+                }}
+                onDragEnd={(e) => {
+                  e.cancelBubble = true;
+                  const dx = e.target.x() / scale;
+                  const dy = e.target.y() / scale;
+                  e.target.position({ x: 0, y: 0 });
+                  onUpdate(subMask.id, {
+                    parameters: { ...pRef.current, sourceX: sourceX + dx, sourceY: sourceY + dy, manualSource: true },
+                  });
+                  onMaskInteractionEnd();
+                }}
+              >
+                {lines.map((line: DrawnLine, i: number) => (
+                  <SourcePreviewLine
+                    key={`source-${i}`}
+                    line={line}
+                    scale={scale}
+                    cropX={cropX}
+                    cropY={cropY}
+                    dx={dx}
+                    dy={dy}
+                  />
+                ))}
+              </Group>
+            )}
           </Group>
 
           {sourceX !== undefined && sourceY !== undefined && isSelected && (
-            <Group x={(sourceX - cropX) * scale} y={(sourceY - cropY) * scale}>
+            <Group
+              x={(sourceX - cropX) * scale}
+              y={(sourceY - cropY) * scale}
+              draggable
+              onMouseDown={(e) => {
+                e.cancelBubble = true;
+              }}
+              onTouchStart={(e) => {
+                e.cancelBubble = true;
+              }}
+              onDragStart={(e) => {
+                e.cancelBubble = true;
+                onMaskInteractionStart();
+              }}
+              onDragEnd={(e) => {
+                e.cancelBubble = true;
+                onUpdate(subMask.id, {
+                  parameters: {
+                    ...pRef.current,
+                    sourceX: e.target.x() / scale + cropX,
+                    sourceY: e.target.y() / scale + cropY,
+                    manualSource: true,
+                  },
+                });
+                onMaskInteractionEnd();
+              }}
+            >
               <Circle
                 radius={6 / stageScale}
                 stroke="white"
@@ -1299,8 +1361,6 @@ const ImageCanvas = memo(
 
     const isWgpuActive = selectedImage?.isReady && hasRenderedFirstFrame;
     const { t } = useTranslation();
-    const osPlatform = useOsPlatform();
-    const modifierKey = osPlatform === 'macos' ? 'Cmd' : 'Ctrl';
 
     const paddingX = imageRenderSize.width * 0.5;
     const paddingY = imageRenderSize.height * 0.5;
@@ -1324,6 +1384,7 @@ const ImageCanvas = memo(
     const maxDimension = Math.max(stageWidth, stageHeight, 1);
     const maxSafeScale = Math.max(1, Math.min(settledScale, 4092 / maxDimension));
 
+    const latestSpot = useRef(0);
     const getCanvasPointer = useCallback(
       (stage: any) => {
         const pos = stage.getPointerPosition();
@@ -1476,7 +1537,11 @@ const ImageCanvas = memo(
     const isCloneOrHealActive = isMasking && (activeSubMask?.type === Mask.Clone || activeSubMask?.type === Mask.Heal);
 
     const isBrushActive =
-      isMasking && (activeSubMask?.type === Mask.Brush || activeSubMask?.type === Mask.Flow || isCloneOrHealActive);
+      isMasking &&
+      (activeSubMask?.type === Mask.Brush ||
+        activeSubMask?.type === Mask.MatchBrush ||
+        activeSubMask?.type === Mask.Flow ||
+        isCloneOrHealActive);
 
     const activeLineFlow = activeSubMask?.type === Mask.Flow ? (activeSubMask?.parameters?.flow ?? 10) : undefined;
 
@@ -2043,7 +2108,7 @@ const ImageCanvas = memo(
 
         if (isCloneOrHealActive && activeSubMask) {
           const isCtrlPressedLocal = e.evt.ctrlKey || e.evt.metaKey || (window as any).ctrlKeyDown;
-          if (isCtrlPressedLocal || activeSubMask.parameters?.sourceX === undefined) {
+          if (isCtrlPressedLocal) {
             const pos = getCanvasPointer(e.target.getStage());
             if (!pos) return;
 
@@ -2054,7 +2119,7 @@ const ImageCanvas = memo(
             const activeId = activeMaskId;
             if (activeId) {
               updateSubMask(activeId, {
-                parameters: { ...activeSubMask.parameters, sourceX: x, sourceY: y },
+                parameters: { ...activeSubMask.parameters, sourceX: x, sourceY: y, manualSource: true },
               });
             }
 
@@ -2081,7 +2146,7 @@ const ImageCanvas = memo(
           } else {
             effectiveTool = baseTool;
           }
-          const isShiftClick = isBrushActive && e.evt.shiftKey && lastBrushPoint.current;
+          const isShiftClick = isBrushActive && !isCloneOrHealActive && e.evt.shiftKey && lastBrushPoint.current;
 
           if (isShiftClick) {
             const { scale } = imageRenderSize;
@@ -2119,6 +2184,10 @@ const ImageCanvas = memo(
               parameters: {
                 ...activeSubMask?.parameters,
                 lines: [...existingLines, imageSpaceLine],
+                rotation: adjustments.rotation || 0,
+                flipHorizontal: adjustments.flipHorizontal || false,
+                flipVertical: adjustments.flipVertical || false,
+                orientationSteps: adjustments.orientationSteps || 0,
               },
             });
 
@@ -2352,6 +2421,10 @@ const ImageCanvas = memo(
               parameters: {
                 ...activeSubMask.parameters,
                 lines: [...existingLines, imageSpaceLine],
+                rotation: adjustments.rotation || 0,
+                flipHorizontal: adjustments.flipHorizontal || false,
+                flipVertical: adjustments.flipVertical || false,
+                orientationSteps: adjustments.orientationSteps || 0,
               },
             };
 
@@ -2533,6 +2606,25 @@ const ImageCanvas = memo(
           tool: line.tool,
         };
 
+        if (isCloneOrHealActive && imageSpaceLine.tool !== ToolType.Eraser && activeSubMask && activeMaskContainerId) {
+          const request = ++latestSpot.current;
+          void createSpot(
+            activeMaskContainerId,
+            activeSubMask,
+            imageSpaceLine,
+            selectedImage.path,
+            adjustments,
+            setAdjustments,
+          )
+            .then((result) => {
+              if (!result) return;
+              if (!result.sourceFound) toast.info(t('editor.masks.noSource'));
+              if (latestSpot.current === request) useEditorStore.getState().setEditor({ activeMaskId: result.id });
+            })
+            .catch((error) => toast.error(String(error)));
+          return;
+        }
+
         const existingLines = activeSubMask?.parameters?.lines ? [...activeSubMask.parameters.lines] : [];
 
         existingLines.push(imageSpaceLine);
@@ -2540,6 +2632,10 @@ const ImageCanvas = memo(
         updateSubMask(activeId, {
           parameters: {
             ...activeSubMask?.parameters,
+            rotation: adjustments.rotation || 0,
+            flipHorizontal: adjustments.flipHorizontal || false,
+            flipVertical: adjustments.flipVertical || false,
+            orientationSteps: adjustments.orientationSteps || 0,
             lines: existingLines,
           },
         });
@@ -2719,7 +2815,7 @@ const ImageCanvas = memo(
       if (isBrushActive && !isCloneOrHealActive) return 'none';
 
       if (isCloneOrHealActive) {
-        if (activeSubMask?.parameters?.sourceX === undefined || isCtrlPressed) {
+        if (isCtrlPressed) {
           const targetSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" style="filter: drop-shadow(0px 1px 2px rgba(0,0,0,0.8));">
         <circle cx="12" cy="12" r="5" />
         <line x1="12" y1="2" x2="12" y2="10" />
@@ -2931,7 +3027,7 @@ const ImageCanvas = memo(
                       transformOrigin: 'center',
                       cursor: 'crosshair',
                     }}
-                    data-tooltip={t('editor.masks.tooltips.selectNewSourcePoint', { modifier: modifierKey })}
+                    data-tooltip={t('editor.masks.tooltips.autoSource')}
                   />
                 )}
             </div>
@@ -3050,8 +3146,7 @@ const ImageCanvas = memo(
                       />
                       {isBrushActive &&
                         cursorPreview.visible &&
-                        (!isCloneOrHealActive ||
-                          (activeSubMask?.parameters?.sourceX !== undefined && !isCtrlPressed)) && (
+                        (!isCloneOrHealActive || !isCtrlPressed) && (
                           <Circle
                             {...(brushCursorPreview.colorStops
                               ? {

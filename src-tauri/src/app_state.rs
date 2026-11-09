@@ -34,22 +34,13 @@ pub struct LoadedImage {
     pub as_shot_white_balance: crate::white_balance::WhiteBalance,
 }
 
-#[derive(Clone)]
-pub struct CachedPreview {
-    pub image: Arc<DynamicImage>,
-    pub small_image: Arc<DynamicImage>,
-    pub transform_hash: u64,
-    pub scale: f32,
-    pub unscaled_crop_offset: (f32, f32),
-    pub preview_dim: u32,
-    pub interactive_divisor: f32,
-}
-
 pub struct GpuImageCache {
+    pub source: Option<std::sync::Weak<DynamicImage>>,
     pub texture: Texture,
     pub texture_view: TextureView,
     pub gf_coeffs_view: TextureView,
     pub gf_dehaze_view: TextureView,
+    pub atmosphere_view: TextureView,
     pub is_raw: u32,
     pub width: u32,
     pub height: u32,
@@ -134,16 +125,12 @@ impl MetadataManager {
     }
 }
 
-pub type ThumbnailGeometryEntry = (u64, Arc<DynamicImage>, f32);
-pub type TransformedImageCache = (u64, Arc<DynamicImage>, (f32, f32));
-
 pub struct AppState {
     pub window_setup_complete: AtomicBool,
     #[cfg(target_os = "linux")]
     pub wayland_display: Mutex<Option<Arc<crate::wayland_display::WaylandDisplay>>>,
     pub gpu_crash_flag_path: Mutex<Option<PathBuf>>,
     pub original_image: Mutex<Option<LoadedImage>>,
-    pub cached_preview: Mutex<Option<CachedPreview>>,
     pub gpu_context: Mutex<Option<GpuContext>>,
     pub gpu_image_cache: Mutex<Option<GpuImageCache>>,
     pub gpu_processor: Mutex<Option<GpuProcessorState>>,
@@ -160,12 +147,9 @@ pub struct AppState {
     pub preview_worker_tx: Mutex<Option<Sender<PreviewJob>>>,
     pub analytics_worker_tx: Mutex<Option<Sender<AnalyticsJob>>>,
     pub mask_cache: Mutex<HashMap<u64, GrayImage>>,
-    pub geometry_cache: Mutex<HashMap<u64, DynamicImage>>,
-    pub thumbnail_geometry_cache: Mutex<HashMap<String, ThumbnailGeometryEntry>>,
     pub lens_db: Mutex<Option<Arc<LensDatabase>>>,
     pub load_image_generation: Arc<AtomicUsize>,
     pub full_warped_cache: Mutex<Option<(u64, Arc<DynamicImage>)>>,
-    pub full_transformed_cache: Mutex<Option<TransformedImageCache>>,
     pub decoded_image_cache: Mutex<DecodedImageCache>,
     pub thumbnail_manager: Arc<ThumbnailManager>,
     pub metadata_manager: Arc<MetadataManager>,

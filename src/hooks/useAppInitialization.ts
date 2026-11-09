@@ -202,7 +202,13 @@ export const useAppInitialization = ({
 
         setLibraryViewMode(settings?.libraryViewMode ?? defaultLibraryViewMode);
         setThumbnailSize(settings?.thumbnailSize ?? defaultThumbnailSize);
-        if (settings?.thumbnailAspectRatio) setThumbnailAspectRatio(settings.thumbnailAspectRatio);
+        if (settings?.thumbnailAspectRatio) {
+          setThumbnailAspectRatio(
+            settings.thumbnailAspectRatio === ThumbnailAspectRatio.Contain
+              ? ThumbnailAspectRatio.Contain
+              : ThumbnailAspectRatio.Cover,
+          );
+        }
 
         // Catalog bootstrap reads SQLite; no folder trees or RAW files are preloaded.
         if (settings?.lastFolderState) {

@@ -137,7 +137,6 @@ export enum Theme {
 export enum ThumbnailAspectRatio {
   Cover = 'cover',
   Contain = 'contain',
-  Justified = 'justified',
 }
 
 export interface WorkspaceState {
@@ -191,7 +190,6 @@ export interface AppSettings {
   exportPresets?: ExportPreset[];
   myLenses?: any;
   displayEditIcon?: boolean;
-  editorNeutralGreyBg?: boolean;
   linearRawMode?: string;
   enableXmpSync?: boolean;
   createXmpIfMissing?: boolean;

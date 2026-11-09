@@ -1,6 +1,6 @@
 import { t as translate } from 'i18next';
 import { useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from '../utils/jobInvoke';
 import { open } from '@tauri-apps/plugin-dialog';
 import { toast } from 'react-toastify';
 import { useLibraryStore } from '../store/useLibraryStore';

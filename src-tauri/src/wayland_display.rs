@@ -6,7 +6,7 @@ use std::{
     ptr::NonNull,
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     time::Duration,
 };
@@ -54,6 +54,7 @@ pub struct WaylandDisplay {
     connection: Connection,
     surface: WlSurface,
     subsurface: WlSubsurface,
+    presented: AtomicBool,
     width: AtomicU32,
     height: AtomicU32,
     // Keep the Tauri window/runtime alive for the borrowed native display.
@@ -61,15 +62,28 @@ pub struct WaylandDisplay {
 }
 
 impl WaylandDisplay {
+    fn display<'a>(
+        &self,
+        context: &'a crate::image_processing::GpuContext,
+    ) -> &'a std::sync::Mutex<Option<crate::gpu_processing::WgpuDisplay>> {
+        if self._window.label() == "viewer" {
+            &context.viewer_display
+        } else {
+            &context.display
+        }
+    }
+
     fn disable(&self) {
         let state = self._window.state::<crate::AppState>();
         if let Some(context) = state.gpu_context.lock().unwrap().as_ref() {
-            context.display.lock().unwrap().take();
+            self.display(context).lock().unwrap().take();
         }
         self.surface.attach(None, 0, 0);
         self.surface.commit();
         let _ = self.connection.flush();
-        let _ = self._window.emit("wgpu-display-unavailable", ());
+        let _ = self
+            ._window
+            .emit_to(self._window.label(), "wgpu-display-unavailable", ());
     }
 
     pub fn size(&self) -> tauri::PhysicalSize<u32> {
@@ -92,7 +106,7 @@ impl WaylandDisplay {
         let state = self._window.state::<crate::AppState>();
         if let Ok(context) = state.gpu_context.try_lock()
             && let Some(context) = context.as_ref()
-            && let Ok(mut display) = context.display.try_lock()
+            && let Ok(mut display) = self.display(context).try_lock()
             && let Some(display) = display.as_mut()
         {
             display.config.width = width;
@@ -185,6 +199,7 @@ pub fn create(window: &tauri::WebviewWindow) -> Result<Arc<WaylandDisplay>, Stri
         connection,
         surface,
         subsurface,
+        presented: AtomicBool::new(false),
         width: AtomicU32::new(1),
         height: AtomicU32::new(1),
         _window: window.clone(),
@@ -211,9 +226,16 @@ pub fn create(window: &tauri::WebviewWindow) -> Result<Arc<WaylandDisplay>, Stri
             return glib::ControlFlow::Break;
         };
         let state = target._window.state::<crate::AppState>();
-        if let Some(context) = state.gpu_context.lock().unwrap().as_ref()
-            && context.display.lock().unwrap().is_none()
-        {
+        let has_display = state
+            .gpu_context
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|context| target.display(context).lock().unwrap().is_some());
+        if has_display {
+            target.presented.store(true, Ordering::Relaxed);
+        }
+        if !has_display && target.presented.load(Ordering::Relaxed) {
             target.surface.attach(None, 0, 0);
             target.surface.commit();
             let _ = target.connection.flush();

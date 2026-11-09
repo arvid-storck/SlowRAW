@@ -428,8 +428,6 @@ pub struct AppSettings {
     pub my_lenses: Option<Vec<MyLens>>,
     #[serde(default)]
     pub display_edit_icon: Option<bool>,
-    #[serde(default)]
-    pub editor_neutral_grey_bg: Option<bool>,
     #[serde(default = "default_linear_raw_mode")]
     pub linear_raw_mode: String,
     #[serde(default)]
@@ -529,7 +527,6 @@ impl Default for AppSettings {
             my_lenses: Some(Vec::new()),
             high_res_zoom_multiplier: Some(1.0),
             display_edit_icon: Some(true),
-            editor_neutral_grey_bg: Some(false),
             linear_raw_mode: default_linear_raw_mode(),
             enable_xmp_sync: Some(true),
             create_xmp_if_missing: Some(false),

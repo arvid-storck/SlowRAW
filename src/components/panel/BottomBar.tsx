@@ -6,6 +6,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useTranslation } from 'react-i18next';
 
 import Filmstrip from './Filmstrip';
+import JobQueue from '../ui/JobQueue';
 import FlagToggles from '../ui/FlagToggles';
 import { GLOBAL_KEYS, ImageFile, SelectedImage, ThumbnailAspectRatio } from '../ui/AppProperties';
 import Text from '../ui/Text';
@@ -434,6 +435,7 @@ export default function BottomBar({
         </div>
 
         <div className="grow" />
+        <JobQueue />
 
         <div className="flex items-center gap-4">
           {isLibraryView && (

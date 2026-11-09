@@ -684,19 +684,23 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
   }, [adjustments.masks, activeMaskId, isMasking]);
 
   const isBrushActive = useMemo(() => {
-    return isMasking && (activeSubMask?.type === Mask.Brush || activeSubMask?.type === Mask.Flow);
+    return (
+      isMasking &&
+      (activeSubMask?.type === Mask.Brush ||
+        activeSubMask?.type === Mask.MatchBrush ||
+        activeSubMask?.type === Mask.Flow ||
+        activeSubMask?.type === Mask.Clone ||
+        activeSubMask?.type === Mask.Heal)
+    );
   }, [isMasking, activeSubMask?.type]);
 
   const isPanningDisabled =
+    isBrushActive ||
     isMaskHovered ||
     isMaskTouchInteracting ||
     isCropping ||
     (isMasking &&
-      (activeSubMask?.type === Mask.Brush ||
-        activeSubMask?.type === Mask.Flow ||
-        activeSubMask?.type === Mask.Clone ||
-        activeSubMask?.type === Mask.Heal ||
-        activeSubMask?.type === Mask.Color ||
+      (activeSubMask?.type === Mask.Color ||
         activeSubMask?.type === Mask.Luminance ||
         activeSubMask?.parameters?.isInitialDraw)) ||
     isWbPickerActive;
@@ -1326,10 +1330,9 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
       uncroppedAdjustedPreviewUrl,
       showOriginal,
       bgPrimary: parseRgb(bgPrimaryStr),
-      bgSecondary: appSettings?.editorNeutralGreyBg ? [128 / 255, 128 / 255, 128 / 255, 1] : parseRgb(bgSecondaryStr),
+      bgSecondary: parseRgb(bgSecondaryStr),
     };
   }, [
-    appSettings?.editorNeutralGreyBg,
     selectedImage?.isReady,
     hasRenderedFirstFrame,
     isCropping,
@@ -1342,7 +1345,6 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
   useEffect(() => {
     syncWgpuRef.current();
   }, [
-    appSettings?.editorNeutralGreyBg,
     selectedImage?.isReady,
     hasRenderedFirstFrame,
     isCropping,
@@ -2140,9 +2142,8 @@ export default function Editor({ onBackToLibrary, onContextMenu, onImageSelect, 
         className={clsx(
           'flex-1 relative overflow-hidden touch-none',
           isFullScreen ? 'rounded-none' : 'rounded-lg',
-          !isFullScreen &&
-            (appSettings?.editorNeutralGreyBg ? 'ring-[9999px] ring-[#808080]' : 'ring-[9999px] ring-bg-secondary'),
-          !isWgpuActive && (appSettings?.editorNeutralGreyBg ? 'bg-[#808080]' : 'bg-bg-secondary'),
+          !isFullScreen && 'ring-[9999px] ring-bg-secondary',
+          !isWgpuActive && 'bg-bg-secondary',
         )}
         style={{ cursor: cursorStyle }}
         onContextMenu={onContextMenu}

@@ -161,7 +161,6 @@ export default function MainLibrary(props: MainLibraryProps) {
             value={props.thumbnailAspectRatio}
             onChange={(e) => props.onThumbnailAspectRatioChange(e.target.value as ThumbnailAspectRatio)}
           >
-            <option value={ThumbnailAspectRatio.Justified}>{t('catalog.masonry')}</option>
             <option value={ThumbnailAspectRatio.Contain}>{t('catalog.originalRatio')}</option>
             <option value={ThumbnailAspectRatio.Cover}>{t('catalog.fillSquare')}</option>
           </select>

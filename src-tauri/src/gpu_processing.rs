@@ -261,6 +261,12 @@ mod color_tests {
             limits: device.limits(),
             device: Arc::new(device),
             queue: Arc::new(queue),
+            compute: Arc::new(std::sync::OnceLock::new()),
+            source: Arc::new(std::sync::Mutex::new(None)),
+            instance: Arc::new(instance),
+            adapter: adapter.clone(),
+            viewer_display: Arc::new(std::sync::Mutex::new(None)),
+            last_frame: Arc::new(std::sync::Mutex::new(None)),
             display: Arc::new(std::sync::Mutex::new(None)),
         };
         let matrix = ColorSpace::DisplayP3
@@ -317,9 +323,11 @@ mod color_tests {
                     &input_view,
                     &coeff_view,
                     &coeff_view,
+                    &coeff_view,
                     1,
                     1,
                     RenderRequest {
+                        source: None,
                         adjustments,
                         mask_bitmaps: &[],
                         roi: None,
@@ -339,9 +347,11 @@ mod color_tests {
                     &input_view,
                     &coeff_view,
                     &coeff_view,
+                    &coeff_view,
                     1,
                     1,
                     RenderRequest {
+                        source: None,
                         adjustments,
                         mask_bitmaps: &[],
                         roi: None,
@@ -395,9 +405,11 @@ mod color_tests {
                         &imported.create_view(&Default::default()),
                         &coeff_view,
                         &coeff_view,
+                        &coeff_view,
                         1,
                         1,
                         RenderRequest {
+                            source: None,
                             adjustments: imported_adjustments,
                             mask_bitmaps: &[],
                             roi: None,
@@ -434,6 +446,7 @@ mod color_tests {
 }
 
 pub struct RenderRequest<'a> {
+    pub source: Option<&'a crate::gpu_geometry::Plan<'a>>,
     pub adjustments: AllAdjustments,
     pub mask_bitmaps: &'a [ImageBuffer<Luma<u8>, Vec<u8>>],
     pub roi: Option<Roi>,
@@ -486,7 +499,60 @@ pub struct WgpuDisplay {
     pub current_bind_group: Option<wgpu::BindGroup>,
 }
 
+#[derive(Clone)]
+pub struct DisplayFrame {
+    pub view: wgpu::TextureView,
+    pub image_size: [f32; 2],
+    pub texture_size: [f32; 2],
+}
+
 impl WgpuDisplay {
+    pub fn set_frame(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        view: &wgpu::TextureView,
+        size: [f32; 2],
+        texture_size: [f32; 2],
+    ) -> Result<(), String> {
+        let display = self;
+        display.latest_transform.image_size = size;
+        display.latest_transform.texture_size = texture_size;
+        queue.write_buffer(
+            &display.transform_buffer,
+            0,
+            bytemuck::bytes_of(&display.latest_transform),
+        );
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &display.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: display.transform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&display.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: display.color_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&display.curves_view),
+                },
+            ],
+            label: None,
+        });
+        display.current_bind_group = Some(bind_group);
+        display.render(device, queue)
+    }
+
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -655,12 +721,6 @@ impl WgpuDisplay {
         }
         Ok(())
     }
-}
-
-#[cfg(target_os = "windows")]
-fn app_handle_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
-    app.get_webview_window("main")
-        .ok_or("Failed to get main window".into())
 }
 
 fn display_curves_texture(
@@ -916,40 +976,10 @@ pub fn get_or_init_gpu_context(
     }
 
     let display_opt = if let Some(surface) = surface_opt {
-        #[cfg(not(target_os = "linux"))]
-        let window = app_handle
+        let window = _app_handle
             .get_webview_window("main")
             .ok_or("Failed to get main window")?;
-
-        let swapchain_caps = surface.get_capabilities(&adapter);
-        let (swapchain_format, surface_color_space) =
-            crate::native_display::surface_format(&swapchain_caps)
-                .ok_or("Native surface has no supported sRGB format")?;
-
-        let alpha_mode = if cfg!(target_os = "windows")
-            && swapchain_caps
-                .alpha_modes
-                .contains(&wgpu::CompositeAlphaMode::Opaque)
-        {
-            wgpu::CompositeAlphaMode::Opaque
-        } else if swapchain_caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
-        {
-            wgpu::CompositeAlphaMode::PreMultiplied
-        } else if swapchain_caps
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
-        {
-            wgpu::CompositeAlphaMode::PostMultiplied
-        } else {
-            swapchain_caps.alpha_modes[0]
-        };
-
-        #[cfg(not(target_os = "linux"))]
-        let size = window
-            .inner_size()
-            .unwrap_or(tauri::PhysicalSize::new(1280, 720));
+        let size = window.inner_size().map_err(|e| e.to_string())?;
         #[cfg(target_os = "linux")]
         let size = state
             .wayland_display
@@ -957,83 +987,10 @@ pub fn get_or_init_gpu_context(
             .unwrap()
             .as_ref()
             .map(|target| target.size())
-            .unwrap_or(tauri::PhysicalSize::new(1, 1));
-        let config = wgpu::SurfaceConfiguration {
-            width: size.width.max(1),
-            height: size.height.max(1),
-            format: swapchain_format,
-            color_space: surface_color_space,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
-
-        let bind_group_layout = display_bind_group_layout(&device);
-        let pipeline = display_pipeline(&device, &bind_group_layout, swapchain_format);
-
-        let transform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Transform Buffer"),
-            size: std::mem::size_of::<DisplayTransform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Display Sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        let color = crate::native_display::DisplayColor::new(
-            crate::color_management::ColorSpace::Srgb,
-            surface_color_space,
-            swapchain_format,
-        );
-        let color_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Display Color Transform"),
-            contents: bytemuck::bytes_of(&color),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-        let (curves_texture, curves_view) = display_curves_texture(&device, &queue);
-        Some(WgpuDisplay {
-            #[cfg(target_os = "windows")]
-            window: app_handle_window(_app_handle)?,
-            refreshed: Instant::now() - std::time::Duration::from_secs(2),
-            adapter: adapter.clone(),
-            #[cfg(target_os = "windows")]
-            monitor: None,
-            profile: None,
-            _curves_texture: curves_texture,
-            curves_view,
-            capabilities: swapchain_caps,
-            input_space: crate::color_management::ColorSpace::Srgb,
-            color_buffer,
-            color,
-            surface,
-            config,
-            pipeline,
-            bind_group_layout,
-            transform_buffer,
-            latest_transform: DisplayTransform {
-                rect: [0.0, 0.0, 100.0, 100.0],
-                clip: [0.0, 0.0, 10000.0, 10000.0],
-                window: [1280.0, 720.0],
-                image_size: [100.0, 100.0],
-                texture_size: [100.0, 100.0],
-                pixelated: 0.0,
-                _pad: 0.0,
-                bg_primary: [24.0 / 255.0, 24.0 / 255.0, 24.0 / 255.0, 1.0],
-                bg_secondary: [35.0 / 255.0, 35.0 / 255.0, 35.0 / 255.0, 1.0],
-            },
-            sampler,
-            current_bind_group: None,
-        })
+            .unwrap_or(size);
+        Some(create_display(
+            surface, &adapter, &device, &queue, &window, size,
+        )?)
     } else {
         None
     };
@@ -1042,13 +999,132 @@ pub fn get_or_init_gpu_context(
         device: Arc::new(device),
         queue: Arc::new(queue),
         limits,
+        compute: Arc::new(std::sync::OnceLock::new()),
+        source: Arc::new(std::sync::Mutex::new(None)),
+        instance: Arc::new(instance),
+        adapter,
+        viewer_display: Arc::new(std::sync::Mutex::new(None)),
+        last_frame: Arc::new(std::sync::Mutex::new(None)),
         display: Arc::new(std::sync::Mutex::new(display_opt)),
     };
     *context_lock = Some(new_context.clone());
     Ok(new_context)
 }
 
-fn read_texture_data_roi(
+pub fn create_display(
+    surface: wgpu::Surface<'static>,
+    adapter: &wgpu::Adapter,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    _window: &tauri::WebviewWindow,
+    size: tauri::PhysicalSize<u32>,
+) -> Result<WgpuDisplay, String> {
+    #[cfg(target_os = "windows")]
+    let window = _window;
+    let swapchain_caps = surface.get_capabilities(&adapter);
+    let (swapchain_format, surface_color_space) =
+        crate::native_display::surface_format(&swapchain_caps)
+            .ok_or("Native surface has no supported sRGB format")?;
+
+    let alpha_mode = if cfg!(target_os = "windows")
+        && swapchain_caps
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::Opaque)
+    {
+        wgpu::CompositeAlphaMode::Opaque
+    } else if swapchain_caps
+        .alpha_modes
+        .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+    {
+        wgpu::CompositeAlphaMode::PreMultiplied
+    } else if swapchain_caps
+        .alpha_modes
+        .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+    {
+        wgpu::CompositeAlphaMode::PostMultiplied
+    } else {
+        swapchain_caps.alpha_modes[0]
+    };
+
+    let config = wgpu::SurfaceConfiguration {
+        width: size.width.max(1),
+        height: size.height.max(1),
+        format: swapchain_format,
+        color_space: surface_color_space,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode,
+        view_formats: vec![],
+        desired_maximum_frame_latency: 2,
+    };
+    surface.configure(&device, &config);
+
+    let bind_group_layout = display_bind_group_layout(&device);
+    let pipeline = display_pipeline(&device, &bind_group_layout, swapchain_format);
+
+    let transform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Transform Buffer"),
+        size: std::mem::size_of::<DisplayTransform>() as u64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("Display Sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+
+    let color = crate::native_display::DisplayColor::new(
+        crate::color_management::ColorSpace::Srgb,
+        surface_color_space,
+        swapchain_format,
+    );
+    let color_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Display Color Transform"),
+        contents: bytemuck::bytes_of(&color),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    });
+    let (curves_texture, curves_view) = display_curves_texture(&device, &queue);
+    Ok(WgpuDisplay {
+        #[cfg(target_os = "windows")]
+        window: window.clone(),
+        refreshed: Instant::now() - std::time::Duration::from_secs(2),
+        adapter: adapter.clone(),
+        #[cfg(target_os = "windows")]
+        monitor: None,
+        profile: None,
+        _curves_texture: curves_texture,
+        curves_view,
+        capabilities: swapchain_caps,
+        input_space: crate::color_management::ColorSpace::Srgb,
+        color_buffer,
+        color,
+        surface,
+        config,
+        pipeline,
+        bind_group_layout,
+        transform_buffer,
+        latest_transform: DisplayTransform {
+            rect: [0.0, 0.0, 100.0, 100.0],
+            clip: [0.0, 0.0, 10000.0, 10000.0],
+            window: [1280.0, 720.0],
+            image_size: [100.0, 100.0],
+            texture_size: [100.0, 100.0],
+            pixelated: 0.0,
+            _pad: 0.0,
+            bg_primary: [24.0 / 255.0, 24.0 / 255.0, 24.0 / 255.0, 1.0],
+            bg_secondary: [35.0 / 255.0, 35.0 / 255.0, 35.0 / 255.0, 1.0],
+        },
+        sampler,
+        current_bind_group: None,
+    })
+}
+
+pub(crate) fn read_texture_data_roi(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
@@ -1122,30 +1198,6 @@ fn read_texture_data_roi(
     }
 }
 
-fn to_rgba_f16(img: &DynamicImage) -> Vec<f16> {
-    match img {
-        DynamicImage::ImageRgb32F(buffer) => {
-            let mut output = Vec::with_capacity(buffer.as_raw().len() / 3 * 4);
-            for pixel in buffer.pixels() {
-                output.extend([
-                    f16::from_f32(pixel[0]),
-                    f16::from_f32(pixel[1]),
-                    f16::from_f32(pixel[2]),
-                    f16::ONE,
-                ]);
-            }
-            output
-        }
-        DynamicImage::ImageRgba32F(buffer) => {
-            buffer.as_raw().iter().copied().map(f16::from_f32).collect()
-        }
-        _ => {
-            let rgba_f32 = img.to_rgba32f();
-            rgba_f32.into_raw().into_iter().map(f16::from_f32).collect()
-        }
-    }
-}
-
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct BlurParams {
@@ -1214,6 +1266,7 @@ pub struct GpuProcessor {
     gf_blur_v_pipeline: wgpu::ComputePipeline,
     gf_coeffs_pipeline: wgpu::ComputePipeline,
     gf_pack_pipeline: wgpu::ComputePipeline,
+    haze_scene_pipeline: wgpu::ComputePipeline,
 
     main_bgl: wgpu::BindGroupLayout,
     main_pipeline: wgpu::ComputePipeline,
@@ -1277,6 +1330,12 @@ mod guided_tests {
             device: Arc::new(device),
             queue: Arc::new(queue),
             limits,
+            compute: Arc::new(std::sync::OnceLock::new()),
+            source: Arc::new(std::sync::Mutex::new(None)),
+            instance: Arc::new(instance),
+            adapter: adapter.clone(),
+            viewer_display: Arc::new(std::sync::Mutex::new(None)),
+            last_frame: Arc::new(std::sync::Mutex::new(None)),
             display: Arc::new(std::sync::Mutex::new(None)),
         };
         let error_scope = context
@@ -1285,7 +1344,8 @@ mod guided_tests {
         let processor = GpuProcessor::new(context.clone(), 64, 64).unwrap();
         let data: Vec<f16> = (0..64 * 64)
             .flat_map(|i| {
-                let v = if i % 64 < 32 { 0.15 } else { 0.8 };
+                let v = (if i % 64 < 32 { 0.15 } else { 0.8 })
+                    + if i % 3 == 0 { 0.015 } else { -0.0075 };
                 [
                     f16::from_f32(v),
                     f16::from_f32(v),
@@ -1314,7 +1374,7 @@ mod guided_tests {
             bytemuck::cast_slice(&data),
         );
         let view = texture.create_view(&Default::default());
-        let (fine, coarse) = processor.build_guided_coeffs(&view, 64, 64, 0);
+        let (fine, coarse, atmosphere) = processor.build_guided_coeffs(&view, 64, 64, 0);
         for precision in [
             RenderOutputPrecision::EightBit,
             RenderOutputPrecision::SixteenBit,
@@ -1322,6 +1382,7 @@ mod guided_tests {
             let adjustments = crate::image_processing::get_all_adjustments_from_json(
                 &serde_json::json!({
                     "clarity": 30, "structure": 20, "shadows": 40, "highlights": -30, "whites": 10, "dehaze": 15,
+                    "lumaNoiseReduction": 30, "colorNoiseReduction": 40, "sharpness": 20,
                     "whiteBalance": { "temperature": 12000, "tint": 10 }
                 }),
                 false,
@@ -1333,9 +1394,11 @@ mod guided_tests {
                     &view,
                     &fine,
                     &coarse,
+                    &atmosphere,
                     64,
                     64,
                     RenderRequest {
+                        source: None,
                         adjustments,
                         mask_bitmaps: &[],
                         roi: None,
@@ -1365,6 +1428,82 @@ mod guided_tests {
                     );
                 }
             }
+        }
+        let render = |edits: serde_json::Value| {
+            let adjustments = crate::image_processing::get_all_adjustments_from_json(
+                &edits,
+                false,
+                crate::white_balance::WhiteBalance::reference(),
+                None,
+            );
+            match processor
+                .run(
+                    &view,
+                    &fine,
+                    &coarse,
+                    &atmosphere,
+                    64,
+                    64,
+                    RenderRequest {
+                        source: None,
+                        adjustments,
+                        mask_bitmaps: &[],
+                        roi: None,
+                    },
+                    false,
+                    RenderOutputPrecision::SixteenBit,
+                )
+                .unwrap()
+                .0
+            {
+                RenderedPixels::U16(pixels) => pixels,
+                _ => panic!("Expected high-precision pixels"),
+            }
+        };
+        let baseline = render(serde_json::json!({}));
+        assert_eq!(
+            baseline,
+            render(serde_json::json!({"grainAmount":0,"grainSize":100,"grainRoughness":100}))
+        );
+        let grain = serde_json::json!({"grainAmount":80,"grainSize":35,"grainRoughness":70});
+        let grained = render(grain.clone());
+        assert_eq!(
+            grained,
+            render(grain),
+            "Grain must be stable between renders"
+        );
+        assert_ne!(baseline, grained, "Grain must alter pixels when enabled");
+        for amount in [-0.2, 0.2] {
+            let shifted = render(serde_json::json!({ "highlights": amount }));
+            let maximum = shifted
+                .iter()
+                .zip(&baseline)
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap();
+            assert!(
+                maximum < 512,
+                "Highlights jumps near zero: {amount} -> {maximum}"
+            );
+        }
+        let denoised =
+            render(serde_json::json!({ "lumaNoiseReduction": 100, "colorNoiseReduction": 100 }));
+        let variation = |pixels: &[u16]| {
+            let values: Vec<f64> = (16..48)
+                .flat_map(|y| (8..24).map(move |x| pixels[(y * 64 + x) * 4] as f64))
+                .collect();
+            let mean = values.iter().sum::<f64>() / values.len() as f64;
+            values.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+        };
+        assert!(
+            variation(&denoised) < variation(&baseline),
+            "Noise reduction should reduce flat-region variance"
+        );
+        let whites = render(serde_json::json!({ "whites": 50 }));
+        assert!(whites[(32 * 64 + 48) * 4] > baseline[(32 * 64 + 48) * 4]);
+        for amount in [-50, 50] {
+            let haze = render(serde_json::json!({ "dehaze": amount }));
+            assert_ne!(haze, baseline);
         }
         let error = pollster::block_on(error_scope.pop());
         assert!(error.is_none(), "GPU shader validation failed: {error:?}");
@@ -1659,6 +1798,7 @@ impl GpuProcessor {
         let gf_blur_v_pipeline = gf_pipeline("gf_blur_v");
         let gf_coeffs_pipeline = gf_pipeline("gf_coeffs");
         let gf_pack_pipeline = gf_pipeline("gf_pack");
+        let haze_scene_pipeline = gf_pipeline("haze_scene");
 
         let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Image Processing Shader"),
@@ -1780,6 +1920,17 @@ impl GpuProcessor {
 
         bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
             binding: 12 + MAX_MASK_BINDINGS,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        });
+
+        bind_group_layout_entries.push(wgpu::BindGroupLayoutEntry {
+            binding: 13 + MAX_MASK_BINDINGS,
             visibility: wgpu::ShaderStages::COMPUTE,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
@@ -1961,6 +2112,7 @@ impl GpuProcessor {
             gf_blur_v_pipeline,
             gf_coeffs_pipeline,
             gf_pack_pipeline,
+            haze_scene_pipeline,
             main_bgl,
             main_pipeline,
             high_precision_entries: bind_group_layout_entries,
@@ -1989,7 +2141,7 @@ impl GpuProcessor {
         width: u32,
         height: u32,
         is_raw: u32,
-    ) -> (wgpu::TextureView, wgpu::TextureView) {
+    ) -> (wgpu::TextureView, wgpu::TextureView, wgpu::TextureView) {
         let device = &self.context.device;
         let queue = &self.context.queue;
 
@@ -2035,6 +2187,7 @@ impl GpuProcessor {
             })
         };
 
+        let atmosphere = make_view("Dehaze Atmosphere", 2, 1);
         let moments = make_view("GF Moments", lw, lh);
         let tmp = make_view("GF Ping Pong", lw, lh);
         let blurred = make_view("GF Blurred", lw, lh);
@@ -2085,6 +2238,14 @@ impl GpuProcessor {
             cpass.set_bind_group(0, &bind_group, &[]);
             cpass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         };
+        pass(
+            &self.haze_scene_pipeline,
+            input_view,
+            input_view,
+            &atmosphere,
+            &params_coarse,
+            (1, 1),
+        );
         let fine = (lw, lh);
         let coarse = (cw, ch);
 
@@ -2178,7 +2339,7 @@ impl GpuProcessor {
         );
 
         queue.submit(Some(encoder.finish()));
-        (ab, c_moments)
+        (ab, c_moments, atmosphere)
     }
 
     fn high_precision_pipeline(&self) -> &HighPrecisionPipeline {
@@ -2240,6 +2401,7 @@ impl GpuProcessor {
         input_texture_view: &wgpu::TextureView,
         gf_coeffs_view: &wgpu::TextureView,
         gf_dehaze_view: &wgpu::TextureView,
+        atmosphere_view: &wgpu::TextureView,
         width: u32,
         height: u32,
         request: RenderRequest,
@@ -2667,6 +2829,10 @@ impl GpuProcessor {
                     resource: wgpu::BindingResource::TextureView(gf_dehaze_view),
                 });
 
+                bind_group_entries.push(wgpu::BindGroupEntry {
+                    binding: 13 + MAX_MASK_BINDINGS,
+                    resource: wgpu::BindingResource::TextureView(atmosphere_view),
+                });
                 let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("Tile Bind Group"),
                     layout: output_bgl,
@@ -2856,7 +3022,9 @@ fn process_and_get_dynamic_image_inner(
     analytics_config: Option<crate::AnalyticsConfig>,
 ) -> Result<DynamicImage, String> {
     let start_time = Instant::now();
-    let (width, height) = base_image.dimensions();
+    let (width, height) = request
+        .source
+        .map_or_else(|| base_image.dimensions(), |source| source.size);
     let device = &context.device;
     let queue = &context.queue;
 
@@ -2934,7 +3102,13 @@ fn process_and_get_dynamic_image_inner(
     let is_raw = request.adjustments.global.is_raw_image;
 
     if let Some(cache) = &*cache_lock {
-        if cache.transform_hash != transform_hash
+        if request.source.is_some_and(|source| {
+            cache
+                .source
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .is_none_or(|image| !Arc::ptr_eq(&image, source.source))
+        }) || cache.transform_hash != transform_hash
             || cache.width != width
             || cache.height != height
             || cache.is_raw != is_raw
@@ -2954,37 +3128,43 @@ fn process_and_get_dynamic_image_inner(
             timeout: Some(std::time::Duration::from_millis(500)),
         });
 
-        let img_rgba_f16 = to_rgba_f16(base_image);
-        let texture_size = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
+        let texture = if let Some(source) = request.source {
+            source.render(context)?.texture
+        } else {
+            let img_rgba_f16 = crate::gpu_compute::rgba_halves(base_image);
+            let texture_size = wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            };
+            device.create_texture_with_data(
+                queue,
+                &wgpu::TextureDescriptor {
+                    label: Some("Input Texture"),
+                    size: texture_size,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                },
+                TextureDataOrder::MipMajor,
+                bytemuck::cast_slice(&img_rgba_f16),
+            )
         };
-        let texture = device.create_texture_with_data(
-            queue,
-            &wgpu::TextureDescriptor {
-                label: Some("Input Texture"),
-                size: texture_size,
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba16Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            },
-            TextureDataOrder::MipMajor,
-            bytemuck::cast_slice(&img_rgba_f16),
-        );
         let texture_view = texture.create_view(&Default::default());
 
-        let (gf_coeffs_view, gf_dehaze_view) =
+        let (gf_coeffs_view, gf_dehaze_view, atmosphere_view) =
             processor.build_guided_coeffs(&texture_view, width, height, is_raw);
 
         *cache_lock = Some(GpuImageCache {
+            source: request.source.map(|source| Arc::downgrade(source.source)),
             texture,
             texture_view,
             gf_coeffs_view,
             gf_dehaze_view,
+            atmosphere_view,
             is_raw,
             width,
             height,
@@ -3000,6 +3180,7 @@ fn process_and_get_dynamic_image_inner(
         &cache.texture_view,
         &cache.gf_coeffs_view,
         &cache.gf_dehaze_view,
+        &cache.atmosphere_view,
         cache.width,
         cache.height,
         request,
@@ -3184,44 +3365,36 @@ fn process_and_get_dynamic_image_inner(
         let display = display_guard
             .as_mut()
             .ok_or("Native display is unavailable")?;
-        display.latest_transform.image_size = [width as f32, height as f32];
-        display.latest_transform.texture_size =
-            [processor_state.width as f32, processor_state.height as f32];
-
-        queue.write_buffer(
-            &display.transform_buffer,
-            0,
-            bytemuck::bytes_of(&display.latest_transform),
-        );
-
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &display.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: display.transform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&processor.output_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&display.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: display.color_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&display.curves_view),
-                },
-            ],
-            label: None,
+        display.set_frame(
+            device,
+            queue,
+            &processor.output_texture_view,
+            [width as f32, height as f32],
+            [processor_state.width as f32, processor_state.height as f32],
+        )?;
+        *context.last_frame.lock().unwrap() = Some(DisplayFrame {
+            view: processor.output_texture_view.clone(),
+            image_size: [width as f32, height as f32],
+            texture_size: [processor_state.width as f32, processor_state.height as f32],
         });
-        display.current_bind_group = Some(bind_group);
-        display.render(device, queue)?;
+        let mut viewer_guard = context.viewer_display.lock().unwrap();
+        if let Some(viewer) = viewer_guard.as_mut() {
+            let result = viewer
+                .prepare(device, queue, crate::color_management::PREVIEW_COLOR_SPACE)
+                .and_then(|()| {
+                    viewer.set_frame(
+                        device,
+                        queue,
+                        &processor.output_texture_view,
+                        [width as f32, height as f32],
+                        [processor_state.width as f32, processor_state.height as f32],
+                    )
+                });
+            if let Err(error) = result {
+                log::warn!("Second window: {error}");
+                viewer_guard.take();
+            }
+        }
     }
 
     if skip_readback {

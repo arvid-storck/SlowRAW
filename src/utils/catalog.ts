@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from './jobInvoke';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AlbumItem, ImageFile, Invokes, SmartGroup } from '../components/ui/AppProperties';
 import {

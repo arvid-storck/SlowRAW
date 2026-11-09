@@ -20,11 +20,22 @@ fn sample(image: &Rgba32FImage, x: f32, y: f32) -> Option<[f32; 3]> {
     if x < 0.0 || y < 0.0 || x >= image.width() as f32 || y >= image.height() as f32 {
         return None;
     }
-    let pixel = image.get_pixel(
-        x.round().min(image.width() as f32 - 1.0) as u32,
-        y.round().min(image.height() as f32 - 1.0) as u32,
+    let (x0, y0) = (x.floor() as u32, y.floor() as u32);
+    let (x1, y1) = (
+        (x0 + 1).min(image.width() - 1),
+        (y0 + 1).min(image.height() - 1),
     );
-    Some([pixel[0], pixel[1], pixel[2]])
+    let (fx, fy) = (x - x0 as f32, y - y0 as f32);
+    let (a, b, c, d) = (
+        image.get_pixel(x0, y0),
+        image.get_pixel(x1, y0),
+        image.get_pixel(x0, y1),
+        image.get_pixel(x1, y1),
+    );
+    Some(
+        [0, 1, 2]
+            .map(|i| (a[i] + (b[i] - a[i]) * fx) * (1.0 - fy) + (c[i] + (d[i] - c[i]) * fx) * fy),
+    )
 }
 
 fn stamp(
@@ -66,109 +77,149 @@ fn stamp(
     }
 }
 
-fn paint_stroke(
+fn rasterize(lines: &[Value], bounds: (u32, u32, u32, u32), scale: f32) -> Vec<f32> {
+    let mut mask = vec![0.0; bounds.2 as usize * bounds.3 as usize];
+    let mut coverage = vec![0.0; mask.len()];
+    for line in lines {
+        coverage.fill(0.0);
+        let points: Vec<_> = line["points"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(point)
+            .map(|(x, y)| (x * scale, y * scale))
+            .collect();
+        let radius = (number(line.get("brushSize"), 20.0) * scale / 2.0).clamp(0.75, 512.0);
+        let feather = number(line.get("feather"), 0.25).clamp(0.0, 1.0);
+        for &(x, y) in &points {
+            stamp(&mut coverage, bounds, x, y, radius, feather);
+        }
+        for segment in points.windows(2) {
+            let (start, end) = (segment[0], segment[1]);
+            let n = ((end.0 - start.0).hypot(end.1 - start.1) / (radius * 0.5).max(0.5))
+                .ceil()
+                .max(1.0) as u32;
+            for i in 1..n {
+                let t = i as f32 / n as f32;
+                stamp(
+                    &mut coverage,
+                    bounds,
+                    start.0 + (end.0 - start.0) * t,
+                    start.1 + (end.1 - start.1) * t,
+                    radius,
+                    feather,
+                );
+            }
+        }
+        let flow = number(line.get("flow"), 1.0).clamp(0.0, 1.0);
+        let erase = line["tool"].as_str() == Some("eraser");
+        for (mask, coverage) in mask.iter_mut().zip(&coverage) {
+            let alpha = coverage * flow;
+            *mask = if erase {
+                *mask * (1.0 - alpha)
+            } else {
+                *mask + alpha - *mask * alpha
+            };
+        }
+    }
+    mask
+}
+
+fn paint_spot(
     output: &mut Rgba32FImage,
     source: &Rgba32FImage,
-    stroke: &Value,
+    lines: &[Value],
     offset: (f32, f32),
     heal: bool,
     opacity: f32,
 ) {
-    let Some(points) = stroke.get("points").and_then(Value::as_array) else {
-        return;
-    };
-    let points: Vec<_> = points.iter().filter_map(point).collect();
-    if points.is_empty() {
+    if output.width() == 0 || output.height() == 0 {
         return;
     }
-    let radius = (number(stroke.get("brushSize"), 20.0) / 2.0).clamp(0.75, 512.0);
-    let feather = number(stroke.get("feather"), 0.25).clamp(0.0, 1.0);
-    let left = (points.iter().map(|p| p.0).fold(f32::INFINITY, f32::min) - radius)
-        .floor()
-        .max(0.0) as u32;
-    let top = (points.iter().map(|p| p.1).fold(f32::INFINITY, f32::min) - radius)
-        .floor()
-        .max(0.0) as u32;
-    let right = (points.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max) + radius)
-        .ceil()
-        .min(output.width() as f32 - 1.0) as u32;
-    let bottom = (points.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max) + radius)
-        .ceil()
-        .min(output.height() as f32 - 1.0) as u32;
-    if left > right || top > bottom {
-        return;
-    }
-    let width = right - left + 1;
-    let height = bottom - top + 1;
-    let Some(size) = (width as usize).checked_mul(height as usize) else {
-        return;
-    };
-    let mut mask = Vec::new();
-    if mask.try_reserve_exact(size).is_err() {
-        return;
-    }
-    mask.resize(size, 0.0);
-    let bounds = (left, top, width, height);
-    for segment in points.windows(2) {
-        let (start, end) = (segment[0], segment[1]);
-        let distance = (end.0 - start.0).hypot(end.1 - start.1);
-        let steps = (distance / (radius * 0.5).max(1.0)).ceil() as u32;
-        for step in 0..=steps {
-            let t = if steps == 0 {
-                0.0
-            } else {
-                step as f32 / steps as f32
-            };
-            stamp(
-                &mut mask,
-                bounds,
-                start.0 + (end.0 - start.0) * t,
-                start.1 + (end.1 - start.1) * t,
-                radius,
-                feather,
+    let mut rect = (
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    );
+    for line in lines {
+        if line["tool"].as_str() == Some("eraser") {
+            continue;
+        }
+        let radius = (number(line.get("brushSize"), 20.0) / 2.0).clamp(0.75, 512.0);
+        for (x, y) in line["points"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(point)
+        {
+            rect = (
+                rect.0.min(x - radius),
+                rect.1.min(y - radius),
+                rect.2.max(x + radius),
+                rect.3.max(y + radius),
             );
         }
     }
-    if points.len() == 1 {
-        stamp(&mut mask, bounds, points[0].0, points[0].1, radius, feather);
+    if !rect.0.is_finite()
+        || rect.0 >= output.width() as f32
+        || rect.1 >= output.height() as f32
+        || rect.2 < 0.0
+        || rect.3 < 0.0
+    {
+        return;
     }
-
-    let erase = stroke.get("tool").and_then(Value::as_str) == Some("eraser");
-    let mut correction = [0.0f32; 3];
-    if heal && !erase {
-        let mut total = 0.0;
-        let ring = radius * 1.25 + 1.0;
-        let directions = [
-            (1.0, 0.0),
-            (-1.0, 0.0),
-            (0.0, 1.0),
-            (0.0, -1.0),
-            (0.707, 0.707),
-            (0.707, -0.707),
-            (-0.707, 0.707),
-            (-0.707, -0.707),
-        ];
-        for &(x, y) in points.iter().step_by((points.len() / 24).max(1)) {
-            for &(dx, dy) in &directions {
-                let ring_x = x + dx * ring;
-                let ring_y = y + dy * ring;
-                if let (Some(sampled), Some(target)) = (
-                    sample(source, ring_x + offset.0, ring_y + offset.1),
-                    sample(output, ring_x, ring_y),
-                ) {
-                    for channel in 0..3 {
-                        correction[channel] += target[channel] - sampled[channel];
-                    }
-                    total += 1.0;
+    let (left, top) = (
+        rect.0.floor().max(0.0) as u32,
+        rect.1.floor().max(0.0) as u32,
+    );
+    let (right, bottom) = (
+        rect.2.ceil().min(output.width() as f32 - 1.0) as u32,
+        rect.3.ceil().min(output.height() as f32 - 1.0) as u32,
+    );
+    let (width, height) = (right - left + 1, bottom - top + 1);
+    let mask = rasterize(lines, (left, top, width, height), 1.0);
+    let healed = if heal {
+        let padded_left = left.saturating_sub(1);
+        let padded_top = top.saturating_sub(1);
+        let patch_w = (right + 2).min(output.width()) - padded_left;
+        let patch_h = (bottom + 2).min(output.height()) - padded_top;
+        let mut patch = image::Rgb32FImage::new(patch_w, patch_h);
+        let mut patch_mask = image::GrayImage::new(patch_w, patch_h);
+        for y in 0..patch_h {
+            for x in 0..patch_w {
+                let px = x + padded_left;
+                let py = y + padded_top;
+                let p = output.get_pixel(px, py);
+                patch.put_pixel(x, y, image::Rgb([p[0], p[1], p[2]]));
+                if px >= left
+                    && px <= right
+                    && py >= top
+                    && py <= bottom
+                    && mask[((py - top) * width + px - left) as usize] > 0.0
+                {
+                    patch_mask.put_pixel(x, y, image::Luma([255]));
                 }
             }
         }
-        if total > 0.0 {
-            for channel in &mut correction {
-                *channel /= total;
-            }
-        }
-    }
+        let source_patch = image::Rgb32FImage::from_fn(patch_w, patch_h, |x, y| {
+            image::Rgb(
+                sample(
+                    source,
+                    (x + padded_left) as f32 + offset.0,
+                    (y + padded_top) as f32 + offset.1,
+                )
+                .unwrap_or(patch.get_pixel(x, y).0),
+            )
+        });
+        Some((
+            crate::healing::heal_difference(&patch, &source_patch, &patch_mask),
+            padded_left,
+            padded_top,
+        ))
+    } else {
+        None
+    };
 
     for py in top..=bottom {
         for px in left..=right {
@@ -176,25 +227,137 @@ fn paint_stroke(
             if alpha <= 0.0 {
                 continue;
             }
-            let sampled = if erase {
-                sample(source, px as f32, py as f32)
-            } else {
-                sample(source, px as f32 + offset.0, py as f32 + offset.1)
-            };
-            let Some(sampled) = sampled else {
+            let Some(sampled) = sample(source, px as f32 + offset.0, py as f32 + offset.1) else {
                 continue;
             };
             let target = output.get_pixel_mut(px, py);
             for channel in 0..3 {
-                let replacement = if heal && !erase {
-                    (sampled[channel] + correction[channel]).max(0.0)
-                } else {
-                    sampled[channel]
-                };
+                let replacement = healed
+                    .as_ref()
+                    .map_or(sampled[channel], |(patch, left, top)| {
+                        patch.get_pixel(px - left, py - top)[channel]
+                    });
                 target[channel] = target[channel] * (1.0 - alpha) + replacement * alpha;
             }
         }
     }
+}
+
+fn display_mapping(
+    parameters: &Value,
+    width: u32,
+    height: u32,
+) -> impl Fn(f32, f32) -> (f32, f32) + Sync {
+    let frame = parameters
+        .get("coordinateFrame")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let orientation = frame["orientationSteps"].as_u64().unwrap_or(0) % 4;
+    let (ow, oh) = if orientation % 2 == 1 {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let (sin, cos) = (number(frame.get("rotation"), 0.0) * std::f32::consts::PI / 180.0).sin_cos();
+    let mapping = crate::image_processing::geometry_mapping(
+        crate::image_processing::get_geometry_params_from_json(&frame),
+        width,
+        height,
+    );
+    move |x, y| {
+        let (dx, dy) = (x - ow as f32 * 0.5, y - oh as f32 * 0.5);
+        let mut x = cos * dx + sin * dy + ow as f32 * 0.5;
+        let mut y = -sin * dx + cos * dy + oh as f32 * 0.5;
+        if frame["flipHorizontal"].as_bool().unwrap_or(false) {
+            x = ow as f32 - 1.0 - x;
+        }
+        if frame["flipVertical"].as_bool().unwrap_or(false) {
+            y = oh as f32 - 1.0 - y;
+        }
+        let (x, y) = match orientation {
+            1 => (y, height as f32 - 1.0 - x),
+            2 => (width as f32 - 1.0 - x, height as f32 - 1.0 - y),
+            3 => (width as f32 - 1.0 - y, x),
+            _ => (x, y),
+        };
+        let p = mapping(x, y)[1];
+        (p[0], p[1])
+    }
+}
+
+fn image_parameters(parameters: &Value, width: u32, height: u32) -> Value {
+    if !parameters["coordinateFrame"].is_object() {
+        return parameters.clone();
+    }
+    let mapping = display_mapping(parameters, width, height);
+    let mut projected = parameters.clone();
+    if let (Some(x), Some(y)) = (
+        parameters["sourceX"].as_f64(),
+        parameters["sourceY"].as_f64(),
+    ) {
+        let (x, y) = mapping(x as f32, y as f32);
+        projected["sourceX"] = serde_json::json!(x);
+        projected["sourceY"] = serde_json::json!(y);
+    }
+    if let Some(lines) = projected["lines"].as_array_mut() {
+        for line in lines {
+            if let Some(anchor) = line["points"]
+                .as_array()
+                .and_then(|p| p.first())
+                .and_then(point)
+            {
+                let p = mapping(anchor.0, anchor.1);
+                let px = mapping(anchor.0 + 1.0, anchor.1);
+                let py = mapping(anchor.0, anchor.1 + 1.0);
+                let scale = (((px.0 - p.0).hypot(px.1 - p.1) + (py.0 - p.0).hypot(py.1 - p.1))
+                    * 0.5)
+                    .clamp(0.01, 100.0);
+                line["brushSize"] = serde_json::json!(number(line.get("brushSize"), 20.0) * scale);
+            }
+            if let Some(points) = line["points"].as_array_mut() {
+                for p in points {
+                    if let Some((x, y)) = point(p) {
+                        let (x, y) = mapping(x, y);
+                        p["x"] = serde_json::json!(x);
+                        p["y"] = serde_json::json!(y);
+                    }
+                }
+            }
+        }
+    }
+    projected
+}
+
+fn display_source(parameters: &Value, size: (u32, u32), target: (f32, f32)) -> Option<(f32, f32)> {
+    if !parameters["coordinateFrame"].is_object() {
+        return Some(target);
+    }
+    let mapping = display_mapping(parameters, size.0, size.1);
+    let anchor = parameters["lines"].as_array()?.first()?["points"]
+        .as_array()?
+        .first()
+        .and_then(point)?;
+    let mut p = anchor;
+    for _ in 0..16 {
+        let q = mapping(p.0, p.1);
+        let error = (target.0 - q.0, target.1 - q.1);
+        if error.0.hypot(error.1) < 0.02 {
+            return Some(p);
+        }
+        let dx = mapping(p.0 + 1.0, p.1);
+        let dy = mapping(p.0, p.1 + 1.0);
+        let (a, b, c, d) = (dx.0 - q.0, dy.0 - q.0, dx.1 - q.1, dy.1 - q.1);
+        let determinant = a * d - b * c;
+        if determinant.abs() < 1e-8 {
+            return None;
+        }
+        p.0 += (d * error.0 - b * error.1) / determinant;
+        p.1 += (a * error.1 - c * error.0) / determinant;
+        if !p.0.is_finite() || !p.1.is_finite() {
+            return None;
+        }
+    }
+    None
 }
 
 pub fn composite_spot_removals(base: &DynamicImage, adjustments: &Value) -> DynamicImage {
@@ -221,6 +384,7 @@ pub fn composite_spot_removals(base: &DynamicImage, adjustments: &Value) -> Dyna
             let Some(parameters) = sub_mask.get("parameters") else {
                 continue;
             };
+            let parameters = image_parameters(parameters, base.width(), base.height());
             let (source_x, source_y) = (
                 number(parameters.get("sourceX"), f32::NAN),
                 number(parameters.get("sourceY"), f32::NAN),
@@ -252,16 +416,14 @@ pub fn composite_spot_removals(base: &DynamicImage, adjustments: &Value) -> Dyna
             let opacity = container_opacity
                 * (number(sub_mask.get("opacity"), 100.0) / 100.0).clamp(0.0, 1.0);
             let offset = (source_x - anchor.0, source_y - anchor.1);
-            for line in lines {
-                paint_stroke(
-                    output,
-                    source_image.as_ref(),
-                    line,
-                    offset,
-                    kind == Some("heal"),
-                    opacity,
-                );
-            }
+            paint_spot(
+                output,
+                source_image.as_ref(),
+                lines,
+                offset,
+                kind == Some("heal"),
+                opacity,
+            );
         }
     }
     result
@@ -302,6 +464,100 @@ pub fn has_spot_removals(adjustments: &Value) -> bool {
         })
 }
 
+type SourcePreview = (
+    std::sync::Weak<DynamicImage>,
+    std::sync::Arc<image::Rgb32FImage>,
+);
+static SOURCE_PREVIEW: std::sync::Mutex<Option<SourcePreview>> = std::sync::Mutex::new(None);
+
+fn source_preview(base: &std::sync::Arc<DynamicImage>) -> std::sync::Arc<image::Rgb32FImage> {
+    let mut cache = SOURCE_PREVIEW.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((original, preview)) = cache.as_ref()
+        && original
+            .upgrade()
+            .is_some_and(|image| std::sync::Arc::ptr_eq(&image, base))
+    {
+        return preview.clone();
+    }
+    let preview = std::sync::Arc::new(
+        crate::image_processing::downscale_f32_image(base, 1536, 1536).to_rgb32f(),
+    );
+    *cache = Some((std::sync::Arc::downgrade(base), preview.clone()));
+    preview
+}
+
+#[tauri::command]
+pub async fn find_spot_source(
+    state: tauri::State<'_, crate::AppState>,
+    path: String,
+    parameters: Value,
+    heal: bool,
+    variant: usize,
+) -> Result<Option<(f32, f32)>, String> {
+    let base = {
+        let guard = state.original_image.lock().unwrap();
+        let loaded = guard.as_ref().ok_or("No image loaded")?;
+        if loaded.path != path {
+            return Err("Image changed".into());
+        }
+        loaded.image.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let image = source_preview(&base);
+        let scale = image.width() as f32 / base.width() as f32;
+        let projected = image_parameters(&parameters, base.width(), base.height());
+        let lines = projected.get("lines")?.as_array()?;
+        let anchor = lines
+            .iter()
+            .find(|line| line["tool"].as_str() != Some("eraser"))?["points"]
+            .as_array()?
+            .first()
+            .and_then(point)?;
+        let anchor = (anchor.0 * scale, anchor.1 * scale);
+        let coverage = rasterize(lines, (0, 0, image.width(), image.height()), scale);
+        let mask = image::GrayImage::from_raw(
+            image.width(),
+            image.height(),
+            coverage
+                .into_iter()
+                .map(|v| if v > 0.0 { 255 } else { 0 })
+                .collect(),
+        )?;
+        let mut bounds = (usize::MAX, 0, usize::MAX, 0);
+        for (x, y, p) in mask.enumerate_pixels() {
+            if p[0] > 0 {
+                bounds = (
+                    bounds.0.min(x as usize),
+                    bounds.1.max(x as usize),
+                    bounds.2.min(y as usize),
+                    bounds.3.max(y as usize),
+                );
+            }
+        }
+        if bounds.0 == usize::MAX {
+            return None;
+        }
+        let offset = crate::healing::find_source_offset(
+            &image,
+            &mask,
+            bounds,
+            (0, 0, image.width() as i64, image.height() as i64),
+            heal,
+            variant.min(1000),
+        )?;
+        display_source(
+            &parameters,
+            (base.width(), base.height()),
+            (
+                (anchor.0 + offset.0 as f32) / scale,
+                (anchor.1 + offset.1 as f32) / scale,
+            ),
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +584,41 @@ mod tests {
         let edits = json!({"masks": [{"subMasks": [{"type": "heal", "parameters": {"sourceX": 2, "sourceY": 2, "lines": [{"brushSize": 2, "feather": 0, "points": [{"x": 7, "y": 2}]}]}}]}]});
         let result = composite_spot_removals(&base, &edits).to_rgba32f();
         assert!((result.get_pixel(7, 2)[0] - 0.4).abs() < 0.001);
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+    use image::Rgba;
+    use serde_json::json;
+
+    #[test]
+    fn new_spots_map_rotated_coordinates_and_source_roundtrips() {
+        for orientation in 0..4 {
+            let parameters = json!({"coordinateFrame":{"orientationSteps":orientation,"flipHorizontal":true,"rotation":5},"lines":[{"points":[{"x":20,"y":15}]}]});
+            let map = display_mapping(&parameters, 64, 48);
+            let original = map(31.5, 19.25);
+            let display = display_source(&parameters, (64, 48), original).unwrap();
+            assert!((display.0 - 31.5).abs() < 0.03 && (display.1 - 19.25).abs() < 0.03);
+        }
+    }
+
+    #[test]
+    fn erasing_one_spot_preserves_underlying_spots_and_float_colors() {
+        let mut pixels = Rgba32FImage::from_pixel(24, 16, Rgba([0.1, 0.1, 0.1, 1.0]));
+        pixels.put_pixel(2, 4, Rgba([1.5, -0.1, 0.25, 1.0]));
+        pixels.put_pixel(4, 4, Rgba([0.8, 0.4, 0.2, 1.0]));
+        let base = DynamicImage::ImageRgba32F(pixels);
+        let edits = json!({"masks":[{"subMasks":[
+            {"type":"clone","parameters":{"sourceX":2,"sourceY":4,"lines":[{"brushSize":2,"feather":0,"points":[{"x":12,"y":8}]}]}},
+            {"type":"clone","parameters":{"sourceX":4,"sourceY":4,"lines":[
+                {"brushSize":2,"feather":0,"points":[{"x":12,"y":8}]},
+                {"brushSize":4,"feather":0,"tool":"eraser","points":[{"x":12,"y":8}]}
+            ]}}
+        ]}]});
+        let result = composite_spot_removals(&base, &edits).to_rgba32f();
+        assert_eq!(result.get_pixel(12, 8).0, [1.5, -0.1, 0.25, 1.0]);
+        assert_eq!(base.to_rgba32f().get_pixel(12, 8)[0], 0.1);
     }
 }

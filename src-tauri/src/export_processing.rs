@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
@@ -27,18 +26,15 @@ use crate::file_management::{
 use crate::formats::is_raw_file;
 use crate::image_loader::load_and_composite;
 use crate::image_processing::{
-    AllAdjustments, Crop, GpuContext, RenderOutputPrecision, RenderRequest, downscale_f32_image,
+    AllAdjustments, GpuContext, RenderOutputPrecision, RenderRequest,
     get_all_adjustments_from_json, get_or_init_gpu_context,
     process_and_get_dynamic_image_with_precision, resolve_tonemapper_override_from_handle,
 };
 use crate::mask_generation::{MaskDefinition, generate_mask_bitmap};
 use crate::spot_removal::composite_spot_removals;
 
-use crate::cache_utils::{calculate_full_job_hash, calculate_transform_hash};
-use crate::{
-    apply_all_transformations, generate_transformed_preview, get_cached_or_generate_mask,
-    load_settings, resolve_warped_image_for_masks,
-};
+use crate::cache_utils::calculate_full_job_hash;
+use crate::{get_cached_or_generate_mask, load_settings};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(try_from = "u8", into = "u8")]
@@ -532,7 +528,7 @@ impl Drop for ExportTaskGuard {
 #[allow(clippy::too_many_arguments)]
 fn process_image_for_export_pipeline(
     path: &str,
-    base_image: &DynamicImage,
+    base_image: &Arc<DynamicImage>,
     js_adjustments: &Value,
     context: &GpuContext,
     state: &tauri::State<AppState>,
@@ -542,16 +538,22 @@ fn process_image_for_export_pipeline(
     output_precision: RenderOutputPrecision,
     color_space: ColorSpace,
 ) -> Result<DynamicImage, String> {
-    let (transformed_image, unscaled_crop_offset) =
-        apply_all_transformations(Cow::Borrowed(base_image), js_adjustments);
-    let (img_w, img_h) = transformed_image.dimensions();
+    let mut plan = crate::gpu_geometry::Plan::new(base_image, js_adjustments, u32::MAX);
+    plan.patches_applied = true;
+    let unscaled_crop_offset = plan.offset;
+    let (img_w, img_h) = plan.size;
 
     let mask_definitions: Vec<MaskDefinition> = js_adjustments
         .get("masks")
         .and_then(|m| serde_json::from_value(m.clone()).ok())
         .unwrap_or_default();
 
-    let warped_image = resolve_warped_image_for_masks(state, js_adjustments, &mask_definitions);
+    let warped_image = mask_definitions
+        .iter()
+        .any(|mask| mask.requires_warped_image())
+        .then(|| {
+            crate::mask_generation::prepare_mask_source(base_image.as_ref(), js_adjustments, is_raw)
+        });
     let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
         .iter()
         .filter_map(|def| {
@@ -561,7 +563,7 @@ fn process_image_for_export_pipeline(
                 img_h,
                 1.0,
                 unscaled_crop_offset,
-                warped_image.as_deref(),
+                warped_image.as_ref(),
             )
         })
         .collect();
@@ -581,9 +583,10 @@ fn process_image_for_export_pipeline(
     process_and_get_dynamic_image_with_precision(
         context,
         state,
-        transformed_image.as_ref(),
+        base_image,
         unique_hash,
         RenderRequest {
+            source: Some(&plan),
             adjustments: all_adjustments,
             mask_bitmaps: &mask_bitmaps,
             roi: None,
@@ -671,7 +674,7 @@ fn save_image_with_metadata(
 #[allow(clippy::too_many_arguments)]
 fn process_image_for_export(
     path: &str,
-    base_image: &DynamicImage,
+    base_image: &Arc<DynamicImage>,
     js_adjustments: &Value,
     export_settings: &ExportSettings,
     context: &GpuContext,
@@ -872,7 +875,7 @@ fn encode_image_with_options(
 
 #[allow(clippy::too_many_arguments)]
 fn export_masks_for_image(
-    base_image: &DynamicImage,
+    base_image: &Arc<DynamicImage>,
     js_adjustments: &Value,
     export_settings: &ExportSettings,
     output_path_obj: &std::path::Path,
@@ -884,16 +887,22 @@ fn export_masks_for_image(
     cancellation_token: &AtomicBool,
 ) -> Result<(), String> {
     ensure_export_not_cancelled(cancellation_token)?;
-    let (transformed_image, unscaled_crop_offset) =
-        apply_all_transformations(Cow::Borrowed(base_image), js_adjustments);
+    let mut plan = crate::gpu_geometry::Plan::new(base_image, js_adjustments, u32::MAX);
+    plan.patches_applied = true;
+    let unscaled_crop_offset = plan.offset;
     ensure_export_not_cancelled(cancellation_token)?;
-    let (img_w, img_h) = transformed_image.dimensions();
+    let (img_w, img_h) = plan.size;
     let mask_definitions: Vec<MaskDefinition> = js_adjustments
         .get("masks")
         .and_then(|m| serde_json::from_value(m.clone()).ok())
         .unwrap_or_default();
 
-    let warped_image = resolve_warped_image_for_masks(state, js_adjustments, &mask_definitions);
+    let warped_image = mask_definitions
+        .iter()
+        .any(|mask| mask.requires_warped_image())
+        .then(|| {
+            crate::mask_generation::prepare_mask_source(base_image.as_ref(), js_adjustments, is_raw)
+        });
     let mut mask_bitmaps = Vec::with_capacity(mask_definitions.len());
     for definition in &mask_definitions {
         ensure_export_not_cancelled(cancellation_token)?;
@@ -903,7 +912,7 @@ fn export_masks_for_image(
             img_h,
             1.0,
             unscaled_crop_offset,
-            warped_image.as_deref(),
+            warped_image.as_ref(),
         ) {
             mask_bitmaps.push(bitmap);
         }
@@ -939,9 +948,10 @@ fn export_masks_for_image(
             let processed = process_and_get_dynamic_image_with_precision(
                 context,
                 state,
-                transformed_image.as_ref(),
+                base_image,
                 unique_hash,
                 RenderRequest {
+                    source: Some(&plan),
                     adjustments: single_adjustments,
                     mask_bitmaps: &single_bitmaps,
                     roi: None,
@@ -1233,7 +1243,7 @@ async fn export_images_impl(
                 }
 
                 let result: Result<(), String> = (|| {
-                    let base_image = if is_current_edit {
+                    let base_image = Arc::new(if is_current_edit {
                         match crate::get_original_image(&state) {
                             Ok((orig_data_arc, _)) => {
                                 composite_spot_removals(&orig_data_arc, &js_adjustments)
@@ -1277,7 +1287,7 @@ async fn export_images_impl(
                                 .map_err(|e| format!("Failed to load from bytes: {}", e))?
                             }
                         }
-                    };
+                    });
                     ensure_export_not_cancelled(&cancellation_token_clone)?;
 
                     let mut main_export_adjustments = js_adjustments.clone();
@@ -1496,35 +1506,12 @@ pub async fn estimate_export_sizes(
             .ok_or("No original image loaded")?;
         let adjustments_clone = current_edit_adjustments.clone().unwrap();
 
-        let new_transform_hash = calculate_transform_hash(&adjustments_clone);
-        let cached_preview_lock = state.cached_preview.lock().unwrap();
         let preview_dim = settings.editor_preview_resolution.unwrap_or(1920);
-
-        let (preview_image, scale, unscaled_crop_offset) = if let Some(cached) =
-            &*cached_preview_lock
-        {
-            if cached.transform_hash == new_transform_hash && cached.preview_dim == preview_dim {
-                let img = Arc::clone(&cached.image);
-                let s = cached.scale;
-                let offset = cached.unscaled_crop_offset;
-                drop(cached_preview_lock);
-                let owned_img = Arc::try_unwrap(img).unwrap_or_else(|arc| (*arc).clone());
-                (owned_img, s, offset)
-            } else {
-                drop(cached_preview_lock);
-                generate_transformed_preview(
-                    &state,
-                    &loaded_image,
-                    &adjustments_clone,
-                    preview_dim,
-                )?
-            }
-        } else {
-            drop(cached_preview_lock);
-            generate_transformed_preview(&state, &loaded_image, &adjustments_clone, preview_dim)?
-        };
-
-        let (img_w, img_h) = preview_image.dimensions();
+        let plan =
+            crate::gpu_geometry::Plan::new(&loaded_image.image, &adjustments_clone, preview_dim);
+        let (img_w, img_h) = plan.size;
+        let scale = plan.scale;
+        let unscaled_crop_offset = plan.offset;
         let mask_definitions: Vec<MaskDefinition> = adjustments_clone
             .get("masks")
             .and_then(|m| serde_json::from_value(m.clone()).ok())
@@ -1565,9 +1552,10 @@ pub async fn estimate_export_sizes(
         let processed_preview = process_and_get_dynamic_image_with_precision(
             &context,
             &state,
-            &preview_image,
+            &loaded_image.image,
             unique_hash,
             RenderRequest {
+                source: Some(&plan),
                 adjustments: all_adjustments,
                 mask_bitmaps: &mask_bitmaps,
                 roi: None,
@@ -1580,9 +1568,8 @@ pub async fn estimate_export_sizes(
             encode_export_image(&processed_preview, &output_format, &export_settings)?;
         let preview_byte_size = preview_bytes.len();
 
-        let (transformed_full_res, _) =
-            apply_all_transformations(&loaded_image.image, &adjustments_clone);
-        let (full_w, full_h) = transformed_full_res.dimensions();
+        let (full_w, full_h) =
+            crate::gpu_geometry::Plan::new(&loaded_image.image, &adjustments_clone, u32::MAX).size;
 
         let (final_full_w, final_full_h) = if let Some(resize_opts) = &export_settings.resize {
             calculate_resize_target(full_w, full_h, resize_opts)
@@ -1637,58 +1624,42 @@ pub async fn estimate_export_sizes(
         )
         .map_err(|e| e.to_string())?;
 
-        let raw_scale_factor = 1.0f32;
-
-        if let Some(crop_val) = js_adjustments.get_mut("crop")
-            && let Ok(c) = serde_json::from_value::<Crop>(crop_val.clone())
-        {
-            *crop_val = serde_json::to_value(Crop {
-                x: c.x * raw_scale_factor as f64,
-                y: c.y * raw_scale_factor as f64,
-                width: c.width * raw_scale_factor as f64,
-                height: c.height * raw_scale_factor as f64,
-            })
-            .unwrap_or(serde_json::Value::Null);
-        }
-
-        let (transformed_shrunk_res, unscaled_crop_offset) =
-            apply_all_transformations(Cow::Borrowed(&original_image), &js_adjustments);
-        let (shrunk_w, shrunk_h) = transformed_shrunk_res.dimensions();
-
-        let preview_base = if shrunk_w > ESTIMATE_DIM || shrunk_h > ESTIMATE_DIM {
-            downscale_f32_image(transformed_shrunk_res.as_ref(), ESTIMATE_DIM, ESTIMATE_DIM)
-        } else {
-            transformed_shrunk_res.into_owned()
-        };
-
-        let (preview_w, preview_h) = preview_base.dimensions();
-        let gpu_scale = if shrunk_w > 0 {
-            preview_w as f32 / shrunk_w as f32
-        } else {
-            1.0
-        };
-        let total_scale = gpu_scale * raw_scale_factor;
+        let source = Arc::new(original_image);
+        let mut plan = crate::gpu_geometry::Plan::new(&source, &js_adjustments, ESTIMATE_DIM);
+        plan.patches_applied = true;
+        let (preview_w, preview_h) = plan.size;
+        let total_scale = plan.scale;
+        let unscaled_crop_offset = plan.offset;
+        let (full_w, full_h) =
+            crate::gpu_geometry::Plan::new(&source, &js_adjustments, u32::MAX).size;
 
         let mask_definitions: Vec<MaskDefinition> = js_adjustments
             .get("masks")
             .and_then(|m| serde_json::from_value(m.clone()).ok())
             .unwrap_or_default();
-        let scaled_crop_offset = (
-            unscaled_crop_offset.0 * gpu_scale,
-            unscaled_crop_offset.1 * gpu_scale,
-        );
-
+        let warped_image = mask_definitions
+            .iter()
+            .any(|mask| mask.requires_warped_image())
+            .then(|| {
+                crate::mask_generation::prepare_mask_source(
+                    source.as_ref(),
+                    &js_adjustments,
+                    is_raw,
+                )
+            });
         let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
             .iter()
             .filter_map(|def| {
-                get_cached_or_generate_mask(
-                    &state,
+                generate_mask_bitmap(
                     def,
                     preview_w,
                     preview_h,
                     total_scale,
-                    scaled_crop_offset,
-                    &js_adjustments,
+                    (
+                        unscaled_crop_offset.0 * total_scale,
+                        unscaled_crop_offset.1 * total_scale,
+                    ),
+                    warped_image.as_ref(),
                 )
             })
             .collect();
@@ -1708,9 +1679,10 @@ pub async fn estimate_export_sizes(
         let processed_preview = process_and_get_dynamic_image_with_precision(
             &context,
             &state,
-            &preview_base,
+            &source,
             unique_hash,
             RenderRequest {
+                source: Some(&plan),
                 adjustments: all_adjustments,
                 mask_bitmaps: &mask_bitmaps,
                 roi: None,
@@ -1722,9 +1694,6 @@ pub async fn estimate_export_sizes(
         let preview_bytes =
             encode_export_image(&processed_preview, &output_format, &export_settings)?;
         let single_image_estimated_size = preview_bytes.len();
-
-        let full_w = (shrunk_w as f32 / raw_scale_factor).round() as u32;
-        let full_h = (shrunk_h as f32 / raw_scale_factor).round() as u32;
 
         let (final_full_w, final_full_h) = if let Some(resize_opts) = &export_settings.resize {
             calculate_resize_target(full_w, full_h, resize_opts)

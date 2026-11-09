@@ -59,7 +59,7 @@ impl MaskDefinition {
     pub fn requires_warped_image(&self) -> bool {
         self.sub_masks
             .iter()
-            .any(|sm| sm.mask_type == "color" || sm.mask_type == "luminance")
+            .any(|sm| matches!(sm.mask_type.as_str(), "color" | "luminance" | "match-brush"))
     }
 }
 
@@ -964,6 +964,120 @@ mod legacy_brush_tests {
     }
 }
 
+pub fn prepare_mask_source(base: &DynamicImage, adjustments: &Value, is_raw: bool) -> DynamicImage {
+    let mut source = std::borrow::Cow::Borrowed(base);
+    if is_raw {
+        crate::image_processing::apply_cpu_default_raw_processing(source.to_mut());
+    }
+    crate::image_processing::apply_geometry_warp(source, adjustments).into_owned()
+}
+
+fn generate_match_brush_bitmap(
+    parameters: &Value,
+    width: u32,
+    height: u32,
+    scale: f32,
+    crop_offset: (f32, f32),
+    warped_image: Option<&DynamicImage>,
+) -> Option<GrayImage> {
+    let source = warped_image?;
+    let brush: BrushMaskParameters = serde_json::from_value(parameters.clone()).ok()?;
+    let (sw, sh) = source.dimensions();
+    if width == 0 || height == 0 || sw == 0 || sh == 0 || scale <= 0.0 {
+        return Some(GrayImage::new(width, height));
+    }
+    let analysis = crate::match_brush::analyze(source);
+    let orientation = parameters["orientationSteps"].as_u64().unwrap_or(0) % 4;
+    let (ow, oh) = if orientation % 2 == 1 {
+        (sh as f32, sw as f32)
+    } else {
+        (sw as f32, sh as f32)
+    };
+    let angle = parameters["rotation"].as_f64().unwrap_or(0.0) as f32 * PI / 180.0;
+    let (sin, cos) = angle.sin_cos();
+    let to_source = |x: f32, y: f32| {
+        let (dx, dy) = (x - ow * 0.5, y - oh * 0.5);
+        let mut x = cos * dx + sin * dy + ow * 0.5;
+        let mut y = -sin * dx + cos * dy + oh * 0.5;
+        if parameters["flipHorizontal"].as_bool().unwrap_or(false) {
+            x = ow - 1.0 - x;
+        }
+        if parameters["flipVertical"].as_bool().unwrap_or(false) {
+            y = oh - 1.0 - y;
+        }
+        match orientation {
+            1 => (y, sh as f32 - 1.0 - x),
+            2 => (sw as f32 - 1.0 - x, sh as f32 - 1.0 - y),
+            3 => (sw as f32 - 1.0 - y, x),
+            _ => (x, y),
+        }
+    };
+    let tolerance = parameters["tolerance"]
+        .as_f64()
+        .unwrap_or(30.0)
+        .clamp(1.0, 100.0) as f32
+        / 100.0;
+    let sigma_sq = (0.015 + tolerance * tolerance * 0.35).powi(2);
+    let mut result = vec![0.0f32; (width * height) as usize];
+    for line in brush.lines {
+        let Some(anchor) = line.points.first() else {
+            continue;
+        };
+        let (rx, ry) = to_source(anchor.x as f32, anchor.y as f32);
+        let reference = analysis.sample(rx, ry, (sw, sh));
+        let erase = line.tool == "eraser";
+        let mut coverage_line = serde_json::to_value(&line).ok()?;
+        coverage_line["tool"] = Value::String("brush".into());
+        let coverage = generate_brush_bitmap(
+            &serde_json::json!({ "lines": [coverage_line] }),
+            width,
+            height,
+            scale,
+            crop_offset,
+        );
+        result
+            .par_chunks_mut(width as usize)
+            .enumerate()
+            .for_each(|(y, row)| {
+                for (x, value) in row.iter_mut().enumerate() {
+                    let weight = coverage.get_pixel(x as u32, y as u32)[0] as f32 / 255.0;
+                    if weight <= 0.0 {
+                        continue;
+                    }
+                    let similarity = if erase {
+                        1.0
+                    } else {
+                        let (sx, sy) = to_source(
+                            (x as f32 + crop_offset.0) / scale,
+                            (y as f32 + crop_offset.1) / scale,
+                        );
+                        let feature = analysis.sample(sx, sy, (sw, sh));
+                        let distance: f32 = feature
+                            .iter()
+                            .zip(reference)
+                            .map(|(a, b)| (a - b).powi(2))
+                            .sum();
+                        (1.0 - distance / (sigma_sq * 6.25)).max(0.0).powi(3)
+                    };
+                    let alpha = weight * similarity;
+                    *value = if erase {
+                        *value * (1.0 - alpha)
+                    } else {
+                        *value + alpha - *value * alpha
+                    };
+                }
+            });
+    }
+    GrayImage::from_raw(
+        width,
+        height,
+        result
+            .into_iter()
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
+            .collect(),
+    )
+}
+
 fn generate_sub_mask_bitmap(
     sub_mask: &SubMask,
     width: u32,
@@ -994,6 +1108,14 @@ fn generate_sub_mask_bitmap(
         // Read-only compatibility alias: retired selections use their stored strokes.
         "brush" | "quick-selection" | "clone" | "heal" | "liquify" | "retouch" => Some(
             generate_brush_bitmap(&sub_mask.parameters, width, height, scale, crop_offset),
+        ),
+        "match-brush" => generate_match_brush_bitmap(
+            &sub_mask.parameters,
+            width,
+            height,
+            scale,
+            crop_offset,
+            warped_image,
         ),
         "flow" => Some(generate_flow_bitmap(
             &sub_mask.parameters,
@@ -1205,4 +1327,77 @@ pub fn get_cached_or_generate_mask(
     }
 
     generated
+}
+
+#[cfg(test)]
+mod match_brush_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn match_brush_follows_color_and_erases_in_rotated_space() {
+        let source = DynamicImage::ImageRgb32F(image::Rgb32FImage::from_fn(64, 32, |x, _| {
+            if x < 32 {
+                image::Rgb([0.4, 0.4, 0.4])
+            } else {
+                image::Rgb([0.9, 0.05, 0.05])
+            }
+        }));
+        for orientation in [0, 1] {
+            let (anchor, end, size) = if orientation == 0 {
+                ((20, 16), (48, 16), (64, 32))
+            } else {
+                ((16, 20), (16, 48), (32, 64))
+            };
+            let mut parameters = json!({"orientationSteps":orientation,"tolerance":10,"lines":[
+                {"brushSize":24,"feather":0,"tool":"brush","points":[{"x":anchor.0,"y":anchor.1},{"x":end.0,"y":end.1}]}
+            ]});
+            let mask = generate_match_brush_bitmap(
+                &parameters,
+                size.0,
+                size.1,
+                1.0,
+                (0.0, 0.0),
+                Some(&source),
+            )
+            .unwrap();
+            assert!(mask.get_pixel(anchor.0, anchor.1)[0] > 240);
+            assert!(
+                mask.get_pixel(end.0, end.1)[0] < 10,
+                "Brush must reject the other color"
+            );
+            assert_eq!(mask.get_pixel(0, 0)[0], 0);
+            parameters["lines"].as_array_mut().unwrap().push(json!({"brushSize":6,"feather":0,"tool":"eraser","points":[{"x":anchor.0,"y":anchor.1}]}));
+            let erased = generate_match_brush_bitmap(
+                &parameters,
+                size.0,
+                size.1,
+                1.0,
+                (0.0, 0.0),
+                Some(&source),
+            )
+            .unwrap();
+            assert_eq!(erased.get_pixel(anchor.0, anchor.1)[0], 0);
+        }
+    }
+
+    #[test]
+    fn match_brush_keeps_hdr_tone_differences_and_cache_tracks_pixels() {
+        let first = DynamicImage::ImageRgb32F(image::Rgb32FImage::from_fn(32, 16, |x, _| {
+            image::Rgb([if x < 16 { 1.0 } else { 4.0 }; 3])
+        }));
+        let analysis = crate::match_brush::analyze(&first);
+        assert!(
+            (analysis.sample(4.0, 8.0, (32, 16))[0] - analysis.sample(26.0, 8.0, (32, 16))[0])
+                .abs()
+                > 0.1
+        );
+        let changed =
+            DynamicImage::ImageRgb32F(image::Rgb32FImage::from_pixel(32, 16, image::Rgb([0.1; 3])));
+        let second = crate::match_brush::analyze(&changed);
+        assert_ne!(
+            analysis.sample(4.0, 8.0, (32, 16)),
+            second.sample(4.0, 8.0, (32, 16))
+        );
+    }
 }

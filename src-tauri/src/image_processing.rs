@@ -3,8 +3,7 @@ use crate::guided_perspective::{GuideLine, compute_guided_homography, count_vali
 use crate::white_balance::{self, WhiteBalance};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat3, Vec2, Vec3};
-use image::{DynamicImage, GenericImageView, Rgb32FImage, Rgba};
-use imageproc::geometric_transformations::{Border, Interpolation, rotate_about_center};
+use image::{DynamicImage, GenericImageView, Rgb32FImage};
 use nalgebra::{Matrix3 as NaMatrix3, Vector3 as NaVector3};
 use rawler::decoders::Orientation;
 use rayon::prelude::*;
@@ -12,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_json::json;
 use std::borrow::Cow;
-use std::f32::consts::PI;
 use std::sync::Arc;
 
 pub use crate::gpu_processing::{
@@ -506,83 +504,6 @@ fn build_transform_matrices(
     (forward, cx, cy, half_diagonal)
 }
 
-struct TcaContext<'a> {
-    src_raw: &'a [f32],
-    src_width: usize,
-    src_height: usize,
-    cx: f32,
-    cy: f32,
-}
-
-#[inline(always)]
-fn interpolate_pixel_with_tca(
-    tca: &TcaContext,
-    base_x: f32,
-    base_y: f32,
-    vr: f32,
-    vb: f32,
-    pixel_out: &mut [f32],
-) {
-    let src_raw = tca.src_raw;
-    let src_width = tca.src_width;
-    let src_height = tca.src_height;
-    let cx = tca.cx;
-    let cy = tca.cy;
-    let gx = base_x;
-    let gy = base_y;
-
-    let rx = cx + (base_x - cx) * vr;
-    let ry = cy + (base_y - cy) * vr;
-
-    let bx = cx + (base_x - cx) * vb;
-    let by = cy + (base_y - cy) * vb;
-
-    let sample_channel = |target_x: f32, target_y: f32, channel_idx: usize| -> f32 {
-        if target_x.is_nan() || target_y.is_nan() {
-            return 0.0;
-        }
-
-        let x_clamped = target_x.clamp(0.0, src_width as f32 - 1.0);
-        let y_clamped = target_y.clamp(0.0, src_height as f32 - 1.0);
-
-        let mut x0 = x_clamped.floor() as usize;
-        let mut y0 = y_clamped.floor() as usize;
-
-        if x0 >= src_width - 1 {
-            x0 = src_width.saturating_sub(2);
-        }
-        if y0 >= src_height - 1 {
-            y0 = src_height.saturating_sub(2);
-        }
-
-        let wx = x_clamped - x0 as f32;
-        let wy = y_clamped - y0 as f32;
-        let one_minus_wx = 1.0 - wx;
-        let one_minus_wy = 1.0 - wy;
-
-        let stride = src_width * 3;
-        let idx_row0 = y0 * stride;
-        let idx_row1 = idx_row0 + stride;
-
-        let idx_p00 = idx_row0 + x0 * 3 + channel_idx;
-
-        unsafe {
-            let p00 = *src_raw.get_unchecked(idx_p00);
-            let p10 = *src_raw.get_unchecked(idx_p00 + 3);
-            let p01 = *src_raw.get_unchecked(idx_row1 + x0 * 3 + channel_idx);
-            let p11 = *src_raw.get_unchecked(idx_row1 + x0 * 3 + 3 + channel_idx);
-
-            let top = p00 * one_minus_wx + p10 * wx;
-            let bot = p01 * one_minus_wx + p11 * wx;
-            top * one_minus_wy + bot * wy
-        }
-    };
-
-    pixel_out[0] = sample_channel(rx, ry, 0);
-    pixel_out[1] = sample_channel(gx, gy, 1);
-    pixel_out[2] = sample_channel(bx, by, 2);
-}
-
 fn compute_lens_auto_crop_scale(params: &GeometryParams, width: f32, height: f32) -> f64 {
     let cx = (width / 2.0) as f64;
     let cy = (height / 2.0) as f64;
@@ -671,11 +592,11 @@ fn compute_lens_auto_crop_scale(params: &GeometryParams, width: f32, height: f32
     }
 }
 
-pub fn warp_image_geometry(image: &DynamicImage, params: GeometryParams) -> DynamicImage {
-    let src_img = image.to_rgb32f();
-    let (width, height) = src_img.dimensions();
-    let mut out_buffer = vec![0.0f32; (width * height * 3) as usize];
-
+pub fn geometry_mapping(
+    params: GeometryParams,
+    width: u32,
+    height: u32,
+) -> impl Fn(f32, f32) -> [[f32; 3]; 3] + Sync {
     let (forward_transform, cx, cy, half_diagonal) =
         build_transform_matrices(&params, width as f32, height as f32);
     let inv = forward_transform
@@ -744,133 +665,137 @@ pub fn warp_image_geometry(image: &DynamicImage, params: GeometryParams) -> Dyna
         && (vk1.abs() > 1e-6 || vk2.abs() > 1e-6 || vk3.abs() > 1e-6)
         && lens_vig_amt > 0.01;
 
-    let src_raw = src_img.as_raw();
-    let width_usize = width as usize;
-    let height_usize = height as usize;
-    let tca_ctx = TcaContext {
-        src_raw,
-        src_width: width_usize,
-        src_height: height_usize,
-        cx,
-        cy,
-    };
+    move |x, y| {
+        let current_vec = origin_vec + step_vec_x * x + step_vec_y * y;
+        if current_vec.z.abs() <= 1e-6 {
+            return [[-1.0, -1.0, 0.0]; 3];
+        }
+        let inv_z = 1.0 / current_vec.z;
+        let mut src_x = current_vec.x * inv_z;
+        let mut src_y = current_vec.y * inv_z;
 
-    out_buffer
-        .par_chunks_exact_mut(width_usize * 3)
-        .enumerate()
-        .for_each(|(y, row_pixel_data)| {
-            let y_f = y as f32;
-            let mut current_vec = origin_vec + (step_vec_y * y_f);
+        if auto_crop_scale > 1.0 {
+            src_x = cx + (src_x - cx) / auto_crop_scale;
+            src_y = cy + (src_y - cy) / auto_crop_scale;
+        }
 
-            for pixel in row_pixel_data.as_chunks_mut::<3>().0.iter_mut() {
-                if current_vec.z.abs() > 1e-6 {
-                    let inv_z = 1.0 / current_vec.z;
-                    let mut src_x = current_vec.x * inv_z;
-                    let mut src_y = current_vec.y * inv_z;
+        if has_lens_correction {
+            let dx = (src_x - cx) as f64;
+            let dy = (src_y - cy) as f64;
+            let ru = (dx * dx + dy * dy).sqrt();
 
-                    if auto_crop_scale > 1.0 {
-                        src_x = cx + (src_x - cx) / auto_crop_scale;
-                        src_y = cy + (src_y - cy) / auto_crop_scale;
-                    }
+            if ru > 1e-6 {
+                let ru_norm = ru / hd;
+                let ru_norm2 = ru_norm * ru_norm;
 
-                    if has_lens_correction {
-                        let dx = (src_x - cx) as f64;
-                        let dy = (src_y - cy) as f64;
-                        let ru = (dx * dx + dy * dy).sqrt();
+                let rd_norm = if is_ptlens {
+                    let a = lk1;
+                    let b = lk2;
+                    let c = lk3;
+                    let d = 1.0 - a - b - c;
+                    ru_norm * (a * ru_norm2 * ru_norm + b * ru_norm2 + c * ru_norm + d)
+                } else {
+                    ru_norm
+                        * (1.0
+                            + lk1 * ru_norm2
+                            + lk2 * (ru_norm2 * ru_norm2)
+                            + lk3 * (ru_norm2 * ru_norm2 * ru_norm2))
+                };
 
-                        if ru > 1e-6 {
-                            let ru_norm = ru / hd;
-                            let ru_norm2 = ru_norm * ru_norm;
+                let effective_r_norm = ru_norm + (rd_norm - ru_norm) * lens_dist_amt;
+                let scale = effective_r_norm / ru_norm;
 
-                            let rd_norm = if is_ptlens {
-                                let a = lk1;
-                                let b = lk2;
-                                let c = lk3;
-                                let d = 1.0 - a - b - c;
-                                ru_norm * (a * ru_norm2 * ru_norm + b * ru_norm2 + c * ru_norm + d)
-                            } else {
-                                ru_norm
-                                    * (1.0
-                                        + lk1 * ru_norm2
-                                        + lk2 * (ru_norm2 * ru_norm2)
-                                        + lk3 * (ru_norm2 * ru_norm2 * ru_norm2))
-                            };
+                src_x = cx + (dx * scale) as f32;
+                src_y = cy + (dy * scale) as f32;
+            }
+        }
 
-                            let effective_r_norm = ru_norm + (rd_norm - ru_norm) * lens_dist_amt;
-                            let scale = effective_r_norm / ru_norm;
+        if k_distortion.abs() > 1e-5 {
+            let dx = (src_x - cx) as f64;
+            let dy = (src_y - cy) as f64;
+            let r2_norm = (dx * dx + dy * dy) * max_radius_sq_inv;
+            let f = 1.0 + k_distortion * r2_norm;
 
-                            src_x = cx + (dx * scale) as f32;
-                            src_y = cy + (dy * scale) as f32;
-                        }
-                    }
+            src_x = cx + (dx * f) as f32;
+            src_y = cy + (dy * f) as f32;
+        }
 
-                    if k_distortion.abs() > 1e-5 {
-                        let dx = (src_x - cx) as f64;
-                        let dy = (src_y - cy) as f64;
-                        let r2_norm = (dx * dx + dy * dy) * max_radius_sq_inv;
-                        let f = 1.0 + k_distortion * r2_norm;
+        let mut channels = [[src_x, src_y, 1.0]; 3];
+        if let Some(profile) = &params.embedded_lens {
+            for (channel, output) in channels.iter_mut().enumerate() {
+                let (uv, gain) = profile.sample(
+                    [
+                        src_x as f64 / width.saturating_sub(1).max(1) as f64,
+                        src_y as f64 / height.saturating_sub(1).max(1) as f64,
+                    ],
+                    channel,
+                    embedded_distortion,
+                    embedded_tca,
+                    embedded_vignette,
+                );
+                *output = [
+                    (uv[0] * width.saturating_sub(1) as f64) as f32,
+                    (uv[1] * height.saturating_sub(1) as f64) as f32,
+                    gain,
+                ];
+            }
+        } else if has_tca {
+            channels[0][0] = cx + (src_x - cx) * vr;
+            channels[0][1] = cy + (src_y - cy) * vr;
+            channels[2][0] = cx + (src_x - cx) * vb;
+            channels[2][1] = cy + (src_y - cy) * vb;
+        }
+        if has_vignetting {
+            let dx = (src_x - cx) as f64;
+            let dy = (src_y - cy) as f64;
+            let ru = (dx * dx + dy * dy).sqrt();
+            let ru_norm = ru / hd;
+            let ru_norm2 = ru_norm * ru_norm;
 
-                        src_x = cx + (dx * f) as f32;
-                        src_y = cy + (dy * f) as f32;
-                    }
+            let v_factor = 1.0
+                + vk1 * ru_norm2
+                + vk2 * (ru_norm2 * ru_norm2)
+                + vk3 * (ru_norm2 * ru_norm2 * ru_norm2);
 
-                    if let Some(profile) = &params.embedded_lens {
-                        for channel in 0..3 {
-                            let (uv, gain) = profile.sample(
-                                [
-                                    src_x as f64 / (width - 1) as f64,
-                                    src_y as f64 / (height - 1) as f64,
-                                ],
-                                channel,
-                                embedded_distortion,
-                                embedded_tca,
-                                embedded_vignette,
-                            );
-                            let mut sample = [0.0; 3];
-                            interpolate_pixel(
-                                src_raw,
-                                width_usize,
-                                height_usize,
-                                (uv[0] * (width - 1) as f64) as f32,
-                                (uv[1] * (height - 1) as f64) as f32,
-                                &mut sample,
-                            );
-                            pixel[channel] = sample[channel] * gain;
-                        }
-                    } else if has_tca {
-                        interpolate_pixel_with_tca(&tca_ctx, src_x, src_y, vr, vb, pixel);
-                    } else {
-                        interpolate_pixel(src_raw, width_usize, height_usize, src_x, src_y, pixel);
-                    }
+            if v_factor > 1e-6 {
+                let correction_gain = 1.0 / v_factor;
+                let final_gain = 1.0 + (correction_gain - 1.0) * lens_vig_amt;
 
-                    if has_vignetting {
-                        let dx = (src_x - cx) as f64;
-                        let dy = (src_y - cy) as f64;
-                        let ru = (dx * dx + dy * dy).sqrt();
-                        let ru_norm = ru / hd;
-                        let ru_norm2 = ru_norm * ru_norm;
-
-                        let v_factor = 1.0
-                            + vk1 * ru_norm2
-                            + vk2 * (ru_norm2 * ru_norm2)
-                            + vk3 * (ru_norm2 * ru_norm2 * ru_norm2);
-
-                        if v_factor > 1e-6 {
-                            let correction_gain = 1.0 / v_factor;
-                            let final_gain = 1.0 + (correction_gain - 1.0) * lens_vig_amt;
-
-                            pixel[0] *= final_gain as f32;
-                            pixel[1] *= final_gain as f32;
-                            pixel[2] *= final_gain as f32;
-                        }
-                    }
+                for channel in &mut channels {
+                    channel[2] *= final_gain as f32;
                 }
-                current_vec += step_vec_x;
+            }
+        }
+        channels
+    }
+}
+
+pub fn warp_image_geometry(image: &DynamicImage, params: GeometryParams) -> DynamicImage {
+    let src = image.to_rgb32f();
+    let (width, height) = src.dimensions();
+    let mapping = geometry_mapping(params, width, height);
+    let mut out = Rgb32FImage::new(width, height);
+    out.as_mut()
+        .par_chunks_exact_mut(width as usize * 3)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for (x, pixel) in row.chunks_exact_mut(3).enumerate() {
+                for (channel, [sx, sy, gain]) in mapping(x as f32, y as f32).into_iter().enumerate()
+                {
+                    let mut sample = [0.0; 3];
+                    interpolate_pixel(
+                        src.as_raw(),
+                        width as usize,
+                        height as usize,
+                        sx,
+                        sy,
+                        &mut sample,
+                    );
+                    pixel[channel] = sample[channel] * gain;
+                }
             }
         });
-
-    let out_img = Rgb32FImage::from_vec(width, height, out_buffer).unwrap();
-    DynamicImage::ImageRgb32F(out_img)
+    DynamicImage::ImageRgb32F(out)
 }
 
 pub fn apply_cpu_default_raw_processing(image: &mut DynamicImage) {
@@ -989,76 +914,6 @@ pub fn apply_coarse_rotation<'a>(
     }
 }
 
-pub fn apply_rotation<'a>(
-    image: impl IntoCowImage<'a>,
-    rotation_degrees: f32,
-) -> Cow<'a, DynamicImage> {
-    let image = image.into_cow();
-    if rotation_degrees % 360.0 == 0.0 {
-        return image;
-    }
-
-    let rgba_image = image.to_rgba32f();
-    let rotated = rotate_about_center(
-        &rgba_image,
-        rotation_degrees * PI / 180.0,
-        Interpolation::Bilinear,
-        Border::Constant(Rgba([0.0f32, 0.0, 0.0, 0.0])),
-    );
-
-    Cow::Owned(DynamicImage::ImageRgba32F(rotated))
-}
-
-pub fn apply_crop<'a>(image: impl IntoCowImage<'a>, crop_value: &Value) -> Cow<'a, DynamicImage> {
-    let image = image.into_cow();
-    if crop_value.is_null() {
-        return image;
-    }
-
-    if let Ok(crop) = serde_json::from_value::<Crop>(crop_value.clone()) {
-        let x = crop.x.round() as u32;
-        let y = crop.y.round() as u32;
-        let width = crop.width.round() as u32;
-        let height = crop.height.round() as u32;
-
-        if width > 0 && height > 0 {
-            let (img_w, img_h) = image.dimensions();
-            if x < img_w && y < img_h {
-                let new_width = (img_w - x).min(width);
-                let new_height = (img_h - y).min(height);
-
-                if new_width > 0 && new_height > 0 {
-                    if x == 0 && y == 0 && new_width == img_w && new_height == img_h {
-                        return image;
-                    }
-                    return Cow::Owned(image.crop_imm(x, y, new_width, new_height));
-                }
-            }
-        }
-    }
-    image
-}
-
-pub fn apply_flip<'a>(
-    image: impl IntoCowImage<'a>,
-    horizontal: bool,
-    vertical: bool,
-) -> Cow<'a, DynamicImage> {
-    let image = image.into_cow();
-    if !horizontal && !vertical {
-        return image;
-    }
-
-    let mut img = image.into_owned();
-    if horizontal {
-        img = img.fliph();
-    }
-    if vertical {
-        img = img.flipv();
-    }
-    Cow::Owned(img)
-}
-
 pub fn is_geometry_identity(params: &GeometryParams) -> bool {
     if let Some(profile) = &params.embedded_lens {
         if (profile.has_warp()
@@ -1108,14 +963,11 @@ pub fn is_geometry_identity(params: &GeometryParams) -> bool {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AutoAdjustmentResults {
     pub exposure: f64,
-    pub brightness: f64,
     pub contrast: f64,
     pub highlights: f64,
     pub shadows: f64,
     pub vibrancy: f64,
     pub vignette_amount: f64,
-    pub temperature: f64,
-    pub tint: f64,
     pub dehaze: f64,
     pub clarity: f64,
     pub centre: f64,
@@ -2323,6 +2175,12 @@ pub fn get_all_adjustments_from_json(
 
 #[derive(Clone)]
 pub struct GpuContext {
+    pub compute: Arc<std::sync::OnceLock<crate::gpu_compute::ComputePipelines>>,
+    pub source: Arc<std::sync::Mutex<Option<crate::gpu_geometry::Source>>>,
+    pub instance: Arc<wgpu::Instance>,
+    pub adapter: wgpu::Adapter,
+    pub viewer_display: Arc<std::sync::Mutex<Option<WgpuDisplay>>>,
+    pub last_frame: Arc<std::sync::Mutex<Option<crate::gpu_processing::DisplayFrame>>>,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
     pub limits: wgpu::Limits,
@@ -2946,7 +2804,6 @@ pub fn perform_auto_analysis(image: &DynamicImage) -> AutoAdjustmentResults {
     const BLACKS_SCALE: f64 = 0.5;
     const WHITES_SCALE: f64 = 0.2;
     const EXPOSURE_OUTPUT_SCALE: f64 = 20.0;
-    const BRIGHTNESS_SCALE: f64 = 0.007;
 
     let analysis_preview = downscale_f32_image(image, ANALYSIS_MAX_DIM, ANALYSIS_MAX_DIM);
     let rgb_image = analysis_preview.to_rgb8();
@@ -3097,22 +2954,17 @@ pub fn perform_auto_analysis(image: &DynamicImage) -> AutoAdjustmentResults {
     }
 
     let adj_p1 = percentile(&adjusted_luma_hist, 0.01);
-    let adj_p50 = percentile(&adjusted_luma_hist, 0.50);
     let adj_p99 = percentile(&adjusted_luma_hist, 0.99);
     let blacks: f64 = -(adj_p1 as f64 * BLACKS_SCALE);
     let whites: f64 = (adj_p99 as f64 - 255.0) * WHITES_SCALE;
-    let brightness: f64 = (MID_GRAY - adj_p50 as f64) * BRIGHTNESS_SCALE;
 
     AutoAdjustmentResults {
         exposure: (exposure / EXPOSURE_OUTPUT_SCALE).clamp(-5.0, 5.0),
-        brightness: brightness.clamp(-5.0, 5.0),
         contrast: contrast.clamp(-100.0, 100.0),
         highlights: highlights.clamp(-100.0, 100.0),
         shadows: shadows.clamp(-100.0, 100.0),
         vibrancy: vibrancy.clamp(-100.0, 100.0),
         vignette_amount: vignette_amount.clamp(-100.0, 100.0),
-        temperature: 0.0,
-        tint: 0.0,
         dehaze: dehaze.clamp(-100.0, 100.0),
         clarity: clarity.clamp(-100.0, 100.0),
         centre: centre.clamp(-100.0, 100.0),
@@ -3121,26 +2973,42 @@ pub fn perform_auto_analysis(image: &DynamicImage) -> AutoAdjustmentResults {
     }
 }
 
-pub fn auto_results_to_json(results: &AutoAdjustmentResults) -> serde_json::Value {
-    json!({
-        "exposure": results.exposure,
-        "brightness": results.brightness,
-        "contrast": results.contrast,
-        "highlights": results.highlights,
-        "shadows": results.shadows,
-        "vibrance": results.vibrancy,
-        "vignetteAmount": results.vignette_amount,
-        "clarity": results.clarity,
-        "centré": results.centre,
+#[cfg(test)]
+mod auto_levels_tests {
+    use super::*;
 
-        "dehaze": results.dehaze,
-        "sectionVisibility": {
-            "basic": true,
-            "color": true,
-            "effects": true
-        },
-        "whites": results.whites,
-        "blacks": results.blacks
+    #[test]
+    fn subtle_levels_keep_manual_brightness_and_detail_settings() {
+        let image = DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            32,
+            32,
+            image::Rgb([100, 110, 120]),
+        ));
+        let analysis = perform_auto_analysis(&image);
+        let edits = auto_results_to_json(&analysis);
+        assert_eq!(edits["exposure"].as_f64().unwrap(), analysis.exposure * 0.5);
+        assert_eq!(edits["contrast"].as_f64().unwrap(), analysis.contrast * 0.5);
+        assert!(edits.get("brightness").is_none());
+        assert!(edits.get("sharpness").is_none());
+        assert!(edits.get("lumaNoiseReduction").is_none());
+    }
+}
+
+pub fn auto_results_to_json(results: &AutoAdjustmentResults) -> serde_json::Value {
+    let subtle = |value: f64| (value * 0.5).clamp(-100.0, 100.0);
+    json!({
+        "exposure": (results.exposure * 0.5).clamp(-5.0, 5.0),
+        "contrast": subtle(results.contrast),
+        "highlights": subtle(results.highlights),
+        "shadows": subtle(results.shadows),
+        "whites": subtle(results.whites),
+        "blacks": subtle(results.blacks),
+        "vibrance": subtle(results.vibrancy),
+        "clarity": subtle(results.clarity),
+        "dehaze": subtle(results.dehaze),
+        "centré": subtle(results.centre),
+        "vignetteAmount": subtle(results.vignette_amount),
+        "sectionVisibility": { "basic": true, "color": true, "effects": true }
     })
 }
 

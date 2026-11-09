@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { Row } from './LibraryItems';
 import { useShallow } from 'zustand/react/shallow';
 import { useLibraryStore } from '../../../store/useLibraryStore';
-import { LibraryViewMode, SortDirection, LibraryDisplayMode, ThumbnailAspectRatio } from '../../ui/AppProperties';
+import { LibraryViewMode, SortDirection, LibraryDisplayMode } from '../../ui/AppProperties';
 import Text from '../../ui/Text';
 import { TextColors, TextVariants, TextWeights, TEXT_COLOR_KEYS } from '../../../types/typography';
 import { useProcessStore } from '../../../store/useProcessStore';
@@ -156,64 +156,6 @@ const groupImagesByFolder = (images: any[], baseFolderPath: string | null) => {
   }));
 };
 
-export function buildJustifiedRows(
-  images: any[],
-  ratioMap: Record<string, number>,
-  containerWidth: number,
-  targetHeight: number,
-  gap: number,
-) {
-  const rows: any[] = [];
-  let currentRow: { image: any; ratio: number }[] = [];
-  let currentWidth = 0;
-
-  for (const img of images) {
-    const ratio = ratioMap[img.path] || 1.5;
-    currentRow.push({ image: img, ratio });
-    currentWidth += ratio * targetHeight;
-
-    const totalGaps = (currentRow.length - 1) * gap;
-
-    if (currentWidth + totalGaps >= containerWidth) {
-      const availableForImages = containerWidth - totalGaps;
-      const totalRatio = currentRow.reduce((sum, item) => sum + item.ratio, 0);
-      const computedHeight = Math.floor(availableForImages / totalRatio);
-
-      let usedWidth = 0;
-      const justifiedWidths = currentRow.map((item, index) => {
-        // Assign remainder to the last item to prevent sub-pixel rounding gaps
-        if (index === currentRow.length - 1) {
-          return availableForImages - usedWidth;
-        }
-        const w = Math.floor(item.ratio * computedHeight);
-        usedWidth += w;
-        return w;
-      });
-
-      rows.push({
-        type: 'images',
-        rowHeight: computedHeight,
-        images: currentRow.map((item) => item.image),
-        justifiedWidths,
-      });
-
-      currentRow = [];
-      currentWidth = 0;
-    }
-  }
-
-  if (currentRow.length > 0) {
-    rows.push({
-      type: 'images',
-      rowHeight: targetHeight,
-      images: currentRow.map((item) => item.image),
-      justifiedWidths: currentRow.map((item) => Math.floor(item.ratio * targetHeight)),
-    });
-  }
-
-  return rows;
-}
-
 export default function LibraryGrid(props: any) {
   const {
     imageList,
@@ -247,40 +189,10 @@ export default function LibraryGrid(props: any) {
   const [collapsedRecursiveFolders, setCollapsedRecursiveFolders] = useState<Set<string>>(new Set());
   const libraryContainerRef = useRef<HTMLDivElement>(null);
   const gridObserverRef = useRef<ResizeObserver | null>(null);
-  const loadedThumbnailsRef = useRef(new Set<string>());
   const requestQueueRef = useRef<Set<string>>(new Set());
   const requestTimeoutRef = useRef<any>(null);
   const exifOverlay = useSettingsStore((s) => s.appSettings?.exifOverlay || ExifOverlay.Off);
   const showExifCols = exifOverlay !== ExifOverlay.Off;
-
-  const ratioMapRef = useRef<Record<string, number>>({});
-  const [ratioMapVersion, setRatioMapVersion] = useState(0);
-  const ratioTimeoutRef = useRef<any>(null);
-
-  const handleAspectRatioLoaded = useCallback(
-    (path: string, ratio: number) => {
-      if (Math.abs((ratioMapRef.current[path] || 0) - ratio) > 0.01) {
-        ratioMapRef.current[path] = ratio;
-
-        if (!ratioTimeoutRef.current) {
-          ratioTimeoutRef.current = setTimeout(() => {
-            if (listHandle && typeof (listHandle as any).resetAfterIndex === 'function') {
-              (listHandle as any).resetAfterIndex(0);
-            }
-            setRatioMapVersion((v) => v + 1);
-            ratioTimeoutRef.current = null;
-          }, 150);
-        }
-      }
-    },
-    [listHandle],
-  );
-
-  useEffect(() => {
-    return () => {
-      if (ratioTimeoutRef.current) clearTimeout(ratioTimeoutRef.current);
-    };
-  }, []);
 
   useEffect(() => {
     const el = libraryContainerRef.current;
@@ -371,10 +283,6 @@ export default function LibraryGrid(props: any) {
     });
   }, []);
 
-  const handleImageLoad = useCallback((path: string) => {
-    loadedThumbnailsRef.current.add(path);
-  }, []);
-
   const gridData = useMemo(() => {
     if (gridSize.width === 0 || imageList.length === 0) return null;
 
@@ -400,11 +308,9 @@ export default function LibraryGrid(props: any) {
         : 0);
 
     const listRowHeight = Math.max(36, Math.min(300, (availableWidth * listColumnWidths.thumbnail) / totalBase));
-    const rowHeight = isListView ? listRowHeight : itemWidth + ITEM_GAP;
     const headerHeight = 40;
 
     const rows: any[] = [];
-    const isJustified = thumbnailAspectRatio === ThumbnailAspectRatio.Justified && !isListView;
 
     if (libraryViewMode === LibraryViewMode.Recursive) {
       const groups = groupImagesByFolder(imageList, currentFolderPath);
@@ -415,32 +321,20 @@ export default function LibraryGrid(props: any) {
         rows.push({ type: 'header', path: group.path, count: group.images.length, isExpanded });
 
         if (isExpanded) {
-          if (isJustified) {
-            rows.push(
-              ...buildJustifiedRows(group.images, ratioMapRef.current, availableWidth, minThumbWidth, ITEM_GAP),
-            );
-          } else {
-            for (let i = 0; i < group.images.length; i += columnCount) {
-              rows.push({
-                type: 'images',
-                images: group.images.slice(i, i + columnCount),
-                startIndex: i,
-              });
-            }
+          for (let i = 0; i < group.images.length; i += columnCount) {
+            rows.push({
+              type: 'images',
+              images: group.images.slice(i, i + columnCount),
+            });
           }
         }
       });
     } else {
-      if (isJustified) {
-        rows.push(...buildJustifiedRows(imageList, ratioMapRef.current, availableWidth, minThumbWidth, ITEM_GAP));
-      } else {
-        for (let i = 0; i < imageList.length; i += columnCount) {
-          rows.push({
-            type: 'images',
-            images: imageList.slice(i, i + columnCount),
-            startIndex: i,
-          });
-        }
+      for (let i = 0; i < imageList.length; i += columnCount) {
+        rows.push({
+          type: 'images',
+          images: imageList.slice(i, i + columnCount),
+        });
       }
     }
 
@@ -449,7 +343,6 @@ export default function LibraryGrid(props: any) {
     return {
       rows,
       itemWidth,
-      rowHeight,
       listRowHeight,
       OUTER_PADDING,
       ITEM_GAP,
@@ -468,7 +361,6 @@ export default function LibraryGrid(props: any) {
     currentFolderPath,
     thumbnailSizeOptions,
     thumbnailAspectRatio,
-    ratioMapVersion,
   ]);
 
   useEffect(() => {
@@ -481,6 +373,10 @@ export default function LibraryGrid(props: any) {
       element.scrollTop = savedTop;
     }
   }, [listHandle, currentFolderPath]);
+
+  useEffect(() => {
+    setLibrary({ libraryColumnCount: gridData?.columnCount ?? 1 });
+  }, [gridData?.columnCount, setLibrary]);
 
   const prevActivePath = useRef<string | null>(null);
   const prevDisplayMode = useRef<LibraryDisplayMode | null>(null);
@@ -516,7 +412,7 @@ export default function LibraryGrid(props: any) {
             ? 0
             : gridData.isListView
               ? gridData.listRowHeight
-              : (row.rowHeight || gridData.itemWidth) + gridData.ITEM_GAP;
+              : gridData.itemWidth + gridData.ITEM_GAP;
       if (row.type === 'images' && row.images.some((image: { path: string }) => image.path === activePath)) {
         targetHeight = height;
         found = true;
@@ -570,7 +466,6 @@ export default function LibraryGrid(props: any) {
       onImageClick,
       onImageDoubleClick,
       thumbnailAspectRatio,
-      onImageLoad: handleImageLoad,
       imageRatings,
       baseFolderPath: currentFolderPath,
       itemWidth: gridData.itemWidth,
@@ -582,7 +477,6 @@ export default function LibraryGrid(props: any) {
       queueThumbnailRequest,
       onToggleRecursiveFolder: handleToggleRecursiveFolder,
       groupBadgeInfo,
-      onAspectRatioLoaded: handleAspectRatioLoaded,
     };
   }, [
     gridData,
@@ -592,14 +486,12 @@ export default function LibraryGrid(props: any) {
     onImageClick,
     onImageDoubleClick,
     thumbnailAspectRatio,
-    handleImageLoad,
     imageRatings,
     currentFolderPath,
     listColumnWidths,
     queueThumbnailRequest,
     handleToggleRecursiveFolder,
     groupBadgeInfo,
-    handleAspectRatioLoaded,
   ]);
 
   const getItemSize = useCallback(
@@ -608,7 +500,7 @@ export default function LibraryGrid(props: any) {
       const row = gridData.rows[index];
       if (row.type === 'footer') return gridData.isListView ? 24 : gridData.OUTER_PADDING;
       if (row.type === 'header') return gridData.headerHeight;
-      return gridData.isListView ? gridData.listRowHeight : (row.rowHeight || gridData.itemWidth) + gridData.ITEM_GAP;
+      return gridData.isListView ? gridData.listRowHeight : gridData.itemWidth + gridData.ITEM_GAP;
     },
     [gridData],
   );

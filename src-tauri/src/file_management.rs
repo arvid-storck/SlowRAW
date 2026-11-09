@@ -15,7 +15,7 @@ use std::thread;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use image::codecs::jpeg::JpegEncoder;
-use image::{DynamicImage, GenericImageView, ImageBuffer, Luma};
+use image::{DynamicImage, ImageBuffer, Luma};
 use rayon::prelude::*;
 use regex::regex;
 use serde::{Deserialize, Serialize};
@@ -34,8 +34,7 @@ use crate::gpu_processing;
 use crate::image_loader;
 use crate::image_processing::GpuContext;
 use crate::image_processing::{
-    Crop, ImageMetadata, apply_coarse_rotation, apply_cpu_default_raw_processing, apply_crop,
-    apply_flip, apply_geometry_warp, apply_rotation, auto_results_to_json,
+    ImageMetadata, apply_coarse_rotation, apply_cpu_default_raw_processing, auto_results_to_json,
     get_all_adjustments_from_json, perform_auto_analysis,
 };
 use crate::mask_generation::MaskDefinition;
@@ -73,7 +72,7 @@ fn compute_thumbnail_cache_hash(path_str: &str, adjustments_bytes: &[u8]) -> Opt
 
     let mut hasher = blake3::Hasher::new();
     // Retire thumbnails made with the previous automatic lens matcher.
-    hasher.update(b"embedded-lens-exiftool-v17");
+    hasher.update(b"raw-color-detail-dehaze-v19");
     hasher.update(path_str.as_bytes());
     hasher.update(&img_mod_time.to_le_bytes());
     hasher.update(adjustments_bytes);
@@ -1261,188 +1260,70 @@ pub fn generate_thumbnail_data(
         let state = app_handle.state::<AppState>();
         let target_res = settings.medium_thumbnail_resolution.unwrap_or(1280);
 
-        let base_cache_hash = crate::cache_utils::calculate_thumbnail_base_hash(&meta.adjustments);
-
-        let crop_data: Option<Crop> = serde_json::from_value(meta.adjustments["crop"].clone()).ok();
-
-        let cached_base: Option<(Arc<DynamicImage>, f32)> = {
-            let cache = state.thumbnail_geometry_cache.lock().unwrap();
-            if let Some((cached_hash, img, scale)) = cache.get(path_str) {
-                let mut sufficient_resolution = true;
-                if let Some(c) = &crop_data
-                    && c.width > 0.0
-                    && c.height > 0.0
-                {
-                    let final_crop_max_dim =
-                        (c.width as f32 * *scale).max(c.height as f32 * *scale);
-                    if final_crop_max_dim < (target_res as f32 * 0.95) {
-                        sufficient_resolution = false;
-                    }
-                }
-
-                if *cached_hash == base_cache_hash && sufficient_resolution {
-                    Some((Arc::clone(img), *scale))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        let (processing_base_arc, total_scale) = if let Some((arc_img, scale)) = cached_base {
-            (arc_img, scale)
+        let composite_image = if let Some(img) = preloaded_image {
+            crate::spot_removal::composite_spot_removals(img, &adjustments)
         } else {
-            let raw_scale_factor = 1.0f32;
+            let mmap_guard;
+            let vec_guard;
 
-            let composite_image = if let Some(img) = preloaded_image {
-                crate::spot_removal::composite_spot_removals(img, &adjustments)
-            } else {
-                let mmap_guard;
-                let vec_guard;
-
-                let file_slice: &[u8] = match read_file_mapped(&source_path) {
-                    Ok(mmap) => {
-                        mmap_guard = Some(mmap);
-                        mmap_guard.as_ref().unwrap()
+            let file_slice: &[u8] = match read_file_mapped(&source_path) {
+                Ok(mmap) => {
+                    mmap_guard = Some(mmap);
+                    mmap_guard.as_ref().unwrap()
+                }
+                Err(e) => {
+                    if preloaded_image.is_none() {
+                        log::warn!("Fallback read for {}: {}", source_path_str, e);
                     }
-                    Err(e) => {
-                        if preloaded_image.is_none() {
-                            log::warn!("Fallback read for {}: {}", source_path_str, e);
-                        }
-                        let bytes = fs::read(&source_path).map_err(|io_err| {
-                            anyhow::anyhow!(
-                                "Fallback read failed for {}: {}",
-                                source_path_str,
-                                io_err
-                            )
-                        })?;
-                        vec_guard = Some(bytes);
-                        vec_guard.as_ref().unwrap()
-                    }
-                };
-
-                let img = image_loader::load_and_composite(
-                    file_slice,
-                    &source_path_str,
-                    &adjustments,
-                    true,
-                    &settings,
-                    None,
-                )?;
-
-                img
+                    let bytes = fs::read(&source_path).map_err(|io_err| {
+                        anyhow::anyhow!("Fallback read failed for {}: {}", source_path_str, io_err)
+                    })?;
+                    vec_guard = Some(bytes);
+                    vec_guard.as_ref().unwrap()
+                }
             };
 
-            let warped_image =
-                apply_geometry_warp(Cow::Borrowed(&composite_image), &meta.adjustments);
+            let img = image_loader::load_and_composite(
+                file_slice,
+                &source_path_str,
+                &adjustments,
+                true,
+                &settings,
+                None,
+            )?;
 
-            let blurred_image = crate::lens_blur::apply_lens_blur(warped_image, &meta.adjustments);
-
-            let orientation_steps =
-                meta.adjustments["orientationSteps"].as_u64().unwrap_or(0) as u8;
-            let coarse_rotated_image = apply_coarse_rotation(blurred_image, orientation_steps);
-
-            let (full_w, full_h) = coarse_rotated_image.dimensions();
-
-            let mut processing_dim = target_res;
-            if let Some(c) = &crop_data
-                && c.width > 0.0
-                && c.height > 0.0
-            {
-                let crop_max_dim_loaded = c.width.max(c.height) * raw_scale_factor as f64;
-                let full_max_dim = full_w.max(full_h) as f64;
-                if crop_max_dim_loaded > 0.0 {
-                    processing_dim = ((target_res as f64 * full_max_dim / crop_max_dim_loaded)
-                        .round() as u32)
-                        .min(full_w.max(full_h));
-                }
-            }
-
-            let (base, gpu_scale) = if full_w > processing_dim || full_h > processing_dim {
-                let base = crate::image_processing::downscale_f32_image(
-                    &coarse_rotated_image,
-                    processing_dim,
-                    processing_dim,
-                );
-                let scale = if full_w > 0 {
-                    base.width() as f32 / full_w as f32
-                } else {
-                    1.0
-                };
-                (base, scale)
-            } else {
-                (coarse_rotated_image.into_owned(), 1.0)
-            };
-
-            let total_scale = gpu_scale * raw_scale_factor;
-
-            let mut cache = state.thumbnail_geometry_cache.lock().unwrap();
-            if cache.len() >= 8 {
-                let key_to_remove = cache.keys().next().cloned();
-                if let Some(key) = key_to_remove {
-                    cache.remove(&key);
-                }
-            }
-
-            let base_arc = Arc::new(base);
-            cache.insert(
-                path_str.to_string(),
-                (base_cache_hash, Arc::clone(&base_arc), total_scale),
-            );
-
-            (base_arc, total_scale)
+            img
         };
 
-        let rotation_degrees = meta.adjustments["rotation"].as_f64().unwrap_or(0.0) as f32;
-        let flip_horizontal = meta.adjustments["flipHorizontal"]
-            .as_bool()
-            .unwrap_or(false);
-        let flip_vertical = meta.adjustments["flipVertical"].as_bool().unwrap_or(false);
-
-        let flipped_image = apply_flip(
-            Cow::Borrowed(&*processing_base_arc),
-            flip_horizontal,
-            flip_vertical,
-        );
-        let rotated_image = apply_rotation(flipped_image, rotation_degrees);
-
-        let scaled_crop_json = if let Some(c) = &crop_data {
-            serde_json::to_value(Crop {
-                x: c.x * total_scale as f64,
-                y: c.y * total_scale as f64,
-                width: c.width * total_scale as f64,
-                height: c.height * total_scale as f64,
-            })
-            .unwrap_or(serde_json::Value::Null)
-        } else {
-            serde_json::Value::Null
-        };
-
-        let cropped_preview = apply_crop(rotated_image, &scaled_crop_json);
-        let (preview_w, preview_h) = cropped_preview.dimensions();
-        let unscaled_crop_offset = crop_data.map_or((0.0, 0.0), |c| (c.x as f32, c.y as f32));
-
+        let source = Arc::new(composite_image);
+        let mut plan = crate::gpu_geometry::Plan::new(&source, &meta.adjustments, target_res);
+        plan.patches_applied = true;
+        let (preview_w, preview_h) = plan.size;
         let mask_definitions: Vec<MaskDefinition> = meta
             .adjustments
             .get("masks")
             .and_then(|m| serde_json::from_value(m.clone()).ok())
-            .unwrap_or_else(Vec::new);
-
+            .unwrap_or_default();
+        let warped_image = mask_definitions
+            .iter()
+            .any(|mask| mask.requires_warped_image())
+            .then(|| {
+                crate::mask_generation::prepare_mask_source(
+                    source.as_ref(),
+                    &meta.adjustments,
+                    is_raw,
+                )
+            });
         let mask_bitmaps: Vec<ImageBuffer<Luma<u8>, Vec<u8>>> = mask_definitions
             .iter()
             .filter_map(|def| {
-                crate::get_cached_or_generate_mask(
-                    &state,
+                crate::mask_generation::generate_mask_bitmap(
                     def,
                     preview_w,
                     preview_h,
-                    total_scale,
-                    (
-                        unscaled_crop_offset.0 * total_scale,
-                        unscaled_crop_offset.1 * total_scale,
-                    ),
-                    &meta.adjustments,
+                    plan.scale,
+                    (plan.offset.0 * plan.scale, plan.offset.1 * plan.scale),
+                    warped_image.as_ref(),
                 )
             })
             .collect();
@@ -1463,9 +1344,10 @@ pub fn generate_thumbnail_data(
         if let Ok(processed_image) = gpu_processing::process_and_get_dynamic_image(
             context,
             &state,
-            cropped_preview.as_ref(),
+            source.as_ref(),
             unique_hash,
             gpu_processing::RenderRequest {
+                source: Some(&plan),
                 adjustments: gpu_adjustments,
                 mask_bitmaps: &mask_bitmaps,
                 roi: None,
@@ -1474,7 +1356,7 @@ pub fn generate_thumbnail_data(
         ) {
             return Ok(processed_image);
         } else {
-            return Ok(cropped_preview.into_owned());
+            return Err(anyhow::anyhow!("GPU thumbnail processing failed"));
         }
     }
 
@@ -2579,95 +2461,123 @@ pub async fn apply_auto_adjustments_to_paths(
                 for _ in 0..paths.len() {
                     increment_thumbnail_progress(&state, &app_handle);
                 }
-                return;
+                return Err(e);
             }
         };
 
         let gpu_context = gpu_processing::get_or_init_gpu_context(&state, &app_handle).ok();
 
-        paths.par_iter().for_each(|path| {
-            let loaded_image: Option<DynamicImage> = (|| -> Result<DynamicImage, String> {
-                let (source_path, sidecar_path) = parse_virtual_path(path);
-                let source_path_str = source_path.to_string_lossy().to_string();
+        let failures = std::sync::atomic::AtomicUsize::new(0);
+        let mut memory = sysinfo::System::new();
+        memory.refresh_memory();
+        let workers = std::thread::available_parallelism()
+            .map_or(1, usize::from)
+            .min((memory.available_memory() / (1024 * 1024 * 1024)) as usize)
+            .clamp(1, 4);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            paths.par_iter().for_each(|path| {
+                let loaded_image: Option<DynamicImage> = (|| -> Result<DynamicImage, String> {
+                    let (source_path, sidecar_path) = parse_virtual_path(path);
+                    let source_path_str = source_path.to_string_lossy().to_string();
 
-                let file_bytes = fs::read(&source_path).map_err(|e| e.to_string())?;
-                let image = image_loader::load_base_image_from_bytes(
-                    &file_bytes,
-                    &source_path_str,
-                    true,
-                    &settings,
-                    None,
-                )
-                .map_err(|e| e.to_string())?;
+                    let file_bytes = fs::read(&source_path).map_err(|e| e.to_string())?;
+                    let image = image_loader::load_base_image_from_bytes(
+                        &file_bytes,
+                        &source_path_str,
+                        true,
+                        &settings,
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?;
 
-                let auto_results = perform_auto_analysis(&image);
-                let auto_adjustments_json = auto_results_to_json(&auto_results);
+                    let auto_results = perform_auto_analysis(&image);
+                    let auto_adjustments_json = auto_results_to_json(&auto_results);
 
-                let mut existing_metadata = crate::exif_processing::load_sidecar(&sidecar_path);
+                    let mut existing_metadata = crate::exif_processing::load_sidecar(&sidecar_path);
 
-                if existing_metadata.adjustments.is_null() {
-                    existing_metadata.adjustments = serde_json::json!({});
-                }
+                    if existing_metadata.adjustments.is_null() {
+                        existing_metadata.adjustments = serde_json::json!({});
+                    }
 
-                if let (Some(existing_map), Some(auto_map)) = (
-                    existing_metadata.adjustments.as_object_mut(),
-                    auto_adjustments_json.as_object(),
-                ) {
-                    for (k, v) in auto_map {
-                        if k == "sectionVisibility" {
-                            if let Some(existing_vis_val) = existing_map.get_mut(k) {
-                                if let (Some(existing_vis), Some(auto_vis)) =
-                                    (existing_vis_val.as_object_mut(), v.as_object())
-                                {
-                                    for (vis_k, vis_v) in auto_vis {
-                                        existing_vis.insert(vis_k.clone(), vis_v.clone());
+                    if let (Some(existing_map), Some(auto_map)) = (
+                        existing_metadata.adjustments.as_object_mut(),
+                        auto_adjustments_json.as_object(),
+                    ) {
+                        for (k, v) in auto_map {
+                            if k == "sectionVisibility" {
+                                if let Some(existing_vis_val) = existing_map.get_mut(k) {
+                                    if let (Some(existing_vis), Some(auto_vis)) =
+                                        (existing_vis_val.as_object_mut(), v.as_object())
+                                    {
+                                        for (vis_k, vis_v) in auto_vis {
+                                            existing_vis.insert(vis_k.clone(), vis_v.clone());
+                                        }
                                     }
+                                } else {
+                                    existing_map.insert(k.clone(), v.clone());
                                 }
                             } else {
                                 existing_map.insert(k.clone(), v.clone());
                             }
-                        } else {
-                            existing_map.insert(k.clone(), v.clone());
                         }
                     }
-                }
 
-                if let Ok(json_string) = serde_json::to_string_pretty(&existing_metadata) {
-                    let _ = std::fs::write(&sidecar_path, json_string);
-                }
+                    let json_string = serde_json::to_string_pretty(&existing_metadata)
+                        .map_err(|e| e.to_string())?;
+                    std::fs::write(&sidecar_path, json_string).map_err(|e| e.to_string())?;
 
-                if enable_xmp_sync {
-                    sync_metadata_to_xmp(&source_path, &existing_metadata, create_xmp_if_missing);
-                }
-                Ok(image)
-            })()
-            .map_err(|e| log::error!("Failed to apply auto adjustments to {}: {}", path, e))
-            .ok();
+                    if enable_xmp_sync {
+                        sync_metadata_to_xmp(
+                            &source_path,
+                            &existing_metadata,
+                            create_xmp_if_missing,
+                        );
+                    }
+                    Ok(image)
+                })()
+                .map_err(|e| {
+                    failures.fetch_add(1, Ordering::Relaxed);
+                    log::error!("Failed to apply auto adjustments to {}: {}", path, e);
+                })
+                .ok();
 
-            let result = generate_single_thumbnail_and_cache(
-                path,
-                &thumb_cache_dir,
-                gpu_context.as_ref(),
-                loaded_image.as_ref(),
-                true,
-                &app_handle,
-                &settings,
-            );
-
-            if let Some((small_path, medium_path, rating, is_edited)) = result {
-                emit_thumbnail_generated(
-                    &app_handle,
+                let result = generate_single_thumbnail_and_cache(
                     path,
-                    &small_path,
-                    &medium_path,
-                    rating,
-                    is_edited,
+                    &thumb_cache_dir,
+                    gpu_context.as_ref(),
+                    loaded_image.as_ref(),
+                    true,
+                    &app_handle,
+                    &settings,
                 );
-            }
 
-            increment_thumbnail_progress(&state, &app_handle);
+                if let Some((small_path, medium_path, rating, is_edited)) = result {
+                    emit_thumbnail_generated(
+                        &app_handle,
+                        path,
+                        &small_path,
+                        &medium_path,
+                        rating,
+                        is_edited,
+                    );
+                }
+
+                increment_thumbnail_progress(&state, &app_handle);
+            })
         });
-    });
+        let failed = failures.load(Ordering::Relaxed);
+        if failed > 0 {
+            Err(format!("{failed} images could not be auto-adjusted"))
+        } else {
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     Ok(())
 }
@@ -2764,29 +2674,37 @@ pub fn load_metadata(path: String, app_handle: AppHandle) -> Result<ImageMetadat
 }
 
 #[tauri::command]
-pub fn clear_all_sidecars(root_path: String) -> Result<usize, String> {
-    if !Path::new(&root_path).exists() {
-        return Err(format!("Root path does not exist: {}", root_path));
+pub fn clear_all_sidecars(root_path: String, confirmed: bool) -> Result<usize, String> {
+    if !confirmed {
+        return Err("Deleting .rrdata files requires confirmation".into());
     }
+    remove_edit_sidecars(Path::new(&root_path))
+}
 
-    let mut deleted_count = 0;
-    let walker = WalkDir::new(root_path).into_iter();
-
-    for entry in walker.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if path.is_file()
-            && let Some(extension) = path.extension()
-            && (extension == "rrdata" || extension == "rrexif")
+fn remove_edit_sidecars(root: &Path) -> Result<usize, String> {
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    if !root.is_dir() || root.parent().is_none() {
+        return Err("Choose a photo folder".into());
+    }
+    let mut count = 0;
+    for entry in WalkDir::new(&root).follow_links(false) {
+        let entry = entry.map_err(|e| format!("Deleted {count} .rrdata files; {e}"))?;
+        if entry.file_type().is_file()
+            && entry
+                .path()
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("rrdata"))
         {
-            if fs::remove_file(path).is_ok() {
-                deleted_count += 1;
-            } else {
-                log::error!("Failed to delete sidecar file: {:?}", path);
-            }
+            fs::remove_file(entry.path()).map_err(|e| {
+                format!(
+                    "Deleted {count} .rrdata files; {}: {e}",
+                    entry.path().display()
+                )
+            })?;
+            count += 1;
         }
     }
-
-    Ok(deleted_count)
+    Ok(count)
 }
 
 #[tauri::command]
@@ -2832,9 +2750,14 @@ pub fn show_in_finder(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     {
-        if let Some(parent) = source_path.parent() {
+        let location = if source_path.is_dir() {
+            Some(source_path.as_path())
+        } else {
+            source_path.parent()
+        };
+        if let Some(location) = location {
             Command::new("xdg-open")
-                .arg(parent)
+                .arg(location)
                 .spawn()
                 .map_err(|e| e.to_string())?;
         } else {
@@ -3680,5 +3603,34 @@ pub fn sync_metadata_to_xmp(source_path: &Path, metadata: &ImageMetadata, create
         }
 
         let _ = fs::write(&xmp_file, content);
+    }
+}
+
+#[cfg(test)]
+mod edit_sidecar_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn deletes_edit_sidecars_recursively_and_keeps_sources_xmp_and_exif() {
+        let folder = tempfile::tempdir().unwrap();
+        let nested = folder.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        for name in [
+            "photo.NEF",
+            "photo.NEF.rrdata",
+            "photo.NEF.copy.rrdata",
+            "photo.xmp",
+            "photo.rrexif",
+        ] {
+            fs::write(folder.path().join(name), "fixture").unwrap();
+        }
+        fs::write(nested.join("photo.RRDATA"), "fixture").unwrap();
+        assert!(clear_all_sidecars(folder.path().to_string_lossy().into(), false).is_err());
+        assert!(folder.path().join("photo.NEF.rrdata").exists());
+        assert_eq!(remove_edit_sidecars(folder.path()).unwrap(), 3);
+        for name in ["photo.NEF", "photo.xmp", "photo.rrexif"] {
+            assert!(folder.path().join(name).exists());
+        }
+        assert_eq!(remove_edit_sidecars(folder.path()).unwrap(), 0);
     }
 }
