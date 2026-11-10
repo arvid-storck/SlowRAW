@@ -1,21 +1,8 @@
 ### Bugs
 
-- Thumbnail requests exceeding 500 unique paths could hang queue trimming.
-
-  Status: fix implemented; awaiting developer verification (2026-10-30).
-  Incoming requests are deduplicated and bounded before existing queue trimming.
-  A 60,000-path regression checks the bound and duplicate handling.
-- Camera calibration did not use the interpolated profile
-- Batch analysis could retain too many RAW decodes
-- Decoded cache could reuse externally changed files
-- Importing does not work when importing 50000 images and more, and when rescanning, it says "database is locked"
-
-  Status: fix implemented; awaiting developer verification (2026-10-29).
-  Metadata reads now run outside short immediate write transactions; folder scans
-  are serialized and overlapping roots deduplicated. Rescans preserve committed
-  data. A separate 60,000-file fixture passes with a concurrent database writer.
-  Developer check: repeat the real 60,000-photo import, verify its final row count,
-  then rescan while browsing and updating ratings.
+- Does not read the ".rrdata" generated from lightroom properly
+- Cant open nikon HE* files
+- Make filterbox uniform in width, allow names to span multiple rows
 
 ### Things to change
 
@@ -27,27 +14,10 @@
 - Rename variables, fuctions and classes to to camel case, and upper camel case. But only to make it uniform, not when a langage requite a diffrent style.
 - Fix general ineffiencies left
 - Fix compiling documantation
+- Remove the 500 images per page thing and dynamilcy load the next page when scrolling down and unload the last page, maby keep 3st 200images per page files open (previous, current, next)?
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
-- Job Queue with Cancellation Tokens to Stop CPU Spikes
-
-  When users drag sliders quickly, you want to abort outdated background tasks immediately so your cpu does not get choked by a backlog of old preview renders. Using a cancellation token allows you to signal active worker threads to terminate their loops instantly.
-
-  License: MIT
-
-  Code implementation reference: https://github.com/tokio-rs/tokio/blob/master/tokio-util/src/sync/cancellation_token.rs
-
-  How to use it: Instantiate a cancellation token, clone it, and pass it into your background worker. When a new slider event fires, call cancel on the old token and spin up a new task. Inside your heavy processing loops, periodically check if the token has been cancelled to exit early.
-- Zero-Copy IPC via Tauri Custom Protocol
-
-  Instead of converting your rendered image buffers into base64 strings or json arrays to pass across the tauri bridge, which hurts frontend performance, you can register a custom uri scheme. The frontend loads the image using a standard html tag, and the rust backend streams the raw bytes directly from memory.
-
-  License: MIT / Apache 2.0
-
-  Code implementation reference: https://github.com/tauri-apps/tauri/blob/dev/examples/streaming/main.rs
-  
-  How to use it: Check how the streaming example registers protocol handlers to intercept custom urls and return raw byte vectors directly from an in-memory cache, bypassing IPC serialization.
 - Remove unnecessary validation tests
 - Higher quality x-trans decoder, consider "Markesteijn 1-pass"?
 
@@ -62,4 +32,5 @@
 
 - How does the queue part work?
 - Is there still android code left?
+- How is edits stored?
 
