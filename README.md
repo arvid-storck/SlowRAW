@@ -236,6 +236,4 @@ This project is licensed under the **GNU Affero General Public License v3.0 (AGP
 
 See the [LICENSE](LICENSE) file for the complete license text.
 
-This repository is based on RapidRAW by CyberTimon and contains substantial modifications.
-
 If there is any issues with a lack of license or its done wrong, please send a message and i will correct it.
