@@ -1,7 +1,7 @@
 ### Bugs
 
 - Does not read the ".rrdata" generated from lightroom properly
-- Cant open nikon HE* files
+- Cant open nikon HE* files (an unstable fix is to apply the patch from "https://github.com/dnglab/dnglab/pull/835")
 - Make filterbox uniform in width, allow names to span multiple rows
 
 ### Things to change
