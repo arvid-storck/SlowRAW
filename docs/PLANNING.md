@@ -11,7 +11,13 @@ Easy
 - Fix compiling documantation
 - Add all dev tools on CODEMAP.md
 - Remove Clear ".rrdata" files button
-- Fix "src\i18n\locales\en.json", keys: "filteredTotal", "total", "total_one", "total_other". Add key: "filteredTotalOne", should read "x images" if more or equal to 2 and/or equal to 0 or "x image" if its 1
+- Fix "src\i18n\locales\en.json", keys: "filteredTotal", "total", "total_one", "total_other". Add key: "filteredTotalOne".
+
+  Should read:
+  
+  "x images" if more or equal to 2 and/or equal to 0.
+  
+  "x image" if its 1
 - Sorting defult should be date captured, newest first
 
 Not easy but not risky
