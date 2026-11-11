@@ -12,6 +12,7 @@ Easy
 - Add all dev tools on CODEMAP.md
 - Remove Clear ".rrdata" files button
 - Fix "src\i18n\locales\en.json", keys: "filteredTotal", "total", "total_one", "total_other". Add key: "filteredTotalOne", should read "x images" or "x image" if its one
+- Sorting defult should be date captured, newest first
 
 Not easy but not risky
   
@@ -42,4 +43,5 @@ Hard and/or risky
 - How does the queue part work?
 - Is there still android code left?
 - How is edits stored?
+- How is an image without a date sorted?
 
