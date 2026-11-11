@@ -6,15 +6,24 @@
 
 ### Things to change
 
-- Remove Clear ".rrdata" files button
-- Make a build cashe button
-- Remove "xx matching yy total" text, just list the number of images currently filtred as it did before
-- Add all dev tools on CODEMAP.md
-- Fix "src\i18n\locales\en.json", keys: "filteredTotal", "total", "total_one", "total_other". Add key: "filteredTotalOne", should read "x images" or "x image" if its one
-- Rename variables, fuctions and classes to to camel case, and upper camel case. But only to make it uniform, not when a langage requite a diffrent style.
-- Fix general ineffiencies left
+Easy
+
 - Fix compiling documantation
-- Remove the 500 images per page thing and dynamilcy load the next page when scrolling down and unload the last page, maby keep 3st 200images per page files open (previous, current, next)?
+- Add all dev tools on CODEMAP.md
+- Remove Clear ".rrdata" files button
+- Fix "src\i18n\locales\en.json", keys: "filteredTotal", "total", "total_one", "total_other". Add key: "filteredTotalOne", should read "x images" or "x image" if its one
+
+Not easy but not risky
+  
+- Make a build cashe button
+- Remove the 500 images per page thing and dynamilcy load the next page when scrolling down and unload the last page, maby keep 3st 166 images per page files open (previous, current, next)?
+
+Hard and/or risky
+
+- Rename variables, fuctions and classes to to camel case, and upper camel case. But only to make it uniform, not when a langage has a recomended style already.
+- Fix general ineffiencies left
+
+
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
