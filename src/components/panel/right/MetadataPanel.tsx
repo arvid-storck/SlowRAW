@@ -282,7 +282,7 @@ export default function MetadataPanel() {
 
   const currentTags = useMemo(() => {
     return tags
-      .filter((t) => !t.startsWith('color:'))
+      .filter((t) => !t.startsWith('color:') && !t.startsWith('flag:'))
       .map((t) => ({
         tag: t.startsWith(USER_TAG_PREFIX) ? t.substring(USER_TAG_PREFIX.length) : t,
         isUser: t.startsWith(USER_TAG_PREFIX),

@@ -2,8 +2,6 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { cameraIso } from '../../../utils/metadata';
 import {
   Image as ImageIcon,
-  Folder,
-  FolderOpen,
   Star as StarIcon,
   SlidersHorizontal,
   CloudOff,
@@ -18,7 +16,7 @@ import { useDraggable } from '@dnd-kit/core';
 import { COLOR_LABELS, Color } from '../../../utils/adjustments';
 import { ThumbnailAspectRatio, ImageFile, ExifOverlay } from '../../ui/AppProperties';
 import Text from '../../ui/Text';
-import { TextColors, TextVariants, TextWeights, TEXT_COLOR_KEYS } from '../../../types/typography';
+import { TextColors, TextVariants, TextWeights } from '../../../types/typography';
 import { ColumnWidths } from '../MainLibrary';
 import { useProcessStore } from '../../../store/useProcessStore';
 import { useSettingsStore } from '../../../store/useSettingsStore';
@@ -799,7 +797,8 @@ const ListItem = React.memo(ListItemComponent);
 const RowComponent = ({
   index,
   style,
-  rows,
+  getImages,
+  rowCount,
   activePath,
   multiSelectedSet,
   onContextMenu,
@@ -807,7 +806,6 @@ const RowComponent = ({
   onImageDoubleClick,
   thumbnailAspectRatio,
   imageRatings,
-  baseFolderPath,
   itemWidth,
   itemHeight,
   outerPadding,
@@ -815,22 +813,18 @@ const RowComponent = ({
   isListView,
   columnWidths,
   queueThumbnailRequest,
-  onToggleRecursiveFolder,
   groupBadgeInfo,
 }: any) => {
-  const { t } = useTranslation();
-  const row = rows[index];
+  const images: ImageFile[] | undefined = getImages(index);
 
   useEffect(() => {
-    if (!row || row.type !== 'images') return;
+    if (!images) return;
 
-    row.images.forEach((img: ImageFile) => {
+    images.forEach((img: ImageFile) => {
       queueThumbnailRequest(img.path);
     });
 
-    const cloudPaths = row.images
-      .filter((img: ImageFile) => img.is_cloud_placeholder)
-      .map((img: ImageFile) => img.path);
+    const cloudPaths = images.filter((img: ImageFile) => img.is_cloud_placeholder).map((img: ImageFile) => img.path);
     if (cloudPaths.length === 0) return;
 
     const interval = setInterval(() => {
@@ -838,66 +832,17 @@ const RowComponent = ({
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [row, queueThumbnailRequest]);
+  }, [images, queueThumbnailRequest]);
 
-  if (row.type === 'footer') return null;
-  const shiftedStyle = {
-    ...style,
-    transform: (style.transform as string).replace(
-      /translateY\(([^)]+)\)/,
-      (_: string, y: string) => `translateY(${parseFloat(y) + outerPadding}px)`,
-    ),
-  };
-
-  if (row.type === 'header') {
-    let displayPath = row.path;
-    if (baseFolderPath && row.path.startsWith(baseFolderPath)) {
-      displayPath = row.path.substring(baseFolderPath.length);
-      if (displayPath.startsWith('/') || displayPath.startsWith('\\')) {
-        displayPath = displayPath.substring(1);
-      }
-    }
-    if (!displayPath) displayPath = t('library.items.currentFolder');
-
-    return (
-      <div
-        style={{
-          ...shiftedStyle,
-          left: 0,
-          width: '100%',
-          paddingLeft: outerPadding === 0 ? 12 : outerPadding,
-          paddingRight: outerPadding === 0 ? 12 : outerPadding,
-          boxSizing: 'border-box',
-        }}
-        className="flex items-end pb-2 pt-2"
-      >
-        <div className="flex items-center gap-2 w-full border-b border-border-color/50 pb-1">
-          <button
-            type="button"
-            className={`${TEXT_COLOR_KEYS[TextColors.secondary]} p-0.5 rounded transition-colors hover:bg-surface-hover cursor-pointer`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onToggleRecursiveFolder(row.path);
-            }}
-            data-tooltip={row.isExpanded ? t('library.items.collapseFolder') : t('library.items.expandFolder')}
-          >
-            {row.isExpanded ? <FolderOpen size={16} /> : <Folder size={16} />}
-          </button>
-          <Text variant={TextVariants.label} weight={TextWeights.semibold} className="truncate" data-tooltip={row.path}>
-            {displayPath}
-          </Text>
-          <Text variant={TextVariants.small} color={TextColors.secondary} className="ml-auto">
-            {t('library.items.imagesCount', { count: row.count })}
-          </Text>
-        </div>
-      </div>
-    );
-  }
+  if (!images) return null;
 
   return (
     <div
+      role="listitem"
+      aria-posinset={index + 1}
+      aria-setsize={rowCount}
       style={{
-        ...shiftedStyle,
+        ...style,
         left: outerPadding,
         right: outerPadding,
         width: isListView ? '100%' : 'auto',
@@ -908,20 +853,15 @@ const RowComponent = ({
         boxSizing: 'border-box',
       }}
     >
-      {row.images.map((imageFile: ImageFile) => {
+      {images.map((imageFile: ImageFile) => {
         let isPrevSelected = false;
         let isNextSelected = false;
 
         if (isListView) {
-          const prevRow = index > 0 ? rows[index - 1] : null;
-          const nextRow = index < rows.length - 1 ? rows[index + 1] : null;
-
-          if (prevRow && prevRow.type === 'images' && prevRow.images.length > 0) {
-            isPrevSelected = multiSelectedSet.has(prevRow.images[0].path);
-          }
-          if (nextRow && nextRow.type === 'images' && nextRow.images.length > 0) {
-            isNextSelected = multiSelectedSet.has(nextRow.images[0].path);
-          }
+          const previous = getImages(index - 1)?.[0];
+          const next = getImages(index + 1)?.[0];
+          isPrevSelected = previous ? multiSelectedSet.has(previous.path) : false;
+          isNextSelected = next ? multiSelectedSet.has(next.path) : false;
         }
 
         return (

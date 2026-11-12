@@ -31,24 +31,24 @@ function Choices({
 }) {
   const { t } = useTranslation();
   return (
-    <fieldset className="space-y-1">
+    <fieldset className="w-full min-w-0 space-y-1">
       <legend className="text-xs text-text-secondary">{label}</legend>
       <div className="max-h-32 overflow-y-auto rounded-md bg-bg-primary border border-border-color p-2 space-y-1">
-        <label className="flex items-center gap-2 text-sm cursor-pointer">
-          <input type="checkbox" checked={!selected.length} onChange={() => onChange([])} /> {t('catalog.all')}
+        <label className="flex items-start gap-2 text-sm cursor-pointer">
+          <input className="mt-1 shrink-0" type="checkbox" checked={!selected.length} onChange={() => onChange([])} />
+          <span className="min-w-0 wrap-anywhere">{t('catalog.all')}</span>
         </label>
         {values.map((value) => (
-          <label key={value} className="flex items-center gap-2 text-sm cursor-pointer">
+          <label key={value} className="flex items-start gap-2 text-sm cursor-pointer">
             <input
+              className="mt-1 shrink-0"
               type="checkbox"
               checked={selected.includes(value)}
               onChange={() =>
                 onChange(selected.includes(value) ? selected.filter((v) => v !== value) : [...selected, value])
               }
             />
-            <span className="truncate" title={value}>
-              {value}
-            </span>
+            <span className="min-w-0 wrap-anywhere">{value}</span>
           </label>
         ))}
       </div>
@@ -73,7 +73,6 @@ export default function CatalogFilterPanel() {
   const setFilter = (next: CatalogFilterState) =>
     setLibrary({
       catalogFilter: next,
-      catalogPage: 0,
       activeAlbumId: null,
       isCatalogMode: true,
     });
@@ -232,7 +231,6 @@ export default function CatalogFilterPanel() {
                       const settings = useSettingsStore.getState();
                       if (settings.appSettings)
                         settings.setAppSettings({ ...settings.appSettings, catalogFolders: status.folders });
-                      setLibrary({ catalogPage: 0 });
                       await refreshCatalog();
                     })
                   }
@@ -245,11 +243,11 @@ export default function CatalogFilterPanel() {
               disabled={busy}
               onClick={() =>
                 run(async () => {
-                  for (const path of catalogStatus?.folders ?? []) {
-                    await invoke(Invokes.CatalogAddFolder, { path });
+                  try {
+                    await invoke(Invokes.CatalogRebuild, { forceMetadata: false });
+                  } finally {
+                    await refreshCatalog();
                   }
-                  setLibrary({ catalogPage: 0 });
-                  await refreshCatalog();
                 })
               }
             >

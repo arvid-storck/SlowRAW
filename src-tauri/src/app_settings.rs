@@ -1,12 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::app_state::AppState;
+use crate::portable_paths::write_atomic;
+
+static SETTINGS_FILE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -420,8 +424,6 @@ pub struct AppSettings {
     pub raw_highlight_compression: Option<f32>,
     #[serde(default)]
     pub raw_highlight_recovery_enabled: Option<bool>,
-    #[serde(default)]
-    pub library_view_mode: Option<String>,
     #[serde(default = "default_export_presets")]
     pub export_presets: Vec<ExportPreset>,
     #[serde(default)]
@@ -430,10 +432,6 @@ pub struct AppSettings {
     pub display_edit_icon: Option<bool>,
     #[serde(default = "default_linear_raw_mode")]
     pub linear_raw_mode: String,
-    #[serde(default)]
-    pub enable_xmp_sync: Option<bool>,
-    #[serde(default)]
-    pub create_xmp_if_missing: Option<bool>,
     #[serde(default)]
     pub is_waveform_visible: Option<bool>,
     #[serde(default)]
@@ -466,6 +464,8 @@ pub struct AppSettings {
     pub folder_icons: Option<HashMap<String, String>>,
     #[serde(default)]
     pub raw_preprocessing_color_nr: Option<f32>,
+    #[serde(default)]
+    pub raw_preprocessing_auto_lens: bool,
     #[serde(default)]
     pub apply_preprocessing_to_non_raws: Option<bool>,
     #[serde(default)]
@@ -522,14 +522,11 @@ impl Default for AppSettings {
             copy_paste_settings: CopyPasteSettings::default(),
             raw_highlight_compression: Some(2.5),
             raw_highlight_recovery_enabled: Some(true),
-            library_view_mode: Some("flat".to_string()),
             export_presets: default_export_presets(),
             my_lenses: Some(Vec::new()),
             high_res_zoom_multiplier: Some(1.0),
             display_edit_icon: Some(true),
             linear_raw_mode: default_linear_raw_mode(),
-            enable_xmp_sync: Some(true),
-            create_xmp_if_missing: Some(false),
             is_waveform_visible: Some(false),
             waveform_height: Some(220),
             active_waveform_channel: Some("luma".to_string()),
@@ -546,6 +543,7 @@ impl Default for AppSettings {
             enable_focus_mode: Some(false),
             folder_icons: Some(HashMap::new()),
             raw_preprocessing_color_nr: Some(0.0),
+            raw_preprocessing_auto_lens: false,
             apply_preprocessing_to_non_raws: Some(false),
             exif_overlay: Some("off".to_string()),
             language: Some("en".to_string()),
@@ -569,13 +567,11 @@ pub fn get_settings_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 pub fn load_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
     let path = get_settings_path(&app_handle)?;
+    let _guard = SETTINGS_FILE_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
 
-    let mut settings: AppSettings = if path.exists() {
-        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).unwrap_or_default()
-    } else {
-        AppSettings::default()
-    };
+    let mut settings = read_settings_file(&path)?.unwrap_or_default();
 
     let all_current_keys = all_available_adjustments();
     let default_included = default_included_adjustments();
@@ -632,18 +628,49 @@ pub fn load_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
         }
     }
 
-    if settings_modified && let Ok(json_string) = serde_json::to_string_pretty(&settings) {
-        let _ = fs::write(&path, json_string);
+    if settings_modified {
+        write_settings_file(&path, &settings)?;
     }
 
     Ok(settings)
 }
 
+fn read_settings_file(path: &Path) -> Result<Option<AppSettings>, String> {
+    match fs::read_to_string(path) {
+        Ok(content) => Ok(serde_json::from_str(&content).ok()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn write_settings_file(path: &Path, settings: &AppSettings) -> Result<(), String> {
+    let json = serde_json::to_vec_pretty(settings).map_err(|error| error.to_string())?;
+    write_atomic(path, &json)
+}
+
+pub(crate) fn update_catalog_folders(
+    app_handle: &AppHandle,
+    update: impl FnOnce(&mut Vec<String>),
+) -> Result<(), String> {
+    let path = get_settings_path(app_handle)?;
+    let _guard = SETTINGS_FILE_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let mut settings = read_settings_file(&path)?.unwrap_or_default();
+    update(&mut settings.catalog_folders);
+    write_settings_file(&path, &settings)
+}
+
 #[tauri::command]
-pub fn save_settings(settings: AppSettings, app_handle: AppHandle) -> Result<(), String> {
+pub fn save_settings(mut settings: AppSettings, app_handle: AppHandle) -> Result<(), String> {
     let path = get_settings_path(&app_handle)?;
-    let json_string = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    fs::write(path, json_string).map_err(|e| e.to_string())?;
+    let _guard = SETTINGS_FILE_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if let Some(saved) = read_settings_file(&path)? {
+        settings.catalog_folders = saved.catalog_folders;
+    }
+    write_settings_file(&path, &settings)?;
 
     let state = app_handle.state::<AppState>();
     let cache_size = settings.image_cache_size.unwrap_or(5) as usize;

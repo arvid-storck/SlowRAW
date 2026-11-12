@@ -1139,6 +1139,11 @@ async fn export_images_impl(
                 } else {
                     crate::exif_processing::load_sidecar(&sidecar_path).adjustments
                 };
+                crate::file_management::apply_raw_lens_default(
+                    &mut js_adjustments,
+                    &source_path,
+                    &settings,
+                );
                 if js_adjustments["lensCorrectionMode"].as_str() == Some("auto") {
                     let lens_db = state.lens_db.lock().map_err(|e| e.to_string())?.clone();
                     crate::file_management::resolve_lens_params_in_adjustments(
@@ -1589,6 +1594,11 @@ pub async fn estimate_export_sizes(
     } else {
         let metadata = crate::exif_processing::load_sidecar(&sidecar_path);
         let mut js_adjustments = metadata.adjustments;
+        crate::file_management::apply_raw_lens_default(
+            &mut js_adjustments,
+            &source_path,
+            &settings,
+        );
         if js_adjustments["lensCorrectionMode"].as_str() == Some("auto") {
             let lens_db = state.lens_db.lock().map_err(|e| e.to_string())?.clone();
             crate::file_management::resolve_lens_params_in_adjustments(

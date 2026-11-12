@@ -307,45 +307,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Uses developer-provided testbilder RAW files"]
-    fn supplied_raw_files_render_through_gpu_geometry() {
-        let context = context();
-        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../testbilder");
-        let mut count = 0;
-        for entry in std::fs::read_dir(folder).unwrap() {
-            let path = entry.unwrap().path();
-            if !crate::formats::is_raw_file(&path) {
-                continue;
-            }
-            let metadata = crate::exif_processing::read_source_metadata(&path).unwrap();
-            let bytes = std::fs::read(&path).unwrap();
-            let image = Arc::new(
-                crate::raw_processing::develop_raw_image(
-                    &bytes,
-                    false,
-                    1000.0,
-                    "auto".into(),
-                    None,
-                    2.5,
-                )
-                .unwrap(),
-            );
-            let edits = json!({"lensDistortionParams":{"embedded":metadata.lens_profile},"orientationSteps":1,"rotation":2});
-            let slot = Plan::new(&image, &edits, 512).render(&context).unwrap();
-            let output = pixels(&context, &slot);
-            assert!(output.iter().all(|p| p.is_finite()), "{}", path.display());
-            assert!(
-                output.chunks_exact(4).any(|p| p[0] + p[1] + p[2] > 0.01),
-                "{}",
-                path.display()
-            );
-            eprintln!("GPU geometry: {}", path.display());
-            count += 1;
-        }
-        assert!(count >= 6);
-    }
-
-    #[test]
     fn oversized_source_can_still_render_a_bounded_preview() {
         let mut context = context();
         context.limits.max_texture_dimension_2d = 128;

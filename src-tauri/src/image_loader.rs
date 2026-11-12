@@ -19,6 +19,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use std::time::Instant;
+use tauri::Manager;
 
 #[derive(serde::Serialize)]
 pub struct LoadImageResult {
@@ -67,22 +68,26 @@ pub fn load_base_image_from_bytes(
     };
     let apply_to_non_raws = settings.apply_preprocessing_to_non_raws.unwrap_or(false);
 
-    crate::exif_processing::persist_exif_if_missing(
-        Path::new(path_for_ext_check),
-        path_for_ext_check,
-        bytes,
-    );
-
     if is_raw_file(path_for_ext_check) {
-        let mut image = crate::raw_processing::develop_raw_image(
-            bytes,
-            use_fast_raw_dev,
-            1000.0,
-            settings.linear_raw_mode.clone(),
-            cancel_token,
-            highlight_compression,
-        )
-        .with_context(|| format!("RAW development failed for '{}'", path_for_ext_check))?;
+        let mut image = std::panic::catch_unwind(|| {
+            crate::raw_processing::develop_raw_image(
+                bytes,
+                use_fast_raw_dev,
+                1000.0,
+                settings.linear_raw_mode.clone(),
+                cancel_token,
+                highlight_compression,
+            )
+        })
+        .map_err(|panic| {
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("decoder panicked");
+            anyhow!("RAW decoder failed for '{path_for_ext_check}': {message}")
+        })?
+        .with_context(|| format!("RAW development failed for '{path_for_ext_check}'"))?;
         if !use_fast_raw_dev && color_nr_amount > 0.0 {
             let start = Instant::now();
             reduce_raw_color_noise(&mut image, color_nr_amount);
@@ -167,7 +172,10 @@ pub fn load_image_with_orientation(
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(1);
     check_cancel()?;
-    let oriented_image = apply_orientation(image, Orientation::from_u16(orientation));
+    let oriented_image = apply_orientation(
+        image,
+        Orientation::from_u16(orientation).unwrap_or(Orientation::Normal),
+    );
 
     Ok(DynamicImage::ImageRgb32F(oriented_image.to_rgb32f()))
 }
@@ -182,6 +190,57 @@ pub fn is_image_cached(path: String, state: tauri::State<'_, AppState>) -> bool 
         .unwrap()
         .get(&source_path_str)
         .is_some()
+}
+
+pub(crate) fn load_cached_source(
+    source: &Path,
+    settings: &AppSettings,
+    state: &AppState,
+    cancel_token: Option<(Arc<AtomicUsize>, usize)>,
+) -> Result<(Arc<DynamicImage>, HashMap<String, String>), String> {
+    let check_cancelled = || {
+        if let Some((tracker, generation)) = &cancel_token
+            && tracker.load(Ordering::SeqCst) != *generation
+        {
+            return Err("Load cancelled".to_owned());
+        }
+        Ok(())
+    };
+    check_cancelled()?;
+    let path = source.to_string_lossy();
+    if let Some(cached) = state.decoded_image_cache.lock().unwrap().get(&path) {
+        return Ok(cached);
+    }
+    if crate::file_management::is_cloud_placeholder(source) {
+        return Err(format!(
+            "'{path}' is stored in iCloud and hasn't been downloaded yet."
+        ));
+    }
+
+    let decode = |bytes: &[u8]| {
+        check_cancelled()?;
+        let image = load_base_image_from_bytes(bytes, &path, false, settings, cancel_token.clone())
+            .map_err(|error| format!("{error:#}"))?;
+        check_cancelled()?;
+        let exif = exif_processing::read_exif_data(&path, bytes);
+        Ok::<_, String>((Arc::new(image), exif))
+    };
+    let (image, exif) = match read_file_mapped(source) {
+        Ok(mapped) => decode(&mapped)?,
+        Err(error) => {
+            log::warn!("Failed to map '{path}': {error}. Falling back to standard read.");
+            let bytes =
+                fs::read(source).map_err(|error| format!("Could not read '{path}': {error}"))?;
+            decode(&bytes)?
+        }
+    };
+    check_cancelled()?;
+    state.decoded_image_cache.lock().unwrap().insert(
+        path.into_owned(),
+        image.clone(),
+        exif.clone(),
+    );
+    Ok((image, exif))
 }
 
 #[tauri::command]
@@ -228,103 +287,31 @@ pub async fn load_image(
     let (source_path, sidecar_path) = parse_virtual_path(&path);
     let source_path_str = source_path.to_string_lossy().to_string();
 
-    let metadata: ImageMetadata = crate::exif_processing::load_sidecar(&sidecar_path);
-
     let settings = load_settings(app_handle.clone()).unwrap_or_default();
+    let mut metadata = crate::xmp::load_metadata(&source_path, &sidecar_path);
+    crate::file_management::apply_raw_lens_default(
+        &mut metadata.adjustments,
+        &source_path,
+        &settings,
+    );
 
-    let path_clone = source_path_str.clone();
-
-    let cached_data = state
-        .decoded_image_cache
-        .lock()
-        .unwrap()
-        .get(&source_path_str);
-
-    let (pristine_arc, exif_data) = if let Some((cached_img, cached_exif)) = cached_data {
-        (cached_img, cached_exif)
-    } else {
-        if crate::file_management::is_cloud_placeholder(&source_path) {
-            return Err(format!(
-                "'{}' is stored in iCloud and hasn't been downloaded yet. Download it in Finder, then try again.",
-                source_path_str
-            ));
-        }
-
-        let (pristine_img, exif_data_loaded) = tokio::task::spawn_blocking(move || {
-            if generation_tracker.load(Ordering::SeqCst) != my_generation {
-                return Err("Load cancelled".to_string());
-            }
-
-            let result: Result<(DynamicImage, HashMap<String, String>), String> =
-                (|| match read_file_mapped(Path::new(&path_clone)) {
-                    Ok(mmap) => {
-                        if generation_tracker.load(Ordering::SeqCst) != my_generation {
-                            return Err("Load cancelled".to_string());
-                        }
-
-                        let img = load_base_image_from_bytes(
-                            &mmap,
-                            &path_clone,
-                            false,
-                            &settings,
-                            cancel_token.clone(),
-                        )
-                        .map_err(|e| e.to_string())?;
-                        let exif = exif_processing::read_exif_data(&path_clone, &mmap);
-                        Ok((img, exif))
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "Failed to memory-map file '{}': {}. Falling back to standard read.",
-                            path_clone,
-                            e
-                        );
-                        let bytes = fs::read(&path_clone).map_err(|io_err| {
-                            format!("Fallback read failed for {}: {}", path_clone, io_err)
-                        })?;
-
-                        if generation_tracker.load(Ordering::SeqCst) != my_generation {
-                            return Err("Load cancelled".to_string());
-                        }
-
-                        let img = load_base_image_from_bytes(
-                            &bytes,
-                            &path_clone,
-                            false,
-                            &settings,
-                            cancel_token.clone(),
-                        )
-                        .map_err(|e| e.to_string())?;
-                        let exif = exif_processing::read_exif_data(&path_clone, &bytes);
-                        Ok((img, exif))
-                    }
-                })();
-            result
-        })
-        .await
-        .map_err(|e| e.to_string())??;
-
-        let arc_img = Arc::new(pristine_img);
-
-        state.decoded_image_cache.lock().unwrap().insert(
-            source_path_str.clone(),
-            arc_img.clone(),
-            exif_data_loaded.clone(),
-        );
-
-        (arc_img, exif_data_loaded)
-    };
+    let app = app_handle.clone();
+    let decode_path = source_path.clone();
+    let (pristine_arc, exif_data) = tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        load_cached_source(&decode_path, &settings, &state, cancel_token)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
 
     if state.load_image_generation.load(Ordering::SeqCst) != my_generation {
-        return Err("Load cancelled".to_string());
+        return Err("Load cancelled".into());
     }
+    let is_raw = is_raw_file(&source_path);
 
-    let is_raw = is_raw_file(&source_path_str);
-
-    if state.load_image_generation.load(Ordering::SeqCst) != my_generation {
-        return Err("Load cancelled".to_string());
-    }
-
+    let mut exif_data = exif_data;
+    exif_data.extend(crate::exif_processing::read_rrexif_sidecar(&source_path).unwrap_or_default());
+    exif_data.extend(metadata.exif.clone().unwrap_or_default());
     let (orig_width, orig_height) = pristine_arc.dimensions();
     let lens_db = state.lens_db.lock().map_err(|e| e.to_string())?.clone();
     let source_for_lens = source_path.clone();

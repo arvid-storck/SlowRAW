@@ -117,7 +117,7 @@ pub async fn batch_denoise_images(
                         continue;
                     }
 
-                    let _ = crate::exif_processing::write_rrexif_sidecar(&real_path, &output_path);
+                    let _ = crate::exif_processing::copy_exif_to_xmp(&real_path, &output_path);
 
                     if source_sidecar_path.exists()
                         && let Some(output_path_str) = output_path.to_str()
@@ -173,8 +173,7 @@ pub async fn save_denoised_image(
     save_denoised_pixels(&denoised_image, &output_path)?;
 
     let (real_path, _) = crate::file_management::parse_virtual_path(&original_path_str);
-    let _ =
-        crate::exif_processing::write_rrexif_sidecar(&real_path.to_string_lossy(), &output_path);
+    let _ = crate::exif_processing::copy_exif_to_xmp(&real_path.to_string_lossy(), &output_path);
 
     if source_sidecar_path.exists()
         && let Some(output_path_str) = output_path.to_str()

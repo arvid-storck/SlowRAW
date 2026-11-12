@@ -1,8 +1,20 @@
 use std::{
     fs,
+    io::Write,
     path::{Path, PathBuf},
 };
 use tauri::{AppHandle, Manager};
+
+pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<(), String> {
+    let result = || -> std::io::Result<()> {
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(path.parent().unwrap_or_else(|| Path::new(".")))?;
+        temporary.write_all(content)?;
+        temporary.persist(path)?;
+        Ok(())
+    };
+    result().map_err(|error| format!("{}: {error}", path.display()))
+}
 
 fn is_portable_directory(root: &Path) -> bool {
     root.join("portable.flag").is_file()

@@ -2,7 +2,18 @@ import { create } from 'zustand';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type JobKind =
-  'export' | 'import' | 'copy' | 'move' | 'auto' | 'catalog' | 'denoise' | 'panorama' | 'hdr' | 'focus' | 'cleanup';
+  | 'export'
+  | 'import'
+  | 'copy'
+  | 'move'
+  | 'auto'
+  | 'catalog'
+  | 'denoise'
+  | 'panorama'
+  | 'hdr'
+  | 'focus'
+  | 'cache'
+  | 'cleanup';
 export interface Job {
   id: number;
   kind: JobKind;

@@ -12,6 +12,7 @@ import { INITIAL_ADJUSTMENTS, normalizeLoadedAdjustments } from '../utils/adjust
 import { globalImageCache } from '../utils/ImageLRUCache';
 import { debouncedSave, debouncedSetHistory } from './useEditorActions';
 import { isVideoPath } from '../utils/mediaTypes';
+import { handleImageLoadFailure } from './useImageLoader';
 
 export interface AppNavigationProps {
   clearThumbnailQueue: () => void;
@@ -171,13 +172,12 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
             setEditor({ originalSize: { width: _result.width, height: _result.height } });
           })
           .catch((err: any) => {
-            if (String(err).includes('cancelled')) return;
-            console.error('Background load_image failed on cache hit:', err);
-            isBackendReadyRef.current = true;
-            currentResRef.current = 0;
+            if (selectedImagePathRef.current !== path || String(err).includes('cancelled')) return;
+            isBackendReadyRef.current = false;
+            handleImageLoadFailure(path, err);
           });
 
-        invoke(Invokes.LoadMetadata, { path })
+        invoke(Invokes.LoadMetadata, { path, forEditor: true })
           .then((metadata: any) => {
             if (selectedImagePathRef.current !== path) return;
             let freshAdjustments: any;
@@ -254,7 +254,6 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
         isViewLoading: true,
         currentFolderPath: `${filter ? 'Smart group' : 'Album'}: ${albumName}`,
         isCatalogMode: Boolean(filter),
-        catalogPage: 0,
         ...(filter
           ? {
               catalogFilter: normalizeCatalogFilter(filter),
@@ -265,7 +264,7 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
         editingSmartGroupId: null,
       });
 
-      if (filter) return; // Shared catalog loader owns paged smart-group queries.
+      if (filter) return; // Shared catalog loader owns smart-group queries.
       try {
         const files: ImageFile[] = await invoke(Invokes.GetAlbumImages, { paths: imagePaths });
         const current = useLibraryStore.getState();

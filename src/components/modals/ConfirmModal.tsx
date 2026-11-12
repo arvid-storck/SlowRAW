@@ -6,8 +6,8 @@ import Text from '../ui/Text';
 import { TextVariants } from '../../types/typography';
 
 interface ConfirmModalProps {
-  confirmationLabel?: string;
   cancelText?: string;
+  confirmationLabel?: string;
   confirmText?: string;
   confirmVariant?: string;
   isOpen: boolean;
@@ -18,8 +18,8 @@ interface ConfirmModalProps {
 }
 
 export default function ConfirmModal({
-  confirmationLabel,
   cancelText,
+  confirmationLabel,
   confirmText,
   confirmVariant = 'primary',
   isOpen,
@@ -32,7 +32,6 @@ export default function ConfirmModal({
   const [isMounted, setIsMounted] = useState(false);
   const [show, setShow] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
-  useEffect(() => setAcknowledged(false), [isOpen]);
 
   const resolvedCancelText = cancelText || t('modals.confirm.cancel');
   const resolvedConfirmText = confirmText || t('modals.confirm.confirm');
@@ -45,6 +44,7 @@ export default function ConfirmModal({
       }, 10);
       return () => clearTimeout(timer);
     } else {
+      setAcknowledged(false);
       setShow(false);
       const timer = setTimeout(() => {
         setIsMounted(false);
@@ -63,7 +63,7 @@ export default function ConfirmModal({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' && !(e.target instanceof Element && e.target.closest('button, input'))) {
         e.preventDefault();
         e.stopPropagation();
         e.nativeEvent.stopImmediatePropagation();
@@ -97,7 +97,7 @@ export default function ConfirmModal({
     >
       <div
         className={`
-          bg-surface rounded-lg shadow-xl p-6 w-full max-w-md text-text-primary
+          bg-surface rounded-lg shadow-xl p-6 w-full max-w-md max-h-[90vh] overflow-y-auto text-text-primary
           transform transition-all duration-300 ease-out
           ${show ? 'scale-100 opacity-100 translate-y-0' : 'scale-95 opacity-0 -translate-y-4'}
         `}
@@ -119,15 +119,16 @@ export default function ConfirmModal({
             className="bg-bg-primary shadow-transparent hover:bg-bg-primary text-white shadow-none focus:outline-hidden focus:ring-0"
             onClick={onClose}
             variant="ghost"
+            autoFocus={Boolean(confirmationLabel)}
             tabIndex={0}
           >
             {resolvedCancelText}
           </Button>
           <Button
             onClick={handleConfirm}
-            disabled={!!confirmationLabel && !acknowledged}
+            disabled={Boolean(confirmationLabel && !acknowledged)}
             variant={confirmVariant}
-            autoFocus={true}
+            autoFocus={!confirmationLabel}
             className="focus:outline-hidden focus:ring-0 focus:ring-offset-0"
           >
             {resolvedConfirmText}

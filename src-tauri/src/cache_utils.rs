@@ -232,6 +232,9 @@ impl DecodedImageCache {
         image: Arc<DynamicImage>,
         exif: HashMap<String, String>,
     ) {
+        if self.capacity == 0 {
+            return;
+        }
         if let Some(pos) = self.items.iter().position(|(p, _, _)| *p == path) {
             self.items.remove(pos);
         } else if self.items.len() >= self.capacity {

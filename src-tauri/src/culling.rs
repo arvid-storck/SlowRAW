@@ -69,8 +69,9 @@ fn calculate_laplacian_variance(image: &GrayImage) -> f64 {
         return 0.0;
     }
 
-    let mut laplacian_values = Vec::with_capacity(((width - 2) * (height - 2)) as usize);
+    let count = f64::from(width - 2) * f64::from(height - 2);
     let mut sum = 0.0;
+    let mut sum_of_squares = 0.0;
 
     for y in 1..height - 1 {
         for x in 1..width - 1 {
@@ -80,21 +81,13 @@ fn calculate_laplacian_variance(image: &GrayImage) -> f64 {
             let p_west = image.get_pixel(x - 1, y)[0] as i32;
             let p_east = image.get_pixel(x + 1, y)[0] as i32;
             let conv_val = (p_north + p_south + p_west + p_east - 4 * p_center) as f64;
-            laplacian_values.push(conv_val);
             sum += conv_val;
+            sum_of_squares += conv_val * conv_val;
         }
     }
 
-    if laplacian_values.is_empty() {
-        return 0.0;
-    }
-    let mean = sum / laplacian_values.len() as f64;
-
-    laplacian_values
-        .iter()
-        .map(|v| (v - mean).powi(2))
-        .sum::<f64>()
-        / laplacian_values.len() as f64
+    let mean = sum / count;
+    (sum_of_squares / count - mean * mean).max(0.0)
 }
 
 fn calculate_exposure_metric(image: &GrayImage) -> f64 {

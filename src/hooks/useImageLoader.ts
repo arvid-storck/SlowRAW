@@ -5,8 +5,27 @@ import { toast } from 'react-toastify';
 import { useEditorStore } from '../store/useEditorStore';
 import { useLibraryStore } from '../store/useLibraryStore';
 import { useSettingsStore } from '../store/useSettingsStore';
+import { useUIStore } from '../store/useUIStore';
 import { Invokes } from '../components/ui/AppProperties';
 import { INITIAL_ADJUSTMENTS, normalizeLoadedAdjustments } from '../utils/adjustments';
+import { globalImageCache } from '../utils/ImageLRUCache';
+
+export function handleImageLoadFailure(path: string, error: unknown) {
+  const editor = useEditorStore.getState();
+  if (editor.selectedImage?.path !== path) return;
+
+  console.error('Failed to load image:', error);
+  toast.error(translate('messages.useImageLoader.failed_to_load_image', { value1: String(error) }));
+  globalImageCache.delete(path);
+  editor.setEditor({
+    selectedImage: null,
+    finalPreviewUrl: null,
+    uncroppedAdjustedPreviewUrl: null,
+    hasRenderedFirstFrame: false,
+  });
+  useLibraryStore.getState().setLibrary({ isViewLoading: false });
+  useUIStore.getState().setUI({ activeView: 'library', slideDirection: 1 });
+}
 
 export function useImageLoader(cachedEditStateRef: React.RefObject<any>) {
   const selectedImage = useEditorStore((s) => s.selectedImage);
@@ -34,7 +53,7 @@ export function useImageLoader(cachedEditStateRef: React.RefObject<any>) {
         try {
           await invoke('clear_session_caches').catch((e) => console.warn('Cache clear failed:', e));
 
-          const metadata: any = await invoke(Invokes.LoadMetadata, { path: selectedImage.path });
+          const metadata: any = await invoke(Invokes.LoadMetadata, { path: selectedImage.path, forEditor: true });
           if (!isEffectActive) return;
 
           let initialAdjusts;
@@ -104,9 +123,7 @@ export function useImageLoader(cachedEditStateRef: React.RefObject<any>) {
           });
         } catch (err) {
           if (isEffectActive) {
-            console.error('Failed to load image:', err);
-            toast.error(translate('messages.useImageLoader.failed_to_load_image', { value1: String(err) }));
-            setEditor({ selectedImage: null });
+            handleImageLoadFailure(selectedImage.path, err);
           }
         } finally {
           if (isEffectActive) {

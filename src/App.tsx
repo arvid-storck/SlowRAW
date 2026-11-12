@@ -63,7 +63,6 @@ import './i18n';
 import {
   Invokes,
   ImageFile,
-  LibraryViewMode,
   Panel,
   PanelRegion,
   Theme,
@@ -186,7 +185,6 @@ function App() {
   );
 
   const defaultThumbnailSize = ThumbnailSize.Medium;
-  const defaultLibraryViewMode = LibraryViewMode.Flat;
 
   const selectedImagePathRef = useRef<string | null>(null);
   useEffect(() => {
@@ -201,7 +199,6 @@ function App() {
   const currentResRef = useRef<number>(1280);
   const cachedEditStateRef = useRef<any | null>(null);
 
-  const [libraryViewMode, setLibraryViewMode] = useState<LibraryViewMode>(defaultLibraryViewMode);
   const [isResizing, setIsResizing] = useState(false);
   const [thumbnailSize, setThumbnailSize] = useState(defaultThumbnailSize);
   const [thumbnailAspectRatio, setThumbnailAspectRatio] = useState(ThumbnailAspectRatio.Contain);
@@ -222,8 +219,6 @@ function App() {
     setThumbnailSize,
     thumbnailAspectRatio,
     setThumbnailAspectRatio,
-    libraryViewMode,
-    setLibraryViewMode,
   });
 
   const { handleCopyAdjustments, handlePasteAdjustments, handleResetAdjustments, handleZoomChange } =
@@ -636,7 +631,7 @@ function App() {
                   {renderAppPanel(Panel.Catalog)}
                 </div>
               )}
-              {activeView === 'editor' && uiVisibility.leftPanel && hasMainContent && (
+              {activeView === 'editor' && uiVisibility.leftPanel && selectedImage && (
                 <SidePanelArea
                   side="left"
                   width={effectiveLeftWidth}
@@ -720,7 +715,6 @@ function App() {
                         onBack={() => setUI({ isSettingsOpen: false })}
                         onLibraryRefresh={handleLibraryRefresh}
                         onSettingsChange={handleSettingsChange}
-                        rootPaths={rootPaths}
                       />
                     </div>
                   </div>
@@ -731,7 +725,7 @@ function App() {
                   {renderAppPanel(Panel.Export)}
                 </div>
               )}
-              {activeView === 'editor' && uiVisibility.rightPanel && hasMainContent && (
+              {activeView === 'editor' && uiVisibility.rightPanel && selectedImage && (
                 <SidePanelArea
                   side="right"
                   width={effectiveRightWidth}

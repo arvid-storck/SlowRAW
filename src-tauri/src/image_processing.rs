@@ -49,13 +49,18 @@ impl<'a> IntoCowImage<'a> for &'a std::sync::Arc<DynamicImage> {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(default)]
 pub struct ImageMetadata {
     pub version: u32,
     pub rating: u8,
     pub adjustments: Value,
     #[serde(default)]
     pub tags: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::exif_processing::deserialize_sidecar_exif",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub exif: Option<std::collections::HashMap<String, String>>,
 }
 
@@ -877,7 +882,7 @@ pub fn apply_linear_to_srgb(mut image: DynamicImage) -> DynamicImage {
 
 pub fn apply_orientation(image: DynamicImage, orientation: Orientation) -> DynamicImage {
     match orientation {
-        Orientation::Normal | Orientation::Unknown => image,
+        Orientation::Normal => image,
         Orientation::HorizontalFlip => image.fliph(),
         Orientation::Rotate180 => image.rotate180(),
         Orientation::VerticalFlip => image.flipv(),

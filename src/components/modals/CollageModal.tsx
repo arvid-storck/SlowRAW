@@ -140,33 +140,47 @@ export default function CollageModal({ isOpen, onClose, onSave, sourceImages }: 
   useEffect(() => {
     if (!isOpen || sourceImages.length === 0) return;
 
+    let active = true;
+    const urls = new Set<string>();
+    const imageElements: Record<string, HTMLImageElement> = {};
+
     const loadImages = async () => {
       setIsLoading(true);
       setError(null);
       try {
         const imagePromises = sourceImages.map(async (imageFile) => {
           const metadata: any = await invoke(Invokes.LoadMetadata, { path: imageFile.path });
+          if (!active) return;
           const adjustments = metadata.adjustments && !metadata.adjustments.is_null ? metadata.adjustments : {};
 
           const imageData: Uint8Array = await invoke(Invokes.GeneratePreviewForPath, {
             path: imageFile.path,
             jsAdjustments: adjustments,
           });
+          if (!active) return;
           const blob = new Blob([new Uint8Array(imageData)], { type: 'image/jpeg' });
           const url = URL.createObjectURL(blob);
+          urls.add(url);
 
           return new Promise<LoadedImage>((resolve, reject) => {
             const img = new Image();
             img.onload = () => {
-              imageElementsRef.current[imageFile.path] = img;
+              if (active) imageElements[imageFile.path] = img;
               resolve({ path: imageFile.path, url, width: img.width, height: img.height });
             };
-            img.onerror = () => reject(new Error(`Failed to load image: ${imageFile.path}`));
+            img.onerror = () => {
+              if (urls.delete(url)) URL.revokeObjectURL(url);
+              reject(new Error(`Failed to load image: ${imageFile.path}`));
+            };
             img.src = url;
           });
         });
 
-        const results = await Promise.all(imagePromises);
+        const previews = await Promise.all(imagePromises);
+        if (!active) return;
+
+        const results = previews.filter((image) => image !== undefined);
+        imageElementsRef.current = imageElements;
         if (results.length === 1) {
           const img = results[0];
           const ratio = img.width / img.height;
@@ -181,17 +195,20 @@ export default function CollageModal({ isOpen, onClose, onSave, sourceImages }: 
         });
         setImageStates(initialStates);
       } catch (err: any) {
+        if (!active) return;
         console.error('Failed to load images:', err);
         setError(err.message || 'Could not load images.');
       } finally {
-        setIsLoading(false);
+        if (active) setIsLoading(false);
       }
     };
 
     const timerId = setTimeout(loadImages, 300);
     return () => {
+      active = false;
       clearTimeout(timerId);
-      Object.values(imageElementsRef.current).forEach((img) => URL.revokeObjectURL(img.src));
+      urls.forEach((url) => URL.revokeObjectURL(url));
+      urls.clear();
     };
   }, [isOpen, sourceImages, t]);
 

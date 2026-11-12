@@ -84,19 +84,21 @@ export function useLibraryActions(handleImageSelect?: (path: string, openInEdito
   }, []);
 
   const handleTagsChanged = useCallback((changedPaths: string[], newTags: { tag: string; isUser: boolean }[]) => {
-    void refreshCatalog().catch((error) =>
-      toast.error(translate('messages.useLibraryActions.could_not_refresh_catalog_tags', { value1: String(error) })),
-    );
     const { imageList } = useLibraryStore.getState();
     const groupingMode = useSettingsStore.getState().appSettings?.grouping ?? 'off';
     const pathsToUpdate = expandGroupedPaths(imageList, changedPaths, groupingMode);
+    void invoke(Invokes.CatalogRefreshPaths, { paths: pathsToUpdate })
+      .then(refreshCatalog)
+      .catch((error) =>
+        toast.error(translate('messages.useLibraryActions.could_not_refresh_catalog_tags', { value1: String(error) })),
+      );
 
     useLibraryStore.getState().setLibrary((state) => ({
       imageList: state.imageList.map((image) => {
         if (pathsToUpdate.includes(image.path)) {
-          const colorTags = (image.tags || []).filter((t) => t.startsWith('color:'));
+          const organizationTags = (image.tags || []).filter((t) => t.startsWith('color:') || t.startsWith('flag:'));
           const prefixedNewTags = newTags.map((t) => (t.isUser ? `user:${t.tag}` : t.tag));
-          const finalTags = [...colorTags, ...prefixedNewTags].sort();
+          const finalTags = [...organizationTags, ...prefixedNewTags].sort();
           return { ...image, tags: finalTags.length > 0 ? finalTags : null };
         }
         return image;
@@ -123,6 +125,7 @@ export function useLibraryActions(handleImageSelect?: (path: string, openInEdito
 
     try {
       await invoke(Invokes.UpdateExifFields, { paths: physicalPathsArray, updates });
+      await invoke(Invokes.CatalogRefreshPaths, { paths: physicalPathsArray, refreshExif: true });
 
       setEditor((state) => {
         if (!state.selectedImage || !physicalPathsSet.has(state.selectedImage.path.split('?vc=')[0])) return state;

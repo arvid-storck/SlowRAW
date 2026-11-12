@@ -77,8 +77,7 @@ interface LibraryState {
   catalogFacets: CatalogFacets | null;
   catalogDateFilter: string;
   catalogFilter: CatalogFilterState;
-  catalogPage: number;
-  catalogHasMore: boolean;
+  catalogOffset: number;
   catalogTotal: number;
   editingSmartGroupId: string | null;
   catalogRevision: number;
@@ -124,8 +123,7 @@ export const useLibraryStore = create<LibraryState>((set) => ({
   catalogFacets: null,
   catalogDateFilter: '',
   catalogFilter: EMPTY_CATALOG_FILTER,
-  catalogPage: 0,
-  catalogHasMore: false,
+  catalogOffset: 0,
   catalogTotal: 0,
   editingSmartGroupId: null,
   catalogRevision: 0,
@@ -142,7 +140,7 @@ export const useLibraryStore = create<LibraryState>((set) => ({
   libraryActivePath: null,
   libraryActiveAdjustments: INITIAL_ADJUSTMENTS,
 
-  sortCriteria: { key: 'date_taken', order: SortDirection.Ascending },
+  sortCriteria: { key: 'date_taken', order: SortDirection.Descending },
   filterCriteria: { colors: [], rating: 0, rawStatus: RawStatus.All },
   searchCriteria: { tags: [], text: '', mode: 'OR' },
 
@@ -176,7 +174,7 @@ export const useLibraryStore = create<LibraryState>((set) => ({
           currentFolderPath: 'Catalog',
           catalogFilter: { ...EMPTY_CATALOG_FILTER },
           catalogDateFilter: '',
-          catalogPage: 0,
+          catalogOffset: 0,
           imageList: [],
           multiSelectedPaths: [],
           libraryActivePath: null,

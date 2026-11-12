@@ -9,6 +9,8 @@ const commands: Record<string, { kind: JobKind; done?: string; error?: string; p
   move_files: { kind: 'move' },
   apply_auto_adjustments_to_paths: { kind: 'auto' },
   catalog_add_folder: { kind: 'catalog', progress: 'indexing-progress' },
+  catalog_build_thumbnail_cache: { kind: 'cache', progress: 'thumbnail-cache-build-progress' },
+  delete_edit_sidecars: { kind: 'cleanup' },
   catalog_rebuild: { kind: 'catalog', progress: 'indexing-progress' },
   batch_denoise_images: { kind: 'denoise' },
   apply_denoising: { kind: 'denoise', done: 'denoise-complete', error: 'denoise-error' },

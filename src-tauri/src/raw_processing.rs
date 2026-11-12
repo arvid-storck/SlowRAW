@@ -5,7 +5,9 @@ use image::{DynamicImage, ImageBuffer, Rgb};
 use rawler::imgop::xyz::Illuminant;
 use rawler::{
     decoders::{Orientation, RawDecodeParams},
-    imgop::develop::{Intermediate, ProcessingStep, RawDevelop},
+    imgop::render::{
+        DemosaicQuality, ProcessingStep, RenderOptions, WhiteBalancePlacement, render,
+    },
     rawimage::{RawImage, RawImageData, RawPhotometricInterpretation},
     rawsource::RawSource,
 };
@@ -34,17 +36,28 @@ pub fn read_as_shot_white_balance(file_bytes: &[u8]) -> Option<WhiteBalance> {
         wb_coeffs.map(|c| 1.0 / c)
     };
 
-    let matrices = &raw_image.color_matrix;
-    if let (Some(matrix_a), Some(matrix_d65)) =
-        (matrices.get(&Illuminant::A), matrices.get(&Illuminant::D65))
-    {
+    let (a, d65, fallback) = camera_color_matrices(&raw_image);
+    if let (Some(matrix_a), Some(matrix_d65)) = (a, d65) {
         return WhiteBalance::from_dual_illuminant_camera_neutral(matrix_a, matrix_d65, &neutral);
     }
 
-    let color_matrix = matrices
-        .get(&Illuminant::D65)
-        .or_else(|| matrices.values().next())?;
-    WhiteBalance::from_camera_neutral(color_matrix, &neutral)
+    WhiteBalance::from_camera_neutral(d65.or(fallback)?, &neutral)
+}
+
+fn camera_color_matrices(raw: &RawImage) -> (Option<&[f32]>, Option<&[f32]>, Option<&[f32]>) {
+    let Some(profile) = raw.as_shot_camera_profile() else {
+        return (None, None, None);
+    };
+    let matrix = |illuminant| {
+        profile
+            .slot_of(illuminant)
+            .and_then(|slot| profile.color_matrix[slot].as_deref())
+    };
+    (
+        matrix(Illuminant::A),
+        matrix(Illuminant::D65),
+        raw.best_color_matrix().map(|(_, matrix)| matrix.as_slice()),
+    )
 }
 
 pub fn develop_raw_image(
@@ -112,84 +125,20 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "Uses developer-provided testbilder RAW files"]
-    fn supplied_raw_formats_develop_finite_color_with_reconstruction() {
-        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../testbilder");
-        let mut count = 0;
-        for entry in std::fs::read_dir(folder).unwrap() {
-            let path = entry.unwrap().path();
-            if !crate::formats::is_raw_file(&path) {
-                continue;
-            }
-            let bytes = std::fs::read(&path).unwrap();
-            let image = develop_raw_image(&bytes, false, 1000.0, "auto".into(), None, 2.5)
-                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            let buffer = image.as_rgb32f().unwrap();
-            assert!(buffer.width() > 0 && buffer.height() > 0);
-            assert!(
-                buffer.as_raw().iter().all(|v| v.is_finite()),
-                "{}",
-                path.display()
-            );
-            assert!(
-                buffer.as_raw().iter().any(|v| *v > 0.01),
-                "{}",
-                path.display()
-            );
-            count += 1;
-        }
-        assert!(count >= 6, "Expected supplied camera formats, got {count}");
-    }
-    use rawler::{
-        CFA,
-        cfa::PlaneColor,
-        decoders::Camera,
-        imgop::{Dim2, Point, Rect},
-        rawimage::CFAConfig,
-    };
-
-    #[test]
-    fn rcd_uses_sensor_coordinates_and_rawler_applies_the_crop_once() {
-        let cfa = CFA::new("RGGB");
-        let colors = PlaneColor::new("RGB");
-        let camera = Camera {
-            cfa: cfa.clone(),
-            plane_color: colors.clone(),
-            blacklevel: Some(vec![512]),
-            whitelevel: Some(vec![4095]),
-            ..Default::default()
-        };
-        let values = [0.25, 0.5, 0.75];
-        let pixels = (0..64 * 64)
-            .map(|i| 512.0 + 3583.0 * values[cfa.color_at(i / 64, i % 64)])
-            .collect();
-        let mut raw = RawImage::new_with_data(
-            camera,
-            RawImageData::Float(pixels),
-            64,
-            64,
-            1,
-            [1.0; 4],
-            RawPhotometricInterpretation::Cfa(CFAConfig::new(&cfa, &colors)),
-            None,
-            None,
-            false,
+    #[ignore = "Requires a Nikon HE or HE* sample file"]
+    fn nikon_high_efficiency_nef_develops() {
+        let path =
+            std::env::var_os("SLOWRAW_NIKON_HE_SAMPLE").expect("Set SLOWRAW_NIKON_HE_SAMPLE");
+        let bytes = std::fs::read(path).unwrap();
+        let image = develop_raw_image(&bytes, false, 1000.0, "auto".into(), None, 2.5).unwrap();
+        let buffer = image.as_rgb32f().unwrap();
+        let (width, height) = buffer.dimensions();
+        assert!(
+            width.min(height) >= 2000,
+            "Unexpected Nikon image dimensions: {width}x{height}"
         );
-        raw.crop_area = Some(Rect::new(Point::new(3, 5), Dim2::new(58, 54)));
-        assert!(demosaic_bayer(&mut raw).unwrap());
-        assert!(!demosaic_bayer(&mut raw).unwrap());
-        let developed = RawDevelop::new_with(&[ProcessingStep::CropDefault])
-            .develop_intermediate(&raw)
-            .unwrap();
-        let Intermediate::ThreeColor(rgb) = developed else {
-            panic!("Expected RGB");
-        };
-        assert_eq!((rgb.dim().w, rgb.dim().h), (58, 54));
-        for pixel in rgb.data {
-            for c in 0..3 {
-                assert!((pixel[c] - values[c]).abs() < 0.0001);
-            }
-        }
+        assert!(buffer.as_raw().iter().all(|sample| sample.is_finite()));
+        assert!(buffer.as_raw().iter().any(|sample| *sample > 0.01));
     }
 }
 
@@ -231,7 +180,7 @@ fn develop_internal(
     let orientation = metadata
         .exif
         .orientation
-        .map(Orientation::from_u16)
+        .and_then(Orientation::from_u16)
         .unwrap_or(Orientation::Normal);
 
     let is_linear_format = is_linear_raw_format(&raw_image);
@@ -260,24 +209,8 @@ fn develop_internal(
         *level = u32::MAX;
     }
 
-    let mut developer = RawDevelop::default();
-
     check_cancel()?;
-    if demosaic_bayer(&mut raw_image)? {
-        developer
-            .steps
-            .retain(|&step| step != ProcessingStep::Rescale && step != ProcessingStep::Demosaic);
-    }
-
-    if is_linear_format {
-        developer.steps.retain(|&step| {
-            step != ProcessingStep::SRgb
-                && step != ProcessingStep::Demosaic
-                && (apply_calibration || step != ProcessingStep::Calibrate)
-        });
-    } else {
-        developer.steps.retain(|&step| step != ProcessingStep::SRgb);
-    }
+    let demosaiced = demosaic_bayer(&mut raw_image)?;
 
     raw_image.wb_coeffs =
         crate::multi_exposure::neutralize_wb_if_multiexposure(raw_image.wb_coeffs, file_bytes);
@@ -294,10 +227,8 @@ fn develop_internal(
                 1.0
             }
         });
-        let matrices = &raw_image.color_matrix;
-        let matrix = if let (Some(a), Some(d65)) =
-            (matrices.get(&Illuminant::A), matrices.get(&Illuminant::D65))
-        {
+        let (a, d65, fallback) = camera_color_matrices(&raw_image);
+        let matrix = if let (Some(a), Some(d65)) = (a, d65) {
             WhiteBalance::from_dual_illuminant_camera_neutral(a, d65, &neutral).map(|white| {
                 let weight = ((1.0 / white.temperature as f64 - 1.0 / 6504.0)
                     / (1.0 / 2856.0 - 1.0 / 6504.0))
@@ -308,10 +239,7 @@ fn develop_internal(
                     .collect::<Vec<_>>()
             })
         } else {
-            matrices
-                .get(&Illuminant::D65)
-                .or_else(|| matrices.values().next())
-                .cloned()
+            d65.or(fallback).map(<[f32]>::to_vec)
         };
         matrix
             .filter(|m| m.len() == 9)
@@ -319,16 +247,25 @@ fn develop_internal(
     } else {
         None
     };
-    if camera_matrix.is_some() {
-        developer
-            .steps
-            .retain(|step| *step != ProcessingStep::Calibrate);
+    let mut steps = vec![ProcessingStep::CropActiveArea, ProcessingStep::CropDefault];
+    if !demosaiced {
+        steps.push(ProcessingStep::Rescale);
+        if !is_linear_format {
+            steps.extend([ProcessingStep::Demosaic, ProcessingStep::FujiRotate]);
+        }
     }
+    if camera_matrix.is_none() && (!is_linear_format || apply_calibration) {
+        steps.extend([ProcessingStep::WhiteBalance, ProcessingStep::Calibrate]);
+    }
+    let options = RenderOptions {
+        steps: steps.into_iter().collect(),
+        white_balance: WhiteBalancePlacement::AfterDemosaic,
+        demosaic: DemosaicQuality::Fast,
+        ..Default::default()
+    };
 
     check_cancel()?;
-    let mut developed_intermediate = developer.develop_intermediate(&raw_image)?;
-
-    drop(raw_image);
+    let mut developed = render(raw_image, &options)?;
 
     let denominator = (original_white_level - original_black_level).max(1.0);
     let rescale_factor = (u32::MAX as f32 - original_black_level) / denominator;
@@ -344,107 +281,63 @@ fn develop_internal(
     check_cancel()?;
 
     let reconstructs_camera_highlights = camera_matrix.is_some() && !is_linear_format;
-    if let Intermediate::ThreeColor(pixels) = &mut developed_intermediate {
-        if let Some(matrix) = camera_matrix {
-            if !is_linear_format && recovery > 0.0 {
-                let region = crate::highlight_reconstruction::Region {
-                    stride: pixels.width,
-                    x: 0,
-                    y: 0,
-                    width: pixels.width,
-                    height: pixels.height,
-                };
-                let clips = crate::highlight_reconstruction::detect_clip_levels(
-                    &pixels.data,
-                    region,
-                    rescale_factor,
-                )
-                .map(|v| v / rescale_factor);
-                crate::highlight_reconstruction::reconstruct_highlights(
-                    &mut pixels.data,
-                    region,
-                    clips,
-                    recovery,
-                );
-            }
-            pixels.data.par_iter_mut().for_each(|pixel| {
-                let input = *pixel;
-                *pixel = std::array::from_fn(|c| {
-                    matrix
-                        .iter()
-                        .zip(input)
-                        .map(|(column, value)| column[c] * value)
-                        .sum()
-                });
-            });
+    if developed.channels == 3
+        && let Some(matrix) = camera_matrix
+    {
+        let pixels = developed.data.as_chunks_mut::<3>().0;
+        if !is_linear_format && recovery > 0.0 {
+            let region = crate::highlight_reconstruction::Region {
+                stride: developed.width,
+                x: 0,
+                y: 0,
+                width: developed.width,
+                height: developed.height,
+            };
+            let clips =
+                crate::highlight_reconstruction::detect_clip_levels(pixels, region, rescale_factor)
+                    .map(|v| v / rescale_factor);
+            crate::highlight_reconstruction::reconstruct_highlights(
+                pixels, region, clips, recovery,
+            );
         }
+        pixels.par_iter_mut().for_each(|pixel| {
+            let input = *pixel;
+            *pixel = std::array::from_fn(|c| {
+                matrix
+                    .iter()
+                    .zip(input)
+                    .map(|(column, value)| column[c] * value)
+                    .sum()
+            });
+        });
     }
 
-    match &mut developed_intermediate {
-        Intermediate::Monochrome(pixels) => {
-            pixels.data.iter_mut().for_each(|p| {
-                let mut linear_val = *p * rescale_factor;
-                if is_linear_format && apply_ungamma {
-                    linear_val = srgb_to_linear(linear_val.clamp(0.0, 1.0));
-                }
-                *p = linear_val.clamp(0.0, clamp_limit);
-            });
-        }
-        Intermediate::ThreeColor(pixels) => {
-            pixels.data.iter_mut().for_each(|p| {
-                let mut r = p[0] * rescale_factor;
-                let mut g = p[1] * rescale_factor;
-                let mut b = p[2] * rescale_factor;
-
-                if is_linear_format && apply_ungamma {
-                    r = srgb_to_linear(r.clamp(0.0, 1.0));
-                    g = srgb_to_linear(g.clamp(0.0, 1.0));
-                    b = srgb_to_linear(b.clamp(0.0, 1.0));
-                }
-
-                p[0] = r.clamp(-clamp_limit, clamp_limit);
-                p[1] = g.clamp(-clamp_limit, clamp_limit);
-                p[2] = b.clamp(-clamp_limit, clamp_limit);
-            });
-        }
-        Intermediate::FourColor(pixels) => {
-            pixels.data.iter_mut().for_each(|p| {
-                p.iter_mut().for_each(|c| {
-                    let mut linear_val = *c * rescale_factor;
-                    if is_linear_format && apply_ungamma {
-                        linear_val = srgb_to_linear(linear_val.clamp(0.0, 1.0));
-                    }
-                    *c = linear_val.clamp(0.0, clamp_limit);
-                });
-            });
-        }
-    }
-
-    let (width, height) = {
-        let dim = developed_intermediate.dim();
-        (dim.w as u32, dim.h as u32)
+    let clamp_min = match developed.channels {
+        1 => 0.0,
+        3 => -clamp_limit,
+        _ => return Err(anyhow!("Unsupported rendered channel count")),
     };
+    developed.data.iter_mut().for_each(|sample| {
+        let mut value = *sample * rescale_factor;
+        if is_linear_format && apply_ungamma {
+            value = srgb_to_linear(value.clamp(0.0, 1.0));
+        }
+        *sample = value.clamp(clamp_min, clamp_limit);
+    });
 
     check_cancel()?;
 
-    let mut dynamic_image = match developed_intermediate {
-        Intermediate::ThreeColor(pixels) => {
-            let buffer =
-                ImageBuffer::<Rgb<f32>, _>::from_raw(width, height, pixels.data.into_flattened())
-                    .ok_or_else(|| anyhow!("Invalid developed RGB dimensions"))?;
-            DynamicImage::ImageRgb32F(buffer)
-        }
-        Intermediate::Monochrome(pixels) => {
-            let buffer = ImageBuffer::<Rgb<f32>, _>::from_fn(width, height, |x, y| {
-                let p = pixels.data[(y * width + x) as usize];
-                Rgb([p, p, p])
-            });
-            DynamicImage::ImageRgb32F(buffer)
-        }
-        _ => {
-            return Err(anyhow!("Unsupported intermediate format for conversion"));
-        }
+    let (width, height) = (developed.width as u32, developed.height as u32);
+    let buffer = if developed.channels == 1 {
+        ImageBuffer::<Rgb<f32>, _>::from_fn(width, height, |x, y| {
+            let value = developed.data[(y * width + x) as usize];
+            Rgb([value; 3])
+        })
+    } else {
+        ImageBuffer::from_raw(width, height, developed.data)
+            .ok_or_else(|| anyhow!("Invalid developed RGB dimensions"))?
     };
+    let mut dynamic_image = DynamicImage::ImageRgb32F(buffer);
 
     if !reconstructs_camera_highlights {
         crate::highlight_recovery::apply_highlight_recovery(&mut dynamic_image, recovery);

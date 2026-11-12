@@ -60,7 +60,6 @@ export default function CatalogPanel({ isResizing, onSelectAlbum, onAlbumContext
   const selectDate = (date: string) =>
     setLibrary((state) => ({
       catalogDateFilter: date,
-      catalogPage: 0,
       isCatalogMode: true,
       catalogFilter: { ...state.catalogFilter, date },
       activeAlbumId: null,

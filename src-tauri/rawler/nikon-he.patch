@@ -1,0 +1,2850 @@
+diff --git a/rawler/src/decoders/nef.rs b/rawler/src/decoders/nef.rs
+index e1a6f9a..8981da2 100644
+--- a/rawler/src/decoders/nef.rs
++++ b/rawler/src/decoders/nef.rs
+@@ -23,6 +23,7 @@ use crate::decoders::dynamic_image_from_ifd;
+ use crate::decoders::dynamic_image_from_jpeg_interchange_format;
+ use crate::decoders::nef::lensdata::NefLensData;
+ use crate::decompressors::decompress_lines_fn;
++use crate::decompressors::jpegxs;
+ use crate::decompressors::ljpeg::huffman::HuffTable;
+ use crate::decompressors::packed::*;
+ use crate::exif::Exif;
+@@ -216,10 +217,6 @@ impl<'a> Decoder for NefDecoder<'a> {
+     };
+     debug!("TIFF compression flag: {}, NEF compression mode: {:?}", compression, nef_compression);
+ 
+-    if matches!(nef_compression, Some(NefCompression::HighEfficency)) || matches!(nef_compression, Some(NefCompression::HighEfficencyStar)) {
+-      return Err(decoder_error!("NEF compression {:?} is not supported", nef_compression));
+-    }
+-
+     let offset = fetch_tiff_tag!(raw, TiffCommonTag::StripOffsets).force_usize(0);
+     let size = fetch_tiff_tag!(raw, TiffCommonTag::StripByteCounts).force_usize(0);
+     let rows_per_strip = fetch_tiff_tag!(raw, TiffCommonTag::RowsPerStrip).get_usize(0).ok().flatten().unwrap_or(height);
+@@ -247,7 +244,9 @@ impl<'a> Decoder for NefDecoder<'a> {
+       return Err(RawlerError::decoder_failed("NEF: TIFF and makernote endianness mismatch".to_string()));
+     }
+ 
+-    let image = if camera.model == "NIKON D100" {
++    let image = if matches!(nef_compression, Some(NefCompression::HighEfficency | NefCompression::HighEfficencyStar)) {
++      self.decode_high_efficiency(&src, width, height, dummy)?
++    } else if camera.model == "NIKON D100" {
+       width = 3040;
+       decompress_12be_wcontrol(&src, width, height, dummy).map_err(RawlerError::decoder_failed)?
+     } else if camera.find_hint("coolpixsplit") {
+@@ -671,6 +670,17 @@ impl<'a> NefDecoder<'a> {
+     })
+   }
+ 
++  /// Decode a "High Efficiency" (HE/HE*) raw strip: a JPEG XS codestream
++  /// carrying a star-tetrix decorrelation of the CFA planes, which
++  /// [`jpegxs::decode`] reassembles into the full-resolution RGGB mosaic.
++  fn decode_high_efficiency(&self, src: &PaddedBuf, width: usize, height: usize, dummy: bool) -> Result<PixU16> {
++    if dummy {
++      return Ok(PixU16::new_uninit(width, height));
++    }
++    let mosaic = jpegxs::decode(src, width, height)?;
++    Ok(PixU16::new_with(mosaic, width, height))
++  }
++
+   fn decode_compressed(&self, src: &PaddedBuf, width: usize, height: usize, bps: usize, dummy: bool) -> Result<PixU16> {
+     let meta = if let Some(meta) = self.makernote.get_entry(TiffCommonTag::NefMeta2) {
+       debug!("Found NefMeta2");
+diff --git a/rawler/src/decompressors/jpegxs/bitreader.rs b/rawler/src/decompressors/jpegxs/bitreader.rs
+new file mode 100644
+index 0000000..7281b2d
+--- /dev/null
++++ b/rawler/src/decompressors/jpegxs/bitreader.rs
+@@ -0,0 +1,195 @@
++// SPDX-License-Identifier: LGPL-2.1
++// Copyright 2026
++
++//! Bit-level reader for JPEG XS precinct payloads.
++//!
++//! The coded sub-packets need three read sizes out of one stream: single bits
++//! for significance flags, sign bits and unary codes; nibbles for raw GCLIs
++//! and coefficient bit planes, which the encoder keeps 4-bit aligned; and
++//! whole bytes for headers and sub-packet boundaries. Everything is MSB
++//! first, and every read is bounds-checked.
++
++use crate::RawlerError;
++use crate::Result;
++
++#[derive(Debug, Clone)]
++pub struct BitReader<'a> {
++  buf: &'a [u8],
++  /// Byte offset of the next unread byte (the one `bits` indexes into).
++  pos: usize,
++  /// Bits already consumed from `buf[pos]`, 0..=7.
++  bits: u8,
++}
++
++impl<'a> BitReader<'a> {
++  pub fn at(buf: &'a [u8], pos: usize) -> Self {
++    Self { buf, pos, bits: 0 }
++  }
++
++  fn eof<T>(&self, what: &str) -> Result<T> {
++    Err(RawlerError::decoder_failed(format!(
++      "JPEG XS: bitstream ended while reading {} at byte {} of {}",
++      what,
++      self.pos,
++      self.buf.len()
++    )))
++  }
++
++  /// Byte offset of the reading position, rounded down.
++  pub fn byte_pos(&self) -> usize {
++    self.pos
++  }
++
++  pub fn bit(&mut self) -> Result<u8> {
++    if self.pos >= self.buf.len() {
++      return self.eof("a bit");
++    }
++    let v = (self.buf[self.pos] >> (7 - self.bits)) & 1;
++    self.bits += 1;
++    if self.bits == 8 {
++      self.bits = 0;
++      self.pos += 1;
++    }
++    Ok(v)
++  }
++
++  /// Read one nibble. The reader must sit on a 4-bit boundary, which the
++  /// coefficient data sub-packet guarantees by construction.
++  pub fn nibble(&mut self) -> Result<u8> {
++    if self.pos >= self.buf.len() {
++      return self.eof("a nibble");
++    }
++    match self.bits {
++      0 => {
++        self.bits = 4;
++        Ok(self.buf[self.pos] >> 4)
++      }
++      4 => {
++        self.bits = 0;
++        let v = self.buf[self.pos] & 0x0f;
++        self.pos += 1;
++        Ok(v)
++      }
++      _ => Err(RawlerError::decoder_failed(format!(
++        "JPEG XS: nibble read at bit offset {} (not 4-bit aligned)",
++        self.bits
++      ))),
++    }
++  }
++
++  /// Read a unary code: the number of 1-bits before the terminating 0-bit.
++  ///
++  /// The reference decoder holds the code in a 32-bit register, so a run of
++  /// 32 ones is corrupt rather than a value.
++  pub fn unary(&mut self) -> Result<u32> {
++    let mut n = 0u32;
++    while self.bit()? == 1 {
++      n += 1;
++      if n >= 32 {
++        return Err(RawlerError::decoder_failed("JPEG XS: unary code exceeds 31, corrupt stream"));
++      }
++    }
++    Ok(n)
++  }
++
++  /// The reader must be byte-aligned.
++  pub fn bytes(&mut self, n: usize) -> Result<&'a [u8]> {
++    if self.bits != 0 {
++      return Err(RawlerError::decoder_failed(format!(
++        "JPEG XS: byte read at bit offset {} (not byte-aligned)",
++        self.bits
++      )));
++    }
++    if self.pos + n > self.buf.len() {
++      return self.eof("bytes");
++    }
++    let v = &self.buf[self.pos..self.pos + n];
++    self.pos += n;
++    Ok(v)
++  }
++
++  /// Advance to the next byte boundary. A no-op when already aligned.
++  pub fn align(&mut self) {
++    if self.bits != 0 {
++      self.bits = 0;
++      self.pos += 1;
++    }
++  }
++
++  /// The reader must be byte-aligned.
++  pub fn skip_bytes(&mut self, n: usize) -> Result<()> {
++    debug_assert!(self.bits == 0);
++    if self.pos + n > self.buf.len() {
++      return self.eof("skipped padding");
++    }
++    self.pos += n;
++    Ok(())
++  }
++
++  /// Skip forward over bits at any alignment.
++  pub fn skip_bits(&mut self, n: usize) -> Result<()> {
++    let target = self
++      .pos
++      .checked_mul(8)
++      .and_then(|b| b.checked_add(self.bits as usize + n))
++      .ok_or_else(|| RawlerError::decoder_failed("JPEG XS: bit position overflow"))?;
++    if target > self.buf.len() * 8 {
++      return self.eof("skipped bits");
++    }
++    self.pos = target / 8;
++    self.bits = (target % 8) as u8;
++    Ok(())
++  }
++}
++
++#[cfg(test)]
++mod tests {
++  use super::*;
++
++  #[test]
++  fn reads_bits_msb_first() {
++    let mut r = BitReader::at(&[0b1010_0011, 0b1100_0000], 0);
++    let bits: Vec<u8> = (0..10).map(|_| r.bit().unwrap()).collect();
++    assert_eq!(bits, [1, 0, 1, 0, 0, 0, 1, 1, 1, 1]);
++    // Ten bits in, the reader sits mid-byte; aligning rounds up.
++    assert_eq!(r.byte_pos(), 1);
++    r.align();
++    assert_eq!(r.byte_pos(), 2);
++    assert!(r.bit().is_err());
++  }
++
++  #[test]
++  fn reads_nibbles_on_half_byte_boundaries() {
++    let mut r = BitReader::at(&[0xab, 0xcd], 0);
++    assert_eq!(r.nibble().unwrap(), 0xa);
++    assert_eq!(r.nibble().unwrap(), 0xb);
++    assert_eq!(r.nibble().unwrap(), 0xc);
++    // A nibble read off the 4-bit grid is refused.
++    let mut r = BitReader::at(&[0xff], 0);
++    r.bit().unwrap();
++    assert!(r.nibble().is_err());
++  }
++
++  #[test]
++  fn decodes_unary_codes() {
++    // 110 10 0 1110 -> 2, 1, 0, 3.
++    let mut r = BitReader::at(&[0b1101_0011, 0b1000_0000], 0);
++    assert_eq!(r.unary().unwrap(), 2);
++    assert_eq!(r.unary().unwrap(), 1);
++    assert_eq!(r.unary().unwrap(), 0);
++    assert_eq!(r.unary().unwrap(), 3);
++    // A run of 32 ones is corrupt, not a value.
++    let mut r = BitReader::at(&[0xff; 5], 0);
++    assert!(r.unary().is_err());
++  }
++
++  #[test]
++  fn skips_bits_and_bytes() {
++    let mut r = BitReader::at(&[0x00, 0x00, 0b0100_0000], 0);
++    r.skip_bits(17).unwrap();
++    assert_eq!(r.bit().unwrap(), 1);
++    let mut r = BitReader::at(&[0; 4], 1);
++    r.skip_bytes(3).unwrap();
++    assert!(r.skip_bytes(1).is_err());
++  }
++}
+diff --git a/rawler/src/decompressors/jpegxs/dwt.rs b/rawler/src/decompressors/jpegxs/dwt.rs
+new file mode 100644
+index 0000000..e4f19d6
+--- /dev/null
++++ b/rawler/src/decompressors/jpegxs/dwt.rs
+@@ -0,0 +1,581 @@
++// SPDX-License-Identifier: LGPL-2.1
++// Copyright 2026
++
++//! Inverse discrete wavelet transform: reconstructs each component plane from
++//! its decoded, dequantised bands, one precinct at a time.
++//!
++//! Nikon uses one vertical decomposition level and up to five horizontal
++//! ones, all with the reversible 5/3 lifting filter. Bands `0..=NLx` are the
++//! horizontal decomposition of the vertical low-pass and carry one line per
++//! precinct; the last two bands are the horizontal split of the vertical
++//! high-pass.
++//!
++//! So a precinct reconstructs two plane lines, except that the vertical
++//! lifting needs the *next* precinct's low-pass to finish the second of them.
++//! Output therefore lags input by one precinct: precinct 0 completes line 0
++//! only, precinct `p` completes lines `2p-1` and `2p`, and the last precinct
++//! also closes line `2N-1` with the boundary filter.
++//!
++//! A component that skips the wavelet (Nikon's Δ plane) is copied straight
++//! through: its single full-width band is plane content, two lines per
++//! precinct. Which component that is comes from the component itself, never
++//! from its index, because plain JPEG XS assumes it is the last one and
++//! Nikon's is not.
++//!
++//! The `Fq` fractional bits are applied here, as a left shift on every
++//! coefficient as it widens to 32 bits, so the lifting runs unshifted. The
++//! reference decoder does the same. Planes come out in the `Bw` domain, still
++//! scaled by `2^Fq` and centred on zero, and the output stage removes both.
++//!
++//! Inverse quantisation happens in the same widening step, which is where the
++//! reference decoder puts it. `Qpih` picks the rule: 0 is the deadzone
++//! quantiser, 1 the uniform one. Nikon uses 1.
++
++use super::entropy::BandData;
++use super::entropy::Precinct;
++use super::entropy::SIGN_BIT;
++use super::header::Header;
++use super::pi::Topology;
++use crate::RawlerError;
++use crate::Result;
++
++/// One level of inverse horizontal 5/3 lifting, interleaving the low-pass
++/// (even samples) and high-pass (odd samples) halves of one line.
++///
++/// The edges use symmetric extension, as the reference decoder does: the
++/// first even sample sees the first high-pass twice, and the tail depends on
++/// whether the output length is odd or even. Inputs arrive already shifted,
++/// and nothing is scaled here.
++fn idwt_horizontal(lf: &[i32], hf: &[i32], out: &mut [i32]) {
++  let len = out.len();
++  debug_assert!(len >= 2);
++  debug_assert_eq!(lf.len(), len - len / 2);
++  debug_assert_eq!(hf.len(), len / 2);
++
++  out[0] = lf[0] - ((hf[0] + 1) >> 1);
++  for k in 0..(len - 2) / 2 {
++    out[2 * k + 2] = lf[k + 1] - ((hf[k] + hf[k + 1] + 2) >> 2);
++    out[2 * k + 1] = hf[k] + ((out[2 * k] + out[2 * k + 2]) >> 1);
++  }
++  if len % 2 == 1 {
++    out[len - 1] = lf[lf.len() - 1] - ((hf[hf.len() - 1] + 1) >> 1);
++    out[len - 2] = hf[hf.len() - 1] + ((out[len - 3] + out[len - 1]) >> 1);
++  } else {
++    out[len - 1] = hf[hf.len() - 1] + out[len - 2];
++  }
++}
++
++/// The inverse quantiser and the coefficient scaling, which every band line
++/// is read through.
++#[derive(Debug, Clone, Copy)]
++struct Quant {
++  /// Coefficients per code group (`Ng`), the granularity GCLIs apply at.
++  ng: usize,
++  /// `Qpih = 1`: uniform inverse quantisation rather than deadzone.
++  uniform: bool,
++  /// Fractional bits (`Fq`), applied as a left shift on every coefficient.
++  fq: u8,
++}
++
++/// Dequantise one band line and widen it to 32 bits with the `Fq` shift
++/// applied. [`Quant::uniform`] selects `Qpih = 1` (fold the magnitude down by
++/// the coded width, `gcli - gtli + 1` bits at a time) over `Qpih = 0`
++/// (deadzone: set bit `gtli - 1`); both only touch non-zero coefficients of
++/// groups that coded at least one bit plane, and both are no-ops at
++/// `gtli = 0`.
++fn extract_line(data: &BandData, width: usize, line: usize, q: Quant, out: &mut [i32]) {
++  let Quant { ng, uniform, fq } = q;
++  let gtli = data.gtli;
++  let coeff = &data.coeff[line * width..(line + 1) * width];
++  let gclis = &data.gcli[line * width.div_ceil(ng)..];
++  for (i, (o, &v)) in out.iter_mut().zip(coeff).enumerate() {
++    let mut mag = (v & !SIGN_BIT) as u32;
++    let gcli = gclis[i / ng];
++    if gtli > 0 && gcli > gtli && mag != 0 {
++      if uniform {
++        let scale = gcli - gtli + 1;
++        let mut val = mag;
++        mag = 0;
++        while val > 0 {
++          mag += val;
++          val >>= scale;
++        }
++      } else {
++        mag |= 1 << (gtli - 1);
++      }
++    }
++    let signed = if v & SIGN_BIT != 0 { -(mag as i32) } else { mag as i32 };
++    *o = signed << fq;
++  }
++}
++
++/// Per-component reconstruction state.
++struct Component {
++  /// Global id of this component's first band; its bands are contiguous.
++  first_band: usize,
++  /// Band widths in local band order (band 0 most decomposed).
++  widths: Vec<usize>,
++  suppressed: bool,
++  /// Vertical high-pass line of the previous precinct, reconstructed
++  /// horizontally. Meaningless before the first precinct and for suppressed
++  /// components.
++  hf_prev: Vec<i32>,
++}
++
++/// Streaming inverse wavelet transform. Feed the frame's precincts in order
++/// with [`push_precinct`](Self::push_precinct), then take the planes with
++/// [`finish`](Self::finish).
++pub struct Idwt {
++  plane_width: usize,
++  precinct_count: usize,
++  precinct_height: usize,
++  quant: Quant,
++  /// Index of the next precinct expected.
++  next: usize,
++  comps: Vec<Component>,
++  /// One `Bw`-domain plane per component, `plane_width * plane_height`.
++  planes: Vec<Vec<i32>>,
++  /// Ping-pong pair for the horizontal cascade; `lo` ends up holding the
++  /// vertical low-pass line.
++  lo: Vec<i32>,
++  swap: Vec<i32>,
++  /// High-pass band line of the current cascade stage.
++  hi: Vec<i32>,
++  /// Vertical high-pass line of the current precinct; swapped into the
++  /// component's `hf_prev` once used.
++  hf: Vec<i32>,
++}
++
++impl Idwt {
++  /// Check the geometry and allocate the plane and scratch buffers.
++  ///
++  /// Only layouts that [`super::pi::build`] produces are accepted, and the
++  /// plane height has to divide exactly by the precinct height. Nikon streams
++  /// always do; a ragged last precinct would need the odd-height boundary
++  /// filter.
++  pub fn new(header: &Header, topology: &Topology) -> Result<Self> {
++    let w = header.plane_width();
++    let h = header.plane_height();
++    let precinct_height = header.precinct_height();
++    let precinct_count = header.precinct_count();
++    if header.qpih > 1 {
++      return Err(RawlerError::decoder_failed(format!("JPEG XS: unknown inverse quantiser Qpih = {}", header.qpih)));
++    }
++    if header.group_size == 0 {
++      return Err(RawlerError::decoder_failed("JPEG XS: zero code group size"));
++    }
++    if w < 2 || h < 2 {
++      return Err(RawlerError::decoder_failed(format!("JPEG XS: plane {}x{} is too small for the wavelet", w, h)));
++    }
++    if h != precinct_count * precinct_height {
++      return Err(RawlerError::decoder_failed(format!(
++        "JPEG XS: plane height {} is not a multiple of the precinct height {}",
++        h, precinct_height
++      )));
++    }
++
++    let mut comps = Vec::with_capacity(header.components.len());
++    for (ci, comp) in header.components.iter().enumerate() {
++      let range = topology.component_bands[ci].clone();
++      let widths: Vec<usize> = topology.bands[range.clone()].iter().map(|b| b.width).collect();
++      if comp.suppressed() {
++        if widths != [w] {
++          return Err(RawlerError::decoder_failed(format!(
++            "JPEG XS: suppressed component {} has band width {:?}, expected the plane width {}",
++            ci, widths, w
++          )));
++        }
++      } else {
++        // Each stage of the cascade needs its low-pass half to be the
++        // ceiling half of that stage's output, and the whole thing has to sum
++        // to the plane width. That follows from how pi::build splits the
++        // widths, but check it anyway so a corrupt header fails here instead
++        // of panicking on a wrong-length slice mid-transform.
++        let nlx = comp.nlx as usize;
++        let ok = widths.len() == nlx + 3 && {
++          let mut lo_len = widths[0];
++          let mut ok = true;
++          for &wb in &widths[1..=nlx] {
++            let len = lo_len + wb;
++            ok &= len >= 2 && lo_len == len - len / 2;
++            lo_len = len;
++          }
++          ok && lo_len == w && widths[nlx + 1] == w - w / 2 && widths[nlx + 2] == w / 2
++        };
++        if !ok {
++          return Err(RawlerError::decoder_failed(format!(
++            "JPEG XS: component {} band widths {:?} do not form a {}-level split of {}",
++            ci, widths, comp.nlx, w
++          )));
++        }
++      }
++      comps.push(Component {
++        first_band: range.start,
++        widths,
++        suppressed: comp.suppressed(),
++        hf_prev: vec![0; if comp.suppressed() { 0 } else { w }],
++      });
++    }
++
++    Ok(Self {
++      plane_width: w,
++      precinct_count,
++      precinct_height,
++      quant: Quant {
++        ng: header.group_size as usize,
++        uniform: header.qpih == 1,
++        fq: header.fq,
++      },
++      next: 0,
++      planes: vec![vec![0; w * h]; comps.len()],
++      comps,
++      lo: vec![0; w],
++      swap: vec![0; w],
++      hi: vec![0; w],
++      hf: vec![0; w],
++    })
++  }
++
++  /// Transform one precinct, completing the plane lines its data closes.
++  /// Precincts must arrive in frame order, exactly as
++  /// [`super::entropy::decode_precinct`] returned them.
++  pub fn push_precinct(&mut self, precinct: &Precinct) -> Result<()> {
++    let p = self.next;
++    if p >= self.precinct_count {
++      return Err(RawlerError::decoder_failed(format!(
++        "JPEG XS: precinct {} pushed into a frame of {}",
++        p, self.precinct_count
++      )));
++    }
++    self.next += 1;
++
++    let w = self.plane_width;
++    let q = self.quant;
++    for ci in 0..self.comps.len() {
++      if self.comps[ci].suppressed {
++        // No wavelet: the band is plane content, one row per precinct line.
++        let band = &precinct.bands[self.comps[ci].first_band];
++        let base = p * self.precinct_height;
++        for line in 0..self.precinct_height {
++          extract_line(band, w, line, q, &mut self.planes[ci][(base + line) * w..(base + line + 1) * w]);
++        }
++        continue;
++      }
++
++      // Horizontal pass: cascade bands 0..=NLx up to the vertical low-pass
++      // line, then rebuild the vertical high-pass line from the last two
++      // bands.
++      let first = self.comps[ci].first_band;
++      let widths = &self.comps[ci].widths;
++      let nlx = widths.len() - 3;
++      let mut lo_len = widths[0];
++      extract_line(&precinct.bands[first], lo_len, 0, q, &mut self.lo[..lo_len]);
++      for b in 1..=nlx {
++        let wb = self.comps[ci].widths[b];
++        extract_line(&precinct.bands[first + b], wb, 0, q, &mut self.hi[..wb]);
++        idwt_horizontal(&self.lo[..lo_len], &self.hi[..wb], &mut self.swap[..lo_len + wb]);
++        std::mem::swap(&mut self.lo, &mut self.swap);
++        lo_len += wb;
++      }
++      let (wl, wh) = (self.comps[ci].widths[nlx + 1], self.comps[ci].widths[nlx + 2]);
++      extract_line(&precinct.bands[first + nlx + 1], wl, 0, q, &mut self.swap[..wl]);
++      extract_line(&precinct.bands[first + nlx + 2], wh, 0, q, &mut self.hi[..wh]);
++      idwt_horizontal(&self.swap[..wl], &self.hi[..wh], &mut self.hf);
++
++      // Vertical pass. `lo` is the vertical low-pass line p, `hf` the high-pass
++      // line p and `hf_prev` line p-1; plane line 2p-2 is already final.
++      let plane = &mut self.planes[ci];
++      let (lf, hf, hf_prev) = (&self.lo, &self.hf, &self.comps[ci].hf_prev);
++      if p == 0 {
++        for x in 0..w {
++          plane[x] = lf[x] - ((hf[x] + 1) >> 1);
++        }
++      } else {
++        let even = 2 * p;
++        for x in 0..w {
++          plane[even * w + x] = lf[x] - ((hf_prev[x] + hf[x] + 2) >> 2);
++        }
++        // Line 2p-1 sits between two finished even lines.
++        let (head, tail) = plane.split_at_mut((even - 1) * w);
++        let above = &head[(even - 2) * w..];
++        let (odd, below) = tail.split_at_mut(w);
++        for x in 0..w {
++          odd[x] = hf_prev[x] + ((above[x] + below[x]) >> 1);
++        }
++      }
++      if p == self.precinct_count - 1 {
++        // Bottom boundary: the final line extends symmetrically off the last
++        // even one. With a single precinct that even line is line 0.
++        let (head, last) = plane.split_at_mut((2 * p + 1) * w);
++        let even = &head[2 * p * w..];
++        for x in 0..w {
++          last[x] = hf[x] + even[x];
++        }
++      }
++      std::mem::swap(&mut self.comps[ci].hf_prev, &mut self.hf);
++    }
++    Ok(())
++  }
++
++  /// Take the reconstructed planes, one per component in component order,
++  /// each `plane_width * plane_height` in the `Bw` domain.
++  pub fn finish(self) -> Result<Vec<Vec<i32>>> {
++    if self.next != self.precinct_count {
++      return Err(RawlerError::decoder_failed(format!(
++        "JPEG XS: only {} of {} precincts were transformed",
++        self.next, self.precinct_count
++      )));
++    }
++    Ok(self.planes)
++  }
++}
++
++#[cfg(test)]
++mod tests {
++  use super::super::entropy::SIGN_BIT;
++  use super::super::header::Component;
++  use super::super::pi;
++  use super::*;
++
++  /// Forward 5/3 lifting with symmetric extension, the exact inverse of
++  /// [`idwt_horizontal`]. Test-only: the decoder never needs it, but the
++  /// transform is reversible, so round-tripping arbitrary data through it
++  /// pins down every boundary case of the inverse.
++  fn fwd53(x: &[i32]) -> (Vec<i32>, Vec<i32>) {
++    let len = x.len();
++    let mut hf = Vec::with_capacity(len / 2);
++    for n in 0..len / 2 {
++      let right = if 2 * n + 2 < len { x[2 * n + 2] } else { x[len - 2] };
++      hf.push(x[2 * n + 1] - ((x[2 * n] + right) >> 1));
++    }
++    let mut lf = Vec::with_capacity(len - len / 2);
++    for n in 0..len - len / 2 {
++      let left = hf[n.saturating_sub(1)];
++      let right = hf[n.min(hf.len() - 1)];
++      lf.push(x[2 * n] + ((left + right + 2) >> 2));
++    }
++    (lf, hf)
++  }
++
++  /// Small deterministic pseudo-random values in a wavelet-plausible range.
++  fn noise(n: usize, seed: u64) -> Vec<i32> {
++    let mut state = seed | 1;
++    (0..n)
++      .map(|_| {
++        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
++        ((state >> 33) as i32 & 0x3fff) - 0x2000
++      })
++      .collect()
++  }
++
++  #[test]
++  fn horizontal_lifting_round_trips_every_parity() {
++    for len in [2usize, 3, 4, 5, 6, 7, 95, 189, 190, 379, 758, 3032] {
++      let x = noise(len, len as u64);
++      let (lf, hf) = fwd53(&x);
++      let mut out = vec![0; len];
++      idwt_horizontal(&lf, &hf, &mut out);
++      assert_eq!(out, x, "length {}", len);
++    }
++  }
++
++  #[test]
++  fn dequantises_while_widening() {
++    // gtli = 2, one group with gcli = 5 (three coded planes, magnitudes are
++    // multiples of 4) and one fully truncated group.
++    let band = BandData {
++      gtli: 2,
++      gcli: vec![5, 2],
++      coeff: vec![8, 0, SIGN_BIT | 16, 4, 0, 0, 0, 0],
++    };
++    // Uniform (Qpih = 1): fold the magnitude down by gcli - gtli + 1 = 4 bits
++    // at a time, so 16 gains its own tail (16 >> 4 = 1) and smaller values
++    // do not.
++    let mut out = [0i32; 8];
++    extract_line(&band, 8, 0, Quant { ng: 4, uniform: true, fq: 0 }, &mut out);
++    assert_eq!(out, [8, 0, -17, 4, 0, 0, 0, 0]);
++    // Deadzone (Qpih = 0): set bit gtli - 1 on the same coefficients.
++    extract_line(&band, 8, 0, Quant { ng: 4, uniform: false, fq: 0 }, &mut out);
++    assert_eq!(out, [10, 0, -18, 6, 0, 0, 0, 0]);
++    // The Fq shift applies after reconstruction.
++    extract_line(&band, 8, 0, Quant { ng: 4, uniform: true, fq: 4 }, &mut out);
++    assert_eq!(out, [128, 0, -272, 64, 0, 0, 0, 0]);
++  }
++
++  #[test]
++  fn a_constant_line_survives_the_lifting() {
++    // Constant input decomposes to constant low-pass and zero high-pass.
++    let mut out = vec![0; 7];
++    idwt_horizontal(&[42; 4], &[0; 3], &mut out);
++    assert_eq!(out, [42; 7]);
++  }
++
++  /// A Header/Topology pair for a synthetic single-component frame. `nlx = 0`
++  /// makes the component suppressed (no wavelet).
++  fn synthetic(grid: u16, nlx: u8) -> (Header, Topology) {
++    let nly = if nlx == 0 { 0 } else { 1 };
++    let mut header = Header {
++      lcod: 0,
++      grid_width: grid,
++      grid_height: grid,
++      precinct_width: 0,
++      slice_height: 16,
++      group_size: 4,
++      sig_group_size: 8,
++      bw: 18,
++      fq: 0,
++      br: 4,
++      ppoc: 1,
++      cpih: 0,
++      nlx: 5,
++      nly: 1,
++      qpih: 1,
++      fs: 1,
++      rm: 0,
++      lh: 0,
++      rl: 0,
++      components: vec![Component {
++        bit_depth: 14,
++        sx: 1,
++        sy: 1,
++        nlx,
++        nly,
++      }],
++      weights: Vec::new(),
++      first_slice: 0,
++    };
++    header.weights = vec![(0, 0); header.total_bands()];
++    let topology = pi::build(&header).expect("topology builds");
++    (header, topology)
++  }
++
++  /// Sign-magnitude encoding of a small signed coefficient.
++  fn sm(v: i32) -> u16 {
++    if v < 0 { SIGN_BIT | (-v) as u16 } else { v as u16 }
++  }
++
++  /// Forward-transform a plane into per-precinct [`Precinct`]s laid out the
++  /// way the entropy decoder produces them: bands `0..=nlx` are the recursive
++  /// horizontal split of the vertical low-pass, the last two bands the single
++  /// horizontal split of the vertical high-pass, one line of each per
++  /// precinct.
++  fn forward_plane(plane: &[i32], w: usize, h: usize, topology: &Topology) -> Vec<Precinct> {
++    // Vertical split on each column.
++    let mut vlf = vec![0; w * (h - h / 2)];
++    let mut vhf = vec![0; w * (h / 2)];
++    for x in 0..w {
++      let column: Vec<i32> = (0..h).map(|y| plane[y * w + x]).collect();
++      let (lf, hf) = fwd53(&column);
++      for (y, v) in lf.iter().enumerate() {
++        vlf[y * w + x] = *v;
++      }
++      for (y, v) in hf.iter().enumerate() {
++        vhf[y * w + x] = *v;
++      }
++    }
++
++    let widths: Vec<usize> = topology.bands.iter().map(|b| b.width).collect();
++    let nlx = widths.len() - 3;
++    let precincts = h / 2;
++    (0..precincts)
++      .map(|p| {
++        // Horizontal cascade on the vertical low-pass line.
++        let mut rows: Vec<Vec<i32>> = Vec::new();
++        let mut lo = vlf[p * w..(p + 1) * w].to_vec();
++        for _ in 0..nlx {
++          let (lf, hf) = fwd53(&lo);
++          rows.push(hf);
++          lo = lf;
++        }
++        rows.push(lo);
++        rows.reverse(); // band 0 first
++        // One horizontal split of the vertical high-pass line.
++        let (lf, hf) = fwd53(&vhf[p * w..(p + 1) * w]);
++        rows.push(lf);
++        rows.push(hf);
++
++        let bands = rows
++          .iter()
++          .zip(&widths)
++          .map(|(row, &width)| {
++            assert_eq!(row.len(), width);
++            BandData {
++              gtli: 0,
++              gcli: vec![0; width.div_ceil(4)],
++              coeff: row.iter().map(|&v| sm(v)).collect(),
++            }
++          })
++          .collect();
++        Precinct { bands }
++      })
++      .collect()
++  }
++
++  #[test]
++  fn reconstructs_a_decomposed_plane_exactly() {
++    // The 5/3 wavelet is reversible, so a forward transform of a random
++    // plane must invert exactly, across several sizes so the first, middle
++    // and last precincts and both horizontal parities are exercised.
++    for (grid, nlx) in [(12u16, 2u8), (12, 1), (4, 1), (20, 3)] {
++      let (header, topology) = synthetic(grid, nlx);
++      let (w, h) = (header.plane_width(), header.plane_height());
++      let plane = noise(w * h, grid as u64 * 31 + nlx as u64);
++      let mut idwt = Idwt::new(&header, &topology).expect("Idwt builds");
++      for precinct in forward_plane(&plane, w, h, &topology) {
++        idwt.push_precinct(&precinct).expect("precinct transforms");
++      }
++      let planes = idwt.finish().expect("all precincts arrived");
++      assert_eq!(planes[0], plane, "grid {} nlx {}", grid, nlx);
++    }
++  }
++
++  #[test]
++  fn copies_a_suppressed_component_with_the_fq_shift() {
++    let (mut header, topology) = synthetic(12, 0);
++    header.fq = 4;
++    let (w, h) = (header.plane_width(), header.plane_height());
++    let plane = noise(w * h, 7);
++    let mut idwt = Idwt::new(&header, &topology).expect("Idwt builds");
++    for p in 0..h / 2 {
++      let coeff: Vec<u16> = plane[2 * p * w..(2 * p + 2) * w].iter().map(|&v| sm(v)).collect();
++      idwt
++        .push_precinct(&Precinct {
++          bands: vec![BandData {
++            gtli: 0,
++            // Each line carries its own GCLI array of ceil(width / Ng) entries,
++            // so two lines need twice that. Not ceil(2 * width / Ng), which
++            // rounds differently whenever width is not a multiple of Ng.
++            gcli: vec![0; 2 * w.div_ceil(4)],
++            coeff,
++          }],
++        })
++        .expect("precinct copies");
++    }
++    let planes = idwt.finish().unwrap();
++    let expected: Vec<i32> = plane.iter().map(|&v| v << 4).collect();
++    assert_eq!(planes[0], expected);
++  }
++
++  #[test]
++  fn refuses_a_short_or_overlong_frame() {
++    let (header, topology) = synthetic(12, 2);
++    let (w, h) = (header.plane_width(), header.plane_height());
++    let precincts = forward_plane(&noise(w * h, 3), w, h, &topology);
++
++    let mut idwt = Idwt::new(&header, &topology).unwrap();
++    idwt.push_precinct(&precincts[0]).unwrap();
++    assert!(idwt.finish().is_err(), "finish before all precincts must fail");
++
++    let mut idwt = Idwt::new(&header, &topology).unwrap();
++    for p in &precincts {
++      idwt.push_precinct(p).unwrap();
++    }
++    assert!(idwt.push_precinct(&precincts[0]).is_err(), "excess precinct must fail");
++  }
++
++  // The whole-stream comparison against the C reference decoder lives in
++  // super::mct's tests: the C decoder's MCT-disabled output paths are broken
++  // (they crash and write truncated planes), so the transform is verified
++  // end-to-end (entropy, IDWT, inverse MCT, decompanding) against
++  // the C decoder's final planes instead of post-IDWT intermediates.
++}
+diff --git a/rawler/src/decompressors/jpegxs/entropy.rs b/rawler/src/decompressors/jpegxs/entropy.rs
+new file mode 100644
+index 0000000..d026b67
+--- /dev/null
++++ b/rawler/src/decompressors/jpegxs/entropy.rs
+@@ -0,0 +1,667 @@
++// SPDX-License-Identifier: LGPL-2.1
++// Copyright 2026
++
++//! Entropy decoding of JPEG XS precincts, as used by Nikon "High Efficiency"
++//! NEF. Turns the coded payload of one precinct into per-band GCLI arrays and
++//! quantised wavelet coefficients.
++//!
++//! A precinct is a 12-byte header (for the Nikon layout) followed by eight
++//! packets. Each packet covers one line of each band it names and is built
++//! from four sub-packets:
++//!
++//! ```text
++//! long header (7 bytes) | significance | GCLI | data | sign
++//! ```
++//!
++//! The header carries only three lengths. The significance sub-packet's size
++//! follows from the geometry: one bit per significance group, summed over the
++//! packet's bands and rounded up to a byte.
++//!
++//! Coefficients come out the way the reference decoder stores them, with the
++//! magnitude already shifted left by the band's GTLI in the low 15 bits and
++//! the sign in bit 15. [`super::dwt`] dequantises them on the way into the
++//! transform.
++
++use super::bitreader::BitReader;
++use super::header::Header;
++use super::pi::Band;
++use super::pi::Packet;
++use super::pi::Topology;
++use crate::RawlerError;
++use crate::Result;
++
++/// Largest representable bit-plane count: magnitudes live in 15 bits.
++pub const TRUNCATION_MAX: u8 = 15;
++
++pub const SIGN_BIT: u16 = 1 << 15;
++
++/// Per-band 2-bit coding mode, bit 1: the GCLIs are significance-coded.
++const MODE_SIGNIFICANCE: u8 = 0b10;
++/// Per-band 2-bit coding mode, bit 0: the GCLIs are vertically predicted.
++const MODE_VERTICAL: u8 = 0b01;
++
++/// The fixed-size header at the start of every precinct.
++#[derive(Debug, Clone)]
++pub struct PrecinctHeader {
++  /// Payload length in bytes, counted from the end of this header.
++  pub payload_len: usize,
++  /// Quantisation and refinement for this precinct.
++  pub qp: u8,
++  pub rp: u8,
++  /// 2-bit coding mode per band, indexed by global band id.
++  pub modes: Vec<u8>,
++  /// Size of this header in bytes: 5 fixed plus the byte-aligned mode bits.
++  pub header_len: usize,
++}
++
++impl PrecinctHeader {
++  pub fn parse(buf: &[u8], offset: usize, band_count: usize) -> Result<Self> {
++    let mut r = BitReader::at(buf, offset);
++    let fixed = r.bytes(5)?;
++    let payload_len = (fixed[0] as usize) << 16 | (fixed[1] as usize) << 8 | fixed[2] as usize;
++    let qp = fixed[3];
++    let rp = fixed[4];
++    let mut modes = Vec::with_capacity(band_count);
++    for _ in 0..band_count {
++      modes.push(r.bit()? << 1 | r.bit()?);
++    }
++    r.align();
++    Ok(Self {
++      payload_len,
++      qp,
++      rp,
++      modes,
++      header_len: r.byte_pos() - offset,
++    })
++  }
++
++  /// Distance from the start of this precinct to the start of the next.
++  pub fn stride(&self) -> usize {
++    self.header_len + self.payload_len
++  }
++}
++
++/// Decoded state of one band over one precinct.
++#[derive(Debug, Clone)]
++pub struct BandData {
++  /// Truncation position of this band in this precinct.
++  pub gtli: u8,
++  /// GCLI per code group, `lines_per_precinct` rows of `gcli_width`.
++  pub gcli: Vec<u8>,
++  /// Coefficients, `lines_per_precinct` rows of `width`. Magnitude (already
++  /// shifted by `gtli`) in the low 15 bits, sign in bit 15.
++  pub coeff: Vec<u16>,
++}
++
++/// One decoded precinct: every band's GCLIs and coefficients.
++#[derive(Debug, Clone)]
++pub struct Precinct {
++  /// Band data indexed by global band id, as numbered in [`Topology`].
++  pub bands: Vec<BandData>,
++}
++
++impl Precinct {
++  /// Empty band storage, with the truncation positions this precinct's
++  /// header calls for.
++  fn empty(topology: &Topology, qp: u8, rp: u8) -> Self {
++    let bands = topology
++      .bands
++      .iter()
++      .map(|band| BandData {
++        gtli: band.gtli(qp, rp, TRUNCATION_MAX),
++        gcli: vec![0; band.lines_per_precinct * band.gcli_width],
++        coeff: vec![0; band.lines_per_precinct * band.width],
++      })
++      .collect();
++    Self { bands }
++  }
++}
++
++/// The long-form packet header: a raw-mode flag and the byte lengths of the
++/// GCLI, data and sign sub-packets. Nikon streams always use the long form,
++/// even though `Lh = 0` and the image is narrow enough that the standard
++/// heuristic would select the short one.
++#[derive(Debug, Clone, Copy)]
++struct PacketHeader {
++  raw_mode: bool,
++  data_len: usize,
++  gcli_len: usize,
++  sign_len: usize,
++}
++
++impl PacketHeader {
++  fn parse(r: &mut BitReader<'_>) -> Result<Self> {
++    let m = r.bytes(7)?;
++    Ok(Self {
++      raw_mode: m[0] >> 7 != 0,
++      data_len: ((m[0] as usize & 0x7f) << 13) | (m[1] as usize) << 5 | (m[2] as usize >> 3) & 0x1f,
++      gcli_len: ((m[2] as usize & 0x07) << 17) | (m[3] as usize) << 9 | (m[4] as usize) << 1 | m[5] as usize >> 7,
++      sign_len: ((m[5] as usize & 0x7f) << 8) | m[6] as usize,
++    })
++  }
++}
++
++/// Decode one precinct starting at `offset`. `top` is the precinct above,
++/// which vertical prediction references; pass `None` at the first precinct of
++/// a slice. Returns the decoded precinct and the offset of the next one.
++pub fn decode_precinct(buf: &[u8], offset: usize, header: &Header, topology: &Topology, top: Option<&Precinct>) -> Result<(Precinct, usize)> {
++  if header.group_size != 4 {
++    return Err(RawlerError::decoder_failed(format!(
++      "JPEG XS: only Ng = 4 is supported, got {}",
++      header.group_size
++    )));
++  }
++  let ph = PrecinctHeader::parse(buf, offset, topology.bands.len())?;
++  let end = offset + ph.stride();
++  if end > buf.len() {
++    return Err(RawlerError::decoder_failed(format!(
++      "JPEG XS: precinct at {} declares {} bytes but only {} remain",
++      offset,
++      ph.stride(),
++      buf.len() - offset
++    )));
++  }
++  let mut precinct = Precinct::empty(topology, ph.qp, ph.rp);
++  // Clamp the reader to this precinct so a corrupt packet cannot read into
++  // the next one.
++  let mut r = BitReader::at(&buf[..end], offset + ph.header_len);
++  for packet in &topology.packets {
++    decode_packet(&mut r, header, topology, &ph, &mut precinct, packet, top)?;
++  }
++  Ok((precinct, end))
++}
++
++/// The line a band contributes to this packet: a decomposed band's single
++/// line, or the precinct line for a suppressed component's band, which spans
++/// the full precinct height.
++fn band_line(band: &Band, packet: &Packet) -> usize {
++  if band.lines_per_precinct > 1 { packet.line } else { 0 }
++}
++
++fn decode_packet(
++  r: &mut BitReader<'_>,
++  header: &Header,
++  topology: &Topology,
++  ph: &PrecinctHeader,
++  precinct: &mut Precinct,
++  packet: &Packet,
++  top: Option<&Precinct>,
++) -> Result<()> {
++  let pkt = PacketHeader::parse(r)?;
++  let ss = header.sig_group_size as usize;
++
++  if pkt.raw_mode {
++    // Raw mode: 4-bit GCLIs, no significance coding.
++    let start = r.byte_pos();
++    for id in packet.bands.clone() {
++      let band = &topology.bands[id];
++      let line = band_line(band, packet);
++      let out = &mut precinct.bands[id].gcli[line * band.gcli_width..(line + 1) * band.gcli_width];
++      for g in out.iter_mut() {
++        *g = r.nibble()?;
++      }
++    }
++    r.align();
++    finish_subpacket(r, start, pkt.gcli_len, "GCLI")?;
++  } else {
++    // Significance sub-packet: one bit per significance group, for each band
++    // coded that way, in band order and byte-aligned as a whole. A set bit
++    // marks the group as insignificant.
++    let mut significance: Vec<Option<Vec<u8>>> = Vec::with_capacity(packet.bands.len());
++    for id in packet.bands.clone() {
++      if ph.modes[id] & MODE_SIGNIFICANCE != 0 {
++        let band = &topology.bands[id];
++        let bits = (0..band.significance_width).map(|_| r.bit()).collect::<Result<Vec<u8>>>()?;
++        significance.push(Some(bits));
++      } else {
++        significance.push(None);
++      }
++    }
++    r.align();
++
++    // GCLI sub-packet: one continuous VLC bitstream across the packet's
++    // bands, byte-aligned only at the end.
++    let start = r.byte_pos();
++    for (k, id) in packet.bands.clone().enumerate() {
++      let band = &topology.bands[id];
++      let line = band_line(band, packet);
++      let gtli = precinct.bands[id].gtli;
++      // Vertical prediction references the previous line of this precinct
++      // when line > 0, and the last line of the precinct above when line == 0.
++      // At the first precinct of a slice there is no precinct above, and the
++      // band falls back to prediction from zero.
++      let reference: Option<(Vec<u8>, u8)> = if ph.modes[id] & MODE_VERTICAL == 0 {
++        None
++      } else if line > 0 {
++        let row = &precinct.bands[id].gcli[(line - 1) * band.gcli_width..line * band.gcli_width];
++        Some((row.to_vec(), gtli))
++      } else if let Some(top) = top {
++        let last = band.lines_per_precinct - 1;
++        let row = &top.bands[id].gcli[last * band.gcli_width..(last + 1) * band.gcli_width];
++        Some((row.to_vec(), top.bands[id].gtli))
++      } else {
++        None
++      };
++      let out = &mut precinct.bands[id].gcli[line * band.gcli_width..(line + 1) * band.gcli_width];
++      decode_gcli_line(
++        r,
++        gtli,
++        header.rm,
++        ss,
++        significance[k].as_deref(),
++        reference.as_ref().map(|(row, gtli_top)| (row.as_slice(), *gtli_top)),
++        out,
++      )?;
++    }
++    r.align();
++    finish_subpacket(r, start, pkt.gcli_len, "GCLI")?;
++  }
++
++  // Data sub-packet: nibble-interleaved magnitude bit planes.
++  let start = r.byte_pos();
++  let mut leftover_signs: Vec<u8> = Vec::with_capacity(packet.bands.len());
++  for id in packet.bands.clone() {
++    let band = &topology.bands[id];
++    let line = band_line(band, packet);
++    let data = &mut precinct.bands[id];
++    let gclis = &data.gcli[line * band.gcli_width..(line + 1) * band.gcli_width];
++    let coeff = &mut data.coeff[line * band.width..(line + 1) * band.width];
++    leftover_signs.push(decode_data_line(r, gclis, data.gtli, header.fs, coeff)?);
++  }
++  r.align();
++  finish_subpacket(r, start, pkt.data_len, "data")?;
++
++  // Sign sub-packet: one bit per non-zero coefficient, present when Fs = 1.
++  if header.fs != 0 {
++    let start = r.byte_pos();
++    for (k, id) in packet.bands.clone().enumerate() {
++      let band = &topology.bands[id];
++      let line = band_line(band, packet);
++      let coeff = &mut precinct.bands[id].coeff[line * band.width..(line + 1) * band.width];
++      for v in coeff.iter_mut() {
++        if *v != 0 {
++          *v |= (r.bit()? as u16) << 15;
++        }
++      }
++      // The encoder also emitted signs for the non-zero coefficients it
++      // decoded past the end of a partial trailing group.
++      if !band.width.is_multiple_of(4) {
++        r.skip_bits(leftover_signs[k] as usize)?;
++      }
++    }
++    r.align();
++    finish_subpacket(r, start, pkt.sign_len, "sign")?;
++  }
++  Ok(())
++}
++
++/// Check a decoded sub-packet against its declared byte length; skip padding
++/// when the encoder wrote more than the decode consumed.
++fn finish_subpacket(r: &mut BitReader<'_>, start: usize, declared: usize, what: &str) -> Result<()> {
++  let used = r.byte_pos() - start;
++  if used > declared {
++    return Err(RawlerError::decoder_failed(format!(
++      "JPEG XS: {} sub-packet consumed {} bytes but declared {}",
++      what, used, declared
++    )));
++  }
++  r.skip_bytes(declared - used)
++}
++
++/// The vertical-prediction GCLI update, where `x` is the unary code and
++/// `m_top` the clamped reference. There is only so much room to move down
++/// before hitting the GTLI, and codes up to twice that room are a zig-zag
++/// delta: odd goes down, even goes up. Anything larger keeps going up.
++fn vertical_gcli(x: u32, m_top: u8, gtli: u8) -> u8 {
++  let x = x as i32;
++  let m_top = m_top as i32;
++  let threshold = (m_top - gtli as i32).max(0);
++  let delta = if x > 2 * threshold {
++    x - threshold
++  } else if x & 1 == 1 {
++    -((x + 1) / 2)
++  } else {
++    x / 2
++  };
++  (m_top + delta) as u8
++}
++
++/// `significance` holds one flag per group of `ss` GCLIs when the band is
++/// significance-coded, and a set flag means the group is skipped.
++/// `reference` is the line above and its GTLI when the band is vertically
++/// predicted and a reference exists, or `None` to predict from zero.
++fn decode_gcli_line(
++  r: &mut BitReader<'_>,
++  gtli: u8,
++  run_mode: u8,
++  ss: usize,
++  significance: Option<&[u8]>,
++  reference: Option<(&[u8], u8)>,
++  out: &mut [u8],
++) -> Result<()> {
++  let significant = |group: usize| significance.is_none_or(|s| s[group] == 0);
++  match reference {
++    Some((top, gtli_top)) => {
++      let t = gtli_top.max(gtli);
++      for i in 0..out.len() {
++        let m_top = top[i].max(t);
++        out[i] = if significant(i / ss) {
++          vertical_gcli(r.unary()?, m_top, gtli)
++        } else if run_mode != 0 {
++          gtli
++        } else {
++          m_top
++        };
++      }
++    }
++    None => {
++      for i in 0..out.len() {
++        out[i] = if significant(i / ss) { gtli + r.unary()? as u8 } else { gtli };
++      }
++    }
++  }
++  Ok(())
++}
++
++/// Decode one band line of coefficient magnitudes: per group of 4, `gcli -
++/// gtli` bit planes of 4 bits each, MSB plane first, each coefficient's
++/// magnitude then shifted left by `gtli`. With `Fs = 0` a nibble of sign bits
++/// precedes the planes; with `Fs = 1` signs live in the sign sub-packet.
++///
++/// Returns how many non-zero coefficients were decoded past the end of a
++/// partial trailing group, because the sign sub-packet carries bits for
++/// those too.
++fn decode_data_line(r: &mut BitReader<'_>, gclis: &[u8], gtli: u8, fs: u8, out: &mut [u16]) -> Result<u8> {
++  debug_assert_eq!(gclis.len(), out.len().div_ceil(4));
++  let mut leftover_signs = 0u8;
++  for (group, &gcli) in gclis.iter().enumerate() {
++    let mut vals = [0u16; 4];
++    if gcli > gtli {
++      let mut signs = [0u16; 4];
++      if fs == 0 {
++        let s = r.nibble()? as u16;
++        for (j, sign) in signs.iter_mut().enumerate() {
++          *sign = ((s >> (3 - j)) & 1) << 15;
++        }
++      }
++      // A corrupt stream can carry a GCLI above the largest plane count we
++      // can represent, so cap the read the way the reference decoder does.
++      let planes = (gcli - gtli).min(TRUNCATION_MAX);
++      let mut acc = [0u32; 4];
++      for _ in 0..planes {
++        let v = r.nibble()? as u32;
++        for (j, a) in acc.iter_mut().enumerate() {
++          *a = (*a << 1) | ((v >> (3 - j)) & 1);
++        }
++      }
++      for j in 0..4 {
++        vals[j] = ((acc[j] << gtli) as u16) | signs[j];
++      }
++    }
++    let start = group * 4;
++    let n = (out.len() - start).min(4);
++    out[start..start + n].copy_from_slice(&vals[..n]);
++    if n < 4 {
++      leftover_signs = vals[n..].iter().filter(|&&v| v != 0).count() as u8;
++    }
++  }
++  Ok(leftover_signs)
++}
++
++#[cfg(test)]
++mod tests {
++  use super::super::header::parse;
++  use super::super::header::testdata::SAMPLE;
++  use super::super::pi;
++  use super::super::reference;
++
++  /// A decoded coefficient as a signed integer, to compare against the C
++  /// reference dump. The decoder itself widens and dequantises in one step,
++  /// in [`super::super::dwt`].
++  fn to_signed(v: u16) -> i16 {
++    let magnitude = (v & !SIGN_BIT) as i16;
++    if v & SIGN_BIT != 0 { -magnitude } else { magnitude }
++  }
++  use super::*;
++
++  /// Bytes 155..2428 of the codestream of a Nikon Z6III HE* file
++  /// (`NZ6_3368.NEF`): the 12-byte header of precinct 0 followed by its first
++  /// packet (component 0, bands 0..=5), complete with all four sub-packets.
++  /// The expected GCLIs and coefficients below are the output of the patched
++  /// SVT-JPEG-XS reference decoder for bands 0 and 3 of that packet.
++  const PACKET0: [u8; 2273] = [
++    0x00, 0x3b, 0x2b, 0x03, 0x0b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xc0, 0x00, 0x2c, 0xe8, 0x00, 0xe3, 0x81, 0x5e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x7f, 0xbf, 0xef, 0xfb, 0xfe, 0xff, 0xbf, 0xdf, 0xef, 0xf7, 0xfb, 0xfe, 0xff, 0xbf, 0xdf, 0xf7, 0xfd, 0xff, 0xbf, 0xef,
++    0xfb, 0xfe, 0xff, 0xbf, 0xef, 0xfb, 0xfe, 0xff, 0xbb, 0xef, 0xdf, 0x7e, 0xfb, 0xf7, 0xde, 0xfb, 0xef, 0xbd, 0xf7, 0xbe, 0xf7, 0xbd, 0xee, 0xee, 0xef, 0x7b,
++    0xdf, 0x7d, 0xef, 0xb7, 0xbe, 0xf7, 0xbd, 0xf7, 0xbe, 0xfb, 0xef, 0x7b, 0xde, 0xfb, 0xef, 0xbd, 0xf7, 0xdf, 0x7d, 0xef, 0xbd, 0xde, 0xf7, 0xde, 0xf7, 0xbb,
++    0xdd, 0xf7, 0xbd, 0xf7, 0xdd, 0xdf, 0x77, 0xbb, 0xbb, 0xbd, 0xdd, 0xef, 0x77, 0xbd, 0xeb, 0xdb, 0xde, 0xee, 0xf7, 0xbd, 0xbb, 0xbb, 0xdd, 0xee, 0xf7, 0x7b,
++    0xde, 0xde, 0xf7, 0x77, 0xbd, 0xee, 0xef, 0x7b, 0xb7, 0xb7, 0xbd, 0xef, 0x77, 0xbd, 0xf7, 0xbd, 0xee, 0xf6, 0xf7, 0x7b, 0xde, 0xee, 0xed, 0xef, 0x77, 0xbd,
++    0xde, 0xf7, 0x77, 0xbd, 0xef, 0x7b, 0xef, 0x7b, 0xde, 0xf7, 0x7b, 0xde, 0xf7, 0xde, 0xfb, 0xde, 0xdf, 0x7b, 0xdf, 0x7d, 0xf7, 0xde, 0xfb, 0xde, 0xf7, 0xbb,
++    0xde, 0xf7, 0xde, 0xf7, 0xbd, 0xde, 0xf7, 0x7d, 0xee, 0xf7, 0x7d, 0xee, 0xf7, 0xbe, 0xf7, 0x7e, 0xf7, 0xbd, 0xf7, 0xbd, 0xf7, 0xbd, 0xef, 0x77, 0xde, 0xf7,
++    0xbb, 0xbb, 0xbe, 0xf7, 0xbd, 0xf7, 0xbb, 0x7b, 0xbb, 0xde, 0xf7, 0xbd, 0xde, 0xf7, 0x77, 0x77, 0xbd, 0xdd, 0xef, 0x7b, 0xbd, 0xf7, 0x7d, 0xef, 0xbd, 0xef,
++    0x7b, 0xef, 0xbb, 0xde, 0xfb, 0xbe, 0xf7, 0xbe, 0xf7, 0xde, 0xf7, 0x7b, 0xdb, 0xde, 0xef, 0x7b, 0xbd, 0xef, 0x7b, 0xde, 0xfb, 0xbd, 0xef, 0x7d, 0xef, 0x7b,
++    0xee, 0xf6, 0xf7, 0xb7, 0xbe, 0xf7, 0x7b, 0xef, 0x7b, 0xee, 0xfb, 0xde, 0xf7, 0x7b, 0xde, 0xf7, 0xbe, 0xef, 0x77, 0xb7, 0xbd, 0xef, 0x7b, 0xbd, 0xdd, 0xee,
++    0xee, 0xef, 0x6d, 0xef, 0x7b, 0xdd, 0xee, 0xef, 0xb7, 0xbd, 0xef, 0x7b, 0x7b, 0xdd, 0xbd, 0xbe, 0xf7, 0xbb, 0xbd, 0xef, 0x77, 0x77, 0x7b, 0xdd, 0xdd, 0xdd,
++    0xbb, 0xbd, 0xee, 0xee, 0xee, 0xf7, 0x6f, 0x77, 0xbd, 0xee, 0xee, 0xf7, 0xbb, 0xbd, 0xbb, 0xbd, 0xee, 0xef, 0x6d, 0xbe, 0xee, 0xee, 0xf7, 0x76, 0xed, 0xee,
++    0xf7, 0xbd, 0xde, 0xed, 0xee, 0xef, 0x76, 0xf7, 0xbd, 0xdd, 0xdd, 0xef, 0x7b, 0xde, 0xef, 0x7b, 0xdf, 0x7b, 0xde, 0xee, 0xf7, 0xb7, 0x77, 0xbb, 0xde, 0xdd,
++    0xde, 0xee, 0xf7, 0x7b, 0xdd, 0xde, 0xf7, 0xbd, 0xef, 0x7b, 0xbb, 0xdb, 0xdd, 0xdd, 0xee, 0xf7, 0xbd, 0xdd, 0xdb, 0xbb, 0xbd, 0xbb, 0xde, 0xf7, 0xb7, 0x77,
++    0x77, 0x7b, 0xbb, 0xde, 0xef, 0x77, 0x77, 0xbb, 0xdd, 0xed, 0xee, 0xef, 0x6e, 0xf7, 0x7b, 0xbb, 0x7b, 0xbd, 0xef, 0x7d, 0xee, 0xee, 0xee, 0xed, 0xef, 0x76,
++    0xef, 0x7b, 0xbd, 0xef, 0x7b, 0xbd, 0xdd, 0xde, 0xf7, 0x7b, 0x6e, 0xde, 0xfb, 0xbd, 0xef, 0x7b, 0xbd, 0xf7, 0xbb, 0xee, 0xf7, 0x77, 0x76, 0xee, 0xee, 0xef,
++    0x77, 0x77, 0x77, 0x75, 0xed, 0xee, 0xf7, 0x7b, 0xdd, 0xef, 0x77, 0xbb, 0xbb, 0x7b, 0x7b, 0xb7, 0xbb, 0x7b, 0xbb, 0xdd, 0xbb, 0xdd, 0xef, 0x7b, 0xdd, 0xdd,
++    0xee, 0xfb, 0xdd, 0xdd, 0xde, 0xf7, 0x7b, 0xdd, 0xdb, 0xbb, 0xbb, 0xbb, 0x77, 0x7b, 0xdb, 0xdd, 0xef, 0x00, 0xff, 0xe1, 0x5a, 0xd5, 0xff, 0x0d, 0xe3, 0x07,
++    0x7a, 0xd3, 0x0a, 0xf8, 0xdf, 0xe1, 0x59, 0xdb, 0x70, 0xf7, 0xf8, 0x37, 0x4e, 0x5c, 0x3c, 0x3e, 0xee, 0x99, 0xfd, 0x33, 0xa5, 0x64, 0xf0, 0x93, 0x3d, 0x6e,
++    0xfc, 0x1a, 0x88, 0xa4, 0xf2, 0x33, 0xfc, 0xd1, 0x1e, 0xe6, 0xc8, 0x00, 0x0c, 0x33, 0x1a, 0x63, 0x1a, 0xff, 0xd2, 0x23, 0x37, 0xf0, 0xd6, 0xca, 0xe7, 0x0f,
++    0x0f, 0x03, 0x0b, 0xcf, 0x1e, 0x68, 0xe8, 0x46, 0x48, 0xfd, 0xa3, 0x68, 0xfc, 0xbf, 0xf0, 0xfc, 0x3c, 0xfd, 0xff, 0x0f, 0x4b, 0x82, 0xbf, 0xf0, 0xf0, 0x78,
++    0x83, 0xff, 0x07, 0x88, 0xbc, 0x4f, 0xf0, 0xf0, 0x04, 0x4b, 0xff, 0x07, 0x89, 0xca, 0x1e, 0xe0, 0xe0, 0x4a, 0xa8, 0x58, 0xd4, 0x18, 0x61, 0x10, 0xc5, 0x0e,
++    0x2d, 0x30, 0x24, 0x88, 0xf6, 0x92, 0x8b, 0x56, 0x21, 0x18, 0x1d, 0xc3, 0xd1, 0x45, 0x39, 0xf4, 0x3b, 0x36, 0x12, 0xab, 0xe4, 0x01, 0x7e, 0x59, 0x02, 0x8d,
++    0x03, 0x14, 0xb3, 0x21, 0x0c, 0x9f, 0x85, 0xd1, 0x10, 0x5e, 0x96, 0x9a, 0x70, 0x8f, 0x4f, 0x48, 0x70, 0xc6, 0x44, 0x2a, 0xe3, 0x08, 0x83, 0x88, 0xa6, 0xd0,
++    0x31, 0x6c, 0x41, 0xae, 0x9a, 0xa0, 0xef, 0x8c, 0xba, 0x14, 0xb7, 0x5e, 0x68, 0x27, 0x37, 0x5a, 0xd7, 0x9a, 0x35, 0x52, 0x42, 0x52, 0x19, 0x16, 0x1e, 0x4c,
++    0x22, 0x99, 0x81, 0x35, 0xb4, 0x05, 0x42, 0xf3, 0x24, 0x11, 0x5c, 0x84, 0xfc, 0x96, 0xb8, 0x10, 0x99, 0xe2, 0x45, 0x1c, 0x21, 0x80, 0x76, 0x42, 0xe4, 0x38,
++    0x12, 0x25, 0x03, 0xf8, 0x02, 0xdb, 0x41, 0x97, 0x44, 0xa5, 0x61, 0xb0, 0xcb, 0x8d, 0x01, 0x5e, 0x6b, 0x4e, 0xfc, 0x90, 0x21, 0x2e, 0x63, 0x1a, 0x5a, 0x1e,
++    0x7c, 0x42, 0x9a, 0xb1, 0x3c, 0xd8, 0xa8, 0x35, 0x41, 0xa8, 0xe8, 0x1d, 0xf3, 0x5a, 0x65, 0x29, 0x3c, 0x80, 0x00, 0x8a, 0xbc, 0xed, 0x78, 0x02, 0x56, 0x8d,
++    0x03, 0x69, 0x61, 0x1f, 0xce, 0x1c, 0x8b, 0x69, 0x09, 0x3a, 0x47, 0x9b, 0x1d, 0xe1, 0xbc, 0xa8, 0x68, 0x43, 0xb1, 0x81, 0x48, 0x18, 0x80, 0x83, 0x4f, 0x86,
++    0x9e, 0xdb, 0x24, 0x3d, 0xe8, 0xcb, 0x97, 0x5d, 0x59, 0x8c, 0x65, 0x19, 0x25, 0x98, 0x33, 0x8e, 0xae, 0xd8, 0xca, 0xf2, 0xe8, 0x4a, 0xcb, 0xe6, 0x11, 0x08,
++    0x13, 0x84, 0x83, 0x1c, 0x5b, 0xd1, 0xe4, 0x6a, 0x14, 0x0e, 0x09, 0x34, 0xe2, 0x4d, 0xa3, 0x24, 0xfa, 0x16, 0x21, 0x11, 0x3a, 0x02, 0x16, 0xe1, 0xa1, 0xe2,
++    0x84, 0x8b, 0x08, 0x30, 0x51, 0xc2, 0x4c, 0x0b, 0x8f, 0x42, 0xf1, 0x3d, 0x80, 0xfb, 0x80, 0x26, 0x4a, 0x09, 0x32, 0xb0, 0x1e, 0x7c, 0xa9, 0x31, 0xc5, 0x14,
++    0x00, 0x3f, 0x87, 0x56, 0x99, 0xee, 0x45, 0x20, 0xf9, 0xc2, 0x3f, 0x02, 0xb8, 0x11, 0xfc, 0xc5, 0x25, 0x81, 0x40, 0xb6, 0x84, 0x6d, 0x51, 0xbf, 0x46, 0x2c,
++    0x56, 0x51, 0xe6, 0x92, 0x52, 0x85, 0x82, 0x78, 0x54, 0x40, 0x91, 0xca, 0xb9, 0x04, 0x54, 0x9a, 0x7f, 0x4c, 0x10, 0x74, 0xaf, 0x8a, 0x87, 0x12, 0x49, 0x64,
++    0xe1, 0xa2, 0x84, 0x0c, 0x02, 0x9f, 0x90, 0x72, 0x32, 0x81, 0xb0, 0xef, 0xe1, 0x0e, 0x42, 0x7a, 0x6c, 0x26, 0x8f, 0x8d, 0xa1, 0x34, 0x28, 0x18, 0x40, 0x34,
++    0x90, 0x0c, 0x4a, 0x31, 0x44, 0xa7, 0x01, 0xa8, 0x2a, 0x29, 0x6b, 0x62, 0x83, 0xf1, 0xd4, 0xfb, 0x8e, 0x1e, 0x12, 0xaa, 0x11, 0x44, 0x45, 0x82, 0xd0, 0xf4,
++    0x22, 0x20, 0x41, 0xfb, 0x14, 0xe0, 0x04, 0x12, 0x27, 0x0e, 0x63, 0x5f, 0x55, 0xe7, 0xa4, 0x30, 0x63, 0x32, 0x87, 0xce, 0x21, 0x61, 0x20, 0x07, 0xc1, 0x01,
++    0xeb, 0x9e, 0xf1, 0x25, 0xdf, 0x63, 0x73, 0x3e, 0x2d, 0x43, 0xc3, 0x2d, 0xfd, 0x18, 0x68, 0xec, 0xa5, 0xc1, 0xa9, 0x64, 0xf5, 0xa8, 0xa7, 0x69, 0x02, 0x6c,
++    0x5b, 0xb7, 0xb3, 0x5e, 0xa6, 0x58, 0xa6, 0x48, 0x30, 0x74, 0x6c, 0xb3, 0xe3, 0x2c, 0x08, 0x20, 0x42, 0x4c, 0xc2, 0x05, 0x10, 0x6f, 0x80, 0x52, 0xd1, 0x25,
++    0x65, 0x3c, 0xc8, 0x12, 0x04, 0x1a, 0xca, 0x5e, 0xde, 0x84, 0xa8, 0x49, 0x03, 0x17, 0x98, 0x42, 0x65, 0x41, 0x22, 0x30, 0x9f, 0x40, 0xc8, 0x63, 0x93, 0x23,
++    0xcc, 0xd1, 0x70, 0x28, 0x56, 0x13, 0x04, 0xa8, 0x36, 0x04, 0xc5, 0xa2, 0x09, 0x59, 0x1c, 0x2f, 0x81, 0x7c, 0x7c, 0x4d, 0xfa, 0x16, 0x6b, 0x76, 0x0c, 0xce,
++    0x3e, 0x09, 0x19, 0x13, 0xda, 0x44, 0xb7, 0x8e, 0x8f, 0xb2, 0x5b, 0x3c, 0x47, 0xce, 0x5f, 0xce, 0x6c, 0x0c, 0xf8, 0x9e, 0x4f, 0x16, 0x20, 0xa8, 0x45, 0xd3,
++    0x4f, 0x4d, 0x62, 0xe8, 0x62, 0xac, 0x71, 0xd4, 0xa5, 0x72, 0xf5, 0x5c, 0xf4, 0x28, 0x05, 0x49, 0x7c, 0xdf, 0x2d, 0xf3, 0x34, 0x99, 0x2d, 0x28, 0x28, 0x2c,
++    0xb2, 0x0b, 0x92, 0x04, 0x41, 0x20, 0x0a, 0x8b, 0x58, 0xa5, 0x94, 0x20, 0x3d, 0x84, 0x58, 0xf4, 0x10, 0xb0, 0x44, 0x78, 0x01, 0xb2, 0xe5, 0x74, 0x11, 0x77,
++    0x83, 0x9b, 0x25, 0x8c, 0x02, 0x49, 0x84, 0x7a, 0x3c, 0x82, 0x24, 0xaf, 0xac, 0x14, 0xfd, 0x2a, 0x4a, 0x19, 0x64, 0x86, 0xf5, 0x20, 0xa8, 0x05, 0x0d, 0x70,
++    0x4b, 0x26, 0x40, 0x2b, 0xa2, 0x5b, 0x58, 0xe7, 0xc5, 0x0d, 0xe0, 0xb0, 0x12, 0x0e, 0x99, 0x46, 0xe2, 0x5a, 0xb0, 0x4c, 0x47, 0xb8, 0x49, 0x89, 0x36, 0xa0,
++    0x86, 0x50, 0x73, 0x0d, 0xe8, 0x08, 0xc7, 0x8f, 0xa4, 0x91, 0xa5, 0xfa, 0xc9, 0x38, 0x02, 0x32, 0x86, 0x1d, 0x02, 0x88, 0x89, 0xa1, 0x08, 0x5d, 0xcb, 0x62,
++    0xf1, 0x85, 0x60, 0x25, 0x8a, 0x21, 0xb5, 0x14, 0x4a, 0x9c, 0xaa, 0x40, 0x85, 0x53, 0x04, 0x9e, 0x30, 0xc1, 0x8f, 0x43, 0x8d, 0xc8, 0x69, 0xc8, 0x2d, 0x41,
++    0xe3, 0xab, 0xd2, 0xa0, 0x4c, 0x10, 0xa8, 0x21, 0x8e, 0x20, 0xde, 0x4a, 0x98, 0x48, 0x0b, 0x01, 0x01, 0x42, 0x98, 0xc9, 0xc2, 0xd2, 0x50, 0xee, 0x0c, 0x74,
++    0xa3, 0x60, 0xcb, 0x8e, 0xd1, 0xa6, 0x21, 0xc8, 0x34, 0x89, 0x1e, 0xd5, 0x11, 0x2a, 0xd4, 0x07, 0x78, 0xc3, 0x83, 0x25, 0x4a, 0x8b, 0x4b, 0x19, 0x14, 0x01,
++    0x84, 0x24, 0x6b, 0xe5, 0x2b, 0x4f, 0x92, 0x05, 0x09, 0xad, 0x30, 0xd1, 0x20, 0xc1, 0x20, 0x51, 0x89, 0x24, 0x43, 0x9c, 0xef, 0x34, 0x00, 0x2e, 0x1b, 0xb4,
++    0x68, 0x18, 0x52, 0x5b, 0x61, 0x6c, 0x0e, 0x12, 0xde, 0x40, 0x92, 0x64, 0x22, 0x54, 0x19, 0x25, 0x21, 0xc1, 0x85, 0xa4, 0x30, 0xca, 0x81, 0xd0, 0x87, 0x1e,
++    0x80, 0xf9, 0x20, 0xe8, 0xe4, 0xc3, 0xb4, 0x14, 0xa8, 0x3e, 0x87, 0x2e, 0xb1, 0x5c, 0x28, 0x34, 0xab, 0x02, 0x14, 0x8f, 0x14, 0x69, 0x0b, 0x44, 0x60, 0x06,
++    0x6d, 0x18, 0x86, 0x44, 0x29, 0x78, 0x41, 0x66, 0x94, 0xc5, 0xb9, 0x48, 0xe0, 0x28, 0x4e, 0x87, 0xa2, 0xc2, 0x94, 0xbb, 0x46, 0xc9, 0x05, 0x14, 0xb6, 0x2f,
++    0xb1, 0x20, 0x93, 0xd4, 0x18, 0xc8, 0xf8, 0x82, 0x42, 0x8f, 0x82, 0x53, 0x38, 0xf2, 0x4a, 0x52, 0x71, 0x1e, 0x91, 0x0e, 0xec, 0x1c, 0x2d, 0x65, 0xc1, 0xde,
++    0x30, 0xb0, 0xac, 0xc2, 0x2b, 0xd3, 0xe3, 0x41, 0x94, 0x88, 0x2f, 0x58, 0xa2, 0x49, 0xad, 0x47, 0x60, 0x1d, 0xea, 0x4d, 0x21, 0xeb, 0xc6, 0xa6, 0xda, 0x41,
++    0x1f, 0x8e, 0x5f, 0x43, 0x90, 0x7d, 0x20, 0xdd, 0x54, 0x83, 0xb8, 0x2c, 0xf8, 0x22, 0x39, 0xa8, 0x3d, 0x08, 0xf7, 0x7b, 0xb4, 0x01, 0xa8, 0x70, 0xf8, 0x47,
++    0x66, 0x12, 0x82, 0xdd, 0xb7, 0x1b, 0x91, 0xaf, 0x4a, 0x21, 0x19, 0xe9, 0x80, 0x5c, 0x52, 0x17, 0xfa, 0x02, 0xf9, 0x40, 0x42, 0x40, 0x34, 0xa2, 0x00, 0x54,
++    0x89, 0x2e, 0x9c, 0x36, 0xa0, 0xca, 0x15, 0x58, 0x72, 0x42, 0x2b, 0x10, 0xa9, 0x7b, 0xe4, 0x91, 0xf5, 0x14, 0x02, 0x7c, 0x71, 0x62, 0x8e, 0x31, 0x14, 0x9e,
++    0x0c, 0x82, 0x15, 0x5d, 0x6b, 0x6c, 0xa2, 0x49, 0x77, 0x88, 0x03, 0x89, 0x48, 0x04, 0xf2, 0x4a, 0x51, 0x01, 0xe9, 0x64, 0x01, 0x4a, 0xf4, 0xd2, 0x78, 0x1c,
++    0xb8, 0x7e, 0xb3, 0x0c, 0xa2, 0xca, 0x5b, 0x40, 0xf9, 0x4a, 0x91, 0x3e, 0xa4, 0x89, 0x3e, 0x90, 0x91, 0x7b, 0x92, 0x9d, 0x26, 0x8c, 0x35, 0xe4, 0x8f, 0xc7,
++    0xd1, 0x24, 0xb9, 0x25, 0xf1, 0x48, 0x36, 0x64, 0xa9, 0x42, 0x5b, 0x24, 0x1e, 0xc1, 0x87, 0x81, 0x82, 0xf2, 0x85, 0x85, 0xda, 0x21, 0x03, 0x56, 0xac, 0x1b,
++    0x54, 0x0a, 0xca, 0x4b, 0x87, 0xb5, 0x85, 0x6f, 0xb1, 0x45, 0x6e, 0xf8, 0xc1, 0xee, 0x4e, 0x1a, 0x24, 0x68, 0x22, 0x88, 0x4b, 0xa4, 0x02, 0x87, 0xe2, 0x85,
++    0x8e, 0x82, 0x05, 0x33, 0x35, 0xa1, 0x44, 0xd1, 0x1e, 0xe8, 0xf0, 0x7a, 0x15, 0x12, 0x6d, 0xbb, 0x44, 0x2c, 0x10, 0x82, 0xdc, 0x2e, 0x81, 0x81, 0x5b, 0x14,
++    0x2c, 0xa2, 0xca, 0xb3, 0x3f, 0x87, 0x1f, 0x17, 0x6c, 0x99, 0xab, 0x58, 0xef, 0x71, 0x2a, 0xcb, 0x10, 0x02, 0xcb, 0x1f, 0x16, 0x9a, 0x48, 0x91, 0x24, 0x92,
++    0x99, 0x28, 0xd9, 0x40, 0xf0, 0x24, 0x39, 0x1a, 0xc8, 0x8d, 0x64, 0x92, 0x07, 0x3a, 0xfc, 0xb5, 0xd3, 0x4d, 0x88, 0x82, 0x73, 0x39, 0xc4, 0x2d, 0x15, 0x66,
++    0xfc, 0x81, 0xa6, 0x16, 0xa1, 0x40, 0x32, 0x84, 0x21, 0x43, 0x92, 0x70, 0x0a, 0x30, 0xec, 0x42, 0xb2, 0x14, 0x78, 0x47, 0x14, 0xa0, 0x25, 0x4b, 0x38, 0x7a,
++    0x18, 0x02, 0xa2, 0x17, 0x82, 0x70, 0x27, 0x59, 0xa4, 0xc2, 0x59, 0x86, 0xda, 0x11, 0xd6, 0x68, 0xbc, 0x0e, 0x4b, 0xbd, 0x4b, 0x87, 0x41, 0x17, 0x91, 0xd5,
++    0x5d, 0xba, 0x51, 0x29, 0x3b, 0xa4, 0x2d, 0xda, 0x28, 0x97, 0xec, 0x29, 0xcc, 0x19, 0xd6, 0x2c, 0x3b, 0x26, 0x10, 0x66, 0x48, 0x60, 0x31, 0x4b, 0x52, 0x84,
++    0x52, 0xf7, 0x4f, 0x16, 0xc6, 0x2f, 0xb6, 0x33, 0x52, 0x33, 0xf4, 0x10, 0xd1, 0xfc, 0x32, 0x35, 0x8e, 0x2b, 0x10, 0x06, 0x1b, 0xcb, 0xd4, 0x23, 0x87, 0x93,
++    0xdf, 0x73, 0x48, 0xd8, 0x42, 0x48, 0x48, 0x72, 0x53, 0x45, 0xbc, 0xe8, 0x12, 0x13, 0x4a, 0x4b, 0x15, 0x82, 0x24, 0x58, 0x45, 0xac, 0xb2, 0x52, 0x04, 0xf2,
++    0xb4, 0x81, 0x00, 0x38, 0x46, 0x7d, 0x6a, 0x10, 0xe4, 0xb2, 0x61, 0x8a, 0x44, 0x32, 0x17, 0x22, 0xde, 0xcf, 0x29, 0x1e, 0xc9, 0x98, 0x55, 0x84, 0xa6, 0xcb,
++    0x33, 0x0a, 0x95, 0x02, 0xbf, 0xc1, 0x52, 0x04, 0xbc, 0x33, 0x62, 0xcf, 0x12, 0x4e, 0x21, 0x1a, 0xf8, 0x85, 0x3a, 0x68, 0xd1, 0x61, 0xa4, 0xca, 0x10, 0xff,
++    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x5e, 0xa1, 0xf5, 0x56, 0x0b, 0x6d, 0x20, 0x2c, 0x30, 0xce, 0x27, 0xe6, 0xc5, 0x0b, 0xff,
++    0x8f, 0x90, 0x4b, 0xbf, 0x3b, 0x15, 0xed, 0xdf, 0xb1, 0x0c, 0xf7, 0x0d, 0xd8, 0xd9, 0xe3, 0x75, 0xf3, 0xb9, 0xd9, 0xe0, 0xf1, 0x81, 0x7e, 0x58, 0x1c, 0x61,
++    0x76, 0xd7, 0xb0, 0x31, 0x38, 0x3c, 0x92, 0xbc, 0xfe, 0x71, 0xe3, 0xb0, 0x9f, 0x28, 0x7f, 0x20, 0x5e, 0x1f, 0xca, 0x60, 0x60, 0x1e, 0xfe, 0x3c, 0x40, 0x8b,
++    0xb5, 0xdf, 0x13, 0x73, 0x14, 0x7d, 0xc7, 0xc5, 0xe6, 0x7c, 0xf3, 0xbd, 0x84, 0x67, 0xcb, 0xdd, 0x78, 0xa3, 0x68, 0x39, 0x7e, 0x86, 0x6e, 0x0d, 0xd6, 0x20,
++    0x2a, 0x33, 0x29, 0xc6, 0x87, 0xef, 0xbe, 0x09, 0x2e, 0x01, 0xdf, 0xd0, 0x6d, 0x80, 0x42, 0x3a, 0x0f, 0xf1, 0x9d, 0xec, 0x32, 0x5b, 0xf8, 0x29, 0x8c, 0x78,
++    0xfc, 0xdb, 0xb8, 0xd2, 0x75, 0x99, 0x1c, 0x68, 0x8c, 0xf3, 0x9b, 0xed, 0xf6, 0x7b, 0x27, 0xbb, 0x36, 0x33, 0x3c, 0x2c, 0xce, 0x1a, 0x93, 0xe9, 0x21, 0xa8,
++    0xcd, 0x3f, 0xb9, 0x4d, 0xfe, 0x92, 0xc7, 0xb8, 0x5d, 0xb0, 0x01, 0xcf, 0xc2, 0xc3, 0x97, 0xbf, 0x2c, 0x21, 0xcc, 0x1f, 0x43, 0x03, 0x1b, 0xae, 0xa3, 0x7c,
++    0x1f, 0x76, 0x44, 0x70, 0xc3, 0x70, 0x6b, 0xf1, 0x41, 0xb9, 0xa6, 0x66, 0x7e, 0x8c, 0x31, 0x83, 0x78, 0x38, 0x1d, 0x46, 0x55, 0x3a, 0x1f, 0xe2, 0x84, 0x5f,
++    0x2e, 0x90, 0x0f, 0x9b, 0x67, 0x76, 0x24, 0x25, 0x40, 0xfe, 0x70, 0x03, 0x4c, 0x3c, 0x87, 0xdb, 0x3d, 0xb8, 0xe0, 0x9b, 0xa1, 0x64, 0x93, 0x29, 0x91, 0x0f,
++    0x36, 0x93, 0xe0, 0xff, 0x60, 0x4f, 0x65, 0x41, 0x0b, 0x0f, 0xf8, 0x2d, 0xfc, 0x3f, 0x72, 0xe1, 0x1b, 0x3e, 0x16, 0xf1, 0xd8, 0x78, 0xf2, 0x6b, 0x11, 0x36,
++    0x00, 0x7f, 0x3e, 0x01, 0x6f, 0xa0, 0xb3, 0x03, 0x82, 0x05, 0x98, 0x0d, 0x03, 0x31, 0xf8, 0xcc, 0x3f, 0xb1, 0xe6, 0x30, 0x03, 0x5c, 0x01, 0x65, 0x60, 0x7f,
++    0x12, 0x7a, 0x34, 0x01, 0x0f, 0x86, 0xb0, 0x60, 0xf8, 0x33, 0x2e, 0x39, 0x85, 0x08, 0x9c, 0x10, 0x72, 0x12, 0xdc, 0xce, 0x37, 0x8e, 0x49, 0x7c, 0x4f, 0xc8,
++    0x2d, 0xd8, 0x33, 0xe1, 0x93, 0xc1, 0xf0, 0x09, 0xcb, 0x1f, 0x1d, 0x95, 0x83, 0x34, 0x25, 0x48, 0xd3, 0x8e, 0x82, 0x14, 0xe6, 0x86, 0xdf, 0x7f, 0x03, 0x84,
++    0x27, 0x9f, 0x78, 0x5f, 0xc1, 0xe4, 0xb8, 0x10, 0x4c, 0x7d, 0xf0,
++  ];
++  const BAND0_GCLI: [u8; 24] = [8, 8, 9, 9, 9, 9, 8, 8, 8, 8, 9, 9, 8, 9, 9, 10, 9, 9, 9, 9, 9, 9, 9, 9];
++  const BAND0_COEF: [i16; 95] = [
++    -230, -235, -228, -219, -216, -217, -205, -213, -207, -325, -428, -357, -412, -426, -390, -382, -354, -463, -474, -473, -351, -348, -188, -163, -200, -199,
++    -186, -244, -165, -135, -155, -188, -222, -193, -146, -160, -142, -142, -248, -187, -216, -240, -224, -256, -273, -264, -221, -230, -224, -225, -223, -231,
++    -348, -374, -302, -322, -327, -323, -341, -341, -369, -430, -420, -512, -463, -406, -373, -421, -439, -439, -426, -427, -429, -432, -427, -425, -422, -424,
++    -425, -425, -414, -419, -420, -420, -417, -422, -417, -417, -414, -420, -418, -425, -423, -424, -422,
++  ];
++  const BAND3_GCLI: [u8; 95] = [
++    4, 4, 6, 4, 5, 4, 4, 4, 4, 5, 4, 4, 5, 5, 4, 5, 5, 5, 2, 5, 3, 5, 5, 4, 4, 5, 5, 5, 3, 4, 4, 4, 5, 4, 5, 4, 5, 4, 5, 5, 5, 3, 5, 5, 4, 4, 5, 5, 5, 4, 4, 5,
++    5, 4, 3, 5, 3, 5, 5, 5, 5, 4, 5, 5, 6, 5, 5, 5, 4, 5, 3, 5, 4, 5, 5, 5, 4, 4, 4, 3, 5, 5, 4, 5, 5, 4, 5, 5, 4, 4, 5, 5, 5, 5, 5,
++  ];
++  const BAND3_COEF: [i16; 379] = [
++    -14, -2, 12, 4, 12, 14, 10, -6, -32, -6, -10, 4, 12, 4, 0, -4, -4, 10, 26, 20, 2, 2, 2, -14, 12, -12, -4, -2, -14, -8, -2, 2, 4, -8, 8, -4, -20, 2, 12, 24,
++    6, 8, 10, -14, -6, -6, 2, 12, 14, -4, -10, 24, 20, 10, 8, 0, -4, 0, 12, -14, -18, -4, 0, 8, -12, 0, 0, -16, 18, -6, -10, 10, -2, 0, 0, 0, 14, -22, -20,
++    -10, -4, 0, 6, -4, -6, 22, 10, 12, 30, 8, 4, -6, -2, 14, 8, 14, -6, 8, 0, 12, -16, -28, -8, 6, 18, 4, 8, 22, -18, 0, -12, -12, -6, 4, 6, 0, -14, 12, 8, -4,
++    14, 10, -6, 2, -6, 4, -12, 0, -14, -20, -10, 2, 8, -12, -12, -2, -4, 0, 0, -18, -4, -2, 8, 8, -18, -2, -8, 12, 6, 10, -4, -14, -8, -14, 10, 16, 16, -4,
++    -16, -8, 20, -16, -18, 6, 2, 6, 2, 0, -6, 12, 18, -4, -2, -6, -26, -18, 8, 2, -10, 4, 0, 0, -8, 6, 4, 0, 12, 24, -2, -6, -22, -8, -10, -2, -10, 20, 4, -2,
++    8, 0, 12, 0, 4, 4, 16, 2, -8, 10, -8, -10, -4, -16, 10, 8, 2, 2, -6, -2, -2, -2, -4, -20, -12, 6, 2, -2, 4, -6, 22, 4, -6, -6, 16, 2, 6, 0, 10, 16, 8, -2,
++    -4, 0, 28, 20, 4, 6, 6, 10, 28, 16, -10, -6, -8, -12, 0, 22, -2, -34, -6, -6, -16, -14, -10, 12, 30, 6, -6, -24, 0, -24, -4, 8, 14, 10, -8, 12, 4, 4, 28,
++    12, 2, 0, -6, 2, 18, 2, -2, 14, -12, -14, 0, -2, 4, -8, -16, 10, -4, 18, -6, -4, -18, 14, -4, -2, -2, -8, -2, 14, 8, 14, -10, 8, 4, -6, -8, 2, 0, -6, -4,
++    -2, 10, 12, -12, -18, 2, 8, 20, -8, 4, -8, 2, 8, 8, -22, -16, -20, -4, -16, 0, 6, -14, -8, -6, 2, 16, 6, 0, -18, -12, -18, -6, -10, 10, 14, 8, -8, 0, 2,
++    -2, -10, -14, -20, 12, 4, -24, -4, 20, 6, -4, -10, -18, -4, -10, 24, 10, -4, -8, -4, -16,
++  ];
++
++  fn nikon() -> (Header, Topology) {
++    let header = parse(&SAMPLE).expect("header parses");
++    let topology = pi::build(&header).expect("topology builds");
++    (header, topology)
++  }
++
++  #[test]
++  fn parses_the_precinct_header() {
++    let (_, topology) = nikon();
++    let ph = PrecinctHeader::parse(&PACKET0, 0, topology.bands.len()).expect("precinct header parses");
++    assert_eq!((ph.payload_len, ph.qp, ph.rp, ph.header_len), (15147, 3, 11, 12));
++    assert_eq!(ph.stride(), 15159);
++    // Nikon signals significance coding plus vertical prediction everywhere.
++    assert!(ph.modes.iter().all(|&m| m == MODE_SIGNIFICANCE | MODE_VERTICAL));
++  }
++
++  #[test]
++  fn derives_the_truncation_positions() {
++    // Per global band id, from the C decoder's dump of precinct 0 (Qp = 3,
++    // Rp = 11).
++    let (_, topology) = nikon();
++    #[rustfmt::skip]
++    let expected: [u8; 25] = [
++      0, 0, 0, 1, 1, 2, 2, 3, // component 0
++      0, 1, 2, 2, 2, 3, 3, 3, // component 1
++      3,                      // component 2
++      0, 1, 2, 2, 2, 3, 3, 3, // component 3
++    ];
++    let got: Vec<u8> = topology.bands.iter().map(|b| b.gtli(3, 11, TRUNCATION_MAX)).collect();
++    assert_eq!(got, expected);
++  }
++
++  #[test]
++  fn decodes_a_real_packet() {
++    let (header, topology) = nikon();
++    let ph = PrecinctHeader::parse(&PACKET0, 0, topology.bands.len()).unwrap();
++    let mut precinct = Precinct::empty(&topology, ph.qp, ph.rp);
++    let mut r = BitReader::at(&PACKET0, ph.header_len);
++    decode_packet(&mut r, &header, &topology, &ph, &mut precinct, &topology.packets[0], None).expect("packet decodes");
++    // The packet closes byte-exactly.
++    assert_eq!(r.byte_pos(), PACKET0.len());
++
++    assert_eq!(precinct.bands[0].gcli, BAND0_GCLI);
++    let coeff: Vec<i16> = precinct.bands[0].coeff.iter().map(|&v| to_signed(v)).collect();
++    assert_eq!(coeff, BAND0_COEF);
++
++    assert_eq!(precinct.bands[3].gcli, BAND3_GCLI);
++    let coeff: Vec<i16> = precinct.bands[3].coeff.iter().map(|&v| to_signed(v)).collect();
++    assert_eq!(coeff, BAND3_COEF);
++  }
++
++  /// Cross-check against `precinct0.txt`, the patched SVT-JPEG-XS decoder's
++  /// dump of precinct 0 (run it with `NIKON_REF_DUMP` pointing at that file).
++  /// See [`super::super::reference`] for how the tests find it.
++  #[test]
++  fn matches_the_c_reference_dump() {
++    let Some(dir) = reference::dir("matches_the_c_reference_dump") else { return };
++    let stream = reference::read(&dir, "he_star.jxs");
++    let dump = String::from_utf8(reference::read(&dir, "precinct0.txt")).expect("precinct0.txt is UTF-8");
++    let header = parse(&stream).unwrap();
++    let topology = pi::build(&header).unwrap();
++    let (precinct, _) = decode_precinct(&stream, header.first_slice + 6, &header, &topology, None).expect("precinct 0 decodes");
++
++    let mut lines = dump.lines().peekable();
++    let mut bands_checked = 0;
++    while let Some(line) = lines.next() {
++      let Some(rest) = line.strip_prefix("band ") else { continue };
++      let fields: Vec<&str> = rest.split_whitespace().collect();
++      let comp: usize = fields[0].parse().unwrap();
++      let local: usize = fields[1].parse().unwrap();
++      let gtli: u8 = fields[5].strip_prefix("gtli=").unwrap().parse().unwrap();
++      let id = topology.component_bands[comp].start + local;
++      let band = &topology.bands[id];
++      let data = &precinct.bands[id];
++      assert_eq!(data.gtli, gtli, "gtli of band {} {}", comp, local);
++      for row in 0..band.lines_per_precinct {
++        let gcli: Vec<u8> = numbers(lines.next().unwrap());
++        let coeff: Vec<i16> = numbers(lines.next().unwrap());
++        let got_gcli = &data.gcli[row * band.gcli_width..(row + 1) * band.gcli_width];
++        let got_coeff: Vec<i16> = data.coeff[row * band.width..(row + 1) * band.width].iter().map(|&v| to_signed(v)).collect();
++        assert_eq!(got_gcli, gcli, "GCLIs of band {} {} line {}", comp, local, row);
++        assert_eq!(got_coeff, coeff, "coefficients of band {} {} line {}", comp, local, row);
++      }
++      bands_checked += 1;
++    }
++    assert_eq!(bands_checked, 25);
++  }
++
++  fn numbers<T: std::str::FromStr>(line: &str) -> Vec<T>
++  where
++    T::Err: std::fmt::Debug,
++  {
++    let (_, values) = line.split_once(':').expect("a `gcli N:` or `coef N:` line");
++    values.split_whitespace().map(|v| v.parse().unwrap()).collect()
++  }
++
++  #[test]
++  fn decodes_every_precinct_byte_exactly() {
++    let Some(dir) = reference::dir("decodes_every_precinct_byte_exactly") else {
++      return;
++    };
++    let stream = reference::read(&dir, "he_star.jxs");
++    let header = parse(&stream).unwrap();
++    let topology = pi::build(&header).unwrap();
++    let mut offset = header.first_slice;
++    let mut remaining = header.precinct_count();
++    for slice in 0..header.slice_count() {
++      assert_eq!(stream[offset..offset + 2], [0xff, 0x20], "SLH of slice {}", slice);
++      offset += 6;
++      // Vertical prediction chains through the slice and resets at its start.
++      let mut top: Option<Precinct> = None;
++      for _ in 0..remaining.min(header.slice_height as usize) {
++        let (precinct, next) = decode_precinct(&stream, offset, &header, &topology, top.as_ref()).expect("precinct decodes");
++        offset = next;
++        top = Some(precinct);
++        remaining -= 1;
++      }
++    }
++    assert_eq!(remaining, 0);
++    assert_eq!(stream[offset..offset + 2], [0xff, 0x11], "EOC after the last precinct");
++  }
++}
+diff --git a/rawler/src/decompressors/jpegxs/header.rs b/rawler/src/decompressors/jpegxs/header.rs
+new file mode 100644
+index 0000000..04fe03c
+--- /dev/null
++++ b/rawler/src/decompressors/jpegxs/header.rs
+@@ -0,0 +1,437 @@
++// SPDX-License-Identifier: LGPL-2.1
++// Copyright 2026
++
++//! JPEG XS codestream headers, as used by Nikon "High Efficiency" NEF.
++//!
++//! The codestream is ISO/IEC 21122 with three vendor deviations:
++//!
++//! * `CAP` holds a 32-byte vendor payload instead of a capabilities bitmap.
++//! * `PIH` is 39 bytes instead of 26. The first 24 payload bytes are the
++//!   standard fields; the rest is vendor data of unknown meaning.
++//! * `CDT` uses three bytes per component instead of two, the third holding
++//!   that component's own wavelet decomposition.
++//!
++//! Only the third one matters. It lets a component other than the last skip
++//! the wavelet, which plain JPEG XS cannot express.
++
++use crate::RawlerError;
++use crate::Result;
++
++/// Marker codes. Only the ones that appear in Nikon streams are listed.
++mod marker {
++  pub const SOC: u16 = 0xff10;
++  pub const EOC: u16 = 0xff11;
++  pub const PIH: u16 = 0xff12;
++  pub const CDT: u16 = 0xff13;
++  pub const WGT: u16 = 0xff14;
++  pub const SLH: u16 = 0xff20;
++  pub const CAP: u16 = 0xff50;
++}
++
++/// Size of the standard part of a picture header, including the length field.
++const PIH_STANDARD_LEN: usize = 26;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Component {
++  pub bit_depth: u8,
++  /// Horizontal and vertical subsampling factors.
++  pub sx: u8,
++  pub sy: u8,
++  /// This component's own wavelet decomposition. Both zero means the component
++  /// is coded without a wavelet ("suppressed decomposition").
++  pub nlx: u8,
++  pub nly: u8,
++}
++
++impl Component {
++  pub fn suppressed(&self) -> bool {
++    self.nlx == 0 && self.nly == 0
++  }
++
++  /// How many bands this component contributes.
++  pub fn bands(&self) -> usize {
++    if self.suppressed() {
++      1
++    } else {
++      2 * self.nly as usize + self.nlx as usize + 1
++    }
++  }
++}
++
++/// The picture header, plus the component and weights tables.
++#[derive(Debug, Clone)]
++pub struct Header {
++  /// Total codestream length in bytes, from SOC to EOC.
++  pub lcod: u32,
++  /// Size of the CFA sampling grid. Each component plane is half of this in
++  /// both axes, even though the subsampling factors read as 1.
++  pub grid_width: u16,
++  pub grid_height: u16,
++  /// Precinct width in multiples of 8; zero means one precinct per line.
++  pub precinct_width: u16,
++  /// Slice height in precincts.
++  pub slice_height: u16,
++  /// Coefficients per code group, and code groups per significance group.
++  pub group_size: u8,
++  pub sig_group_size: u8,
++  /// Nominal wavelet coefficient precision, fractional bits, and the width of a
++  /// raw bit-plane count.
++  pub bw: u8,
++  pub fq: u8,
++  pub br: u8,
++  /// Progression order of bands within a precinct. Nikon uses 1.
++  pub ppoc: u8,
++  /// Colour transform. Nikon declares 0, but the components really are
++  /// star-tetrix decorrelated and the inverse still has to run.
++  pub cpih: u8,
++  /// Frame-wide decomposition. Individual components may differ; see
++  /// [`Component`].
++  pub nlx: u8,
++  pub nly: u8,
++  /// Inverse quantiser type, sign handling, run mode, long-header flag and
++  /// per-packet raw-mode flag.
++  pub qpih: u8,
++  pub fs: u8,
++  pub rm: u8,
++  pub lh: u8,
++  pub rl: u8,
++  pub components: Vec<Component>,
++  /// Band (gain, priority) pairs, in packet-emission order.
++  pub weights: Vec<(u8, u8)>,
++  /// Offset of the first slice header within the codestream.
++  pub first_slice: usize,
++}
++
++impl Header {
++  pub fn plane_width(&self) -> usize {
++    self.grid_width as usize / 2
++  }
++
++  pub fn plane_height(&self) -> usize {
++    self.grid_height as usize / 2
++  }
++
++  pub fn total_bands(&self) -> usize {
++    self.components.iter().map(|c| c.bands()).sum()
++  }
++
++  /// Height of a precinct, in component-plane lines.
++  pub fn precinct_height(&self) -> usize {
++    1 << self.nly
++  }
++
++  pub fn precinct_count(&self) -> usize {
++    self.plane_height().div_ceil(self.precinct_height())
++  }
++
++  pub fn slice_count(&self) -> usize {
++    self.precinct_count().div_ceil(self.slice_height as usize)
++  }
++}
++
++/// Reads big-endian fields with bounds checking.
++struct Reader<'a> {
++  buf: &'a [u8],
++  pos: usize,
++}
++
++impl<'a> Reader<'a> {
++  fn new(buf: &'a [u8]) -> Self {
++    Self { buf, pos: 0 }
++  }
++
++  fn need(&self, n: usize) -> Result<()> {
++    if self.pos + n > self.buf.len() {
++      Err(RawlerError::decoder_failed(format!(
++        "JPEG XS: truncated header, wanted {} bytes at offset {} of {}",
++        n,
++        self.pos,
++        self.buf.len()
++      )))
++    } else {
++      Ok(())
++    }
++  }
++
++  fn u8(&mut self) -> Result<u8> {
++    self.need(1)?;
++    let v = self.buf[self.pos];
++    self.pos += 1;
++    Ok(v)
++  }
++
++  fn u16(&mut self) -> Result<u16> {
++    self.need(2)?;
++    let v = u16::from_be_bytes([self.buf[self.pos], self.buf[self.pos + 1]]);
++    self.pos += 2;
++    Ok(v)
++  }
++
++  fn u32(&mut self) -> Result<u32> {
++    self.need(4)?;
++    let v = u32::from_be_bytes(self.buf[self.pos..self.pos + 4].try_into().expect("4 bytes"));
++    self.pos += 4;
++    Ok(v)
++  }
++
++  fn skip(&mut self, n: usize) -> Result<()> {
++    self.need(n)?;
++    self.pos += n;
++    Ok(())
++  }
++}
++
++/// Parse everything up to the first slice header, which is left unread.
++pub fn parse(buf: &[u8]) -> Result<Header> {
++  let mut r = Reader::new(buf);
++  if r.u16()? != marker::SOC {
++    return Err(RawlerError::decoder_failed("JPEG XS: no SOC marker"));
++  }
++
++  let mut pih: Option<Header> = None;
++  let mut ncomp = 0usize;
++  let mut components: Vec<Component> = Vec::new();
++  let mut weights: Vec<(u8, u8)> = Vec::new();
++
++  loop {
++    let here = r.pos;
++    let code = r.u16()?;
++    if code == marker::SLH {
++      let mut h = pih.ok_or_else(|| RawlerError::decoder_failed("JPEG XS: no PIH marker"))?;
++      if components.is_empty() {
++        return Err(RawlerError::decoder_failed("JPEG XS: no CDT marker"));
++      }
++      if weights.is_empty() {
++        return Err(RawlerError::decoder_failed("JPEG XS: no WGT marker"));
++      }
++      h.components = components;
++      h.weights = weights;
++      h.first_slice = here;
++      if h.weights.len() != h.total_bands() {
++        return Err(RawlerError::decoder_failed(format!(
++          "JPEG XS: WGT has {} entries but the component table implies {} bands",
++          h.weights.len(),
++          h.total_bands()
++        )));
++      }
++      return Ok(h);
++    }
++    if code == marker::EOC {
++      return Err(RawlerError::decoder_failed("JPEG XS: EOC before any slice"));
++    }
++
++    let len = r.u16()? as usize;
++    if len < 2 {
++      return Err(RawlerError::decoder_failed(format!("JPEG XS: bad marker length {}", len)));
++    }
++    let body = len - 2;
++    let body_start = r.pos;
++
++    match code {
++      // Vendor payload, no fields we need.
++      marker::CAP => r.skip(body)?,
++
++      marker::PIH => {
++        if len < PIH_STANDARD_LEN {
++          return Err(RawlerError::decoder_failed(format!("JPEG XS: PIH length {} below the standard 26", len)));
++        }
++        let lcod = r.u32()?;
++        let _ppih = r.u16()?;
++        let _plev = r.u16()?;
++        let grid_width = r.u16()?;
++        let grid_height = r.u16()?;
++        let precinct_width = r.u16()?;
++        let slice_height = r.u16()?;
++        ncomp = r.u8()? as usize;
++        let group_size = r.u8()?;
++        let sig_group_size = r.u8()?;
++        let bw = r.u8()?;
++        let fq_br = r.u8()?;
++        let flags = r.u8()?;
++        let decomp = r.u8()?;
++        let tail = r.u8()?;
++        // Anything past the standard 26 bytes is vendor data.
++        r.skip(body_start + body - r.pos)?;
++
++        if slice_height == 0 {
++          return Err(RawlerError::decoder_failed("JPEG XS: slice height is zero"));
++        }
++        if ncomp == 0 {
++          return Err(RawlerError::decoder_failed("JPEG XS: component count is zero"));
++        }
++        // The packet layout in `super::pi` assumes this progression order.
++        if (flags >> 4) & 0x07 != 1 {
++          return Err(RawlerError::decoder_failed(format!(
++            "JPEG XS: unsupported progression order Ppoc = {}",
++            (flags >> 4) & 0x07
++          )));
++        }
++        pih = Some(Header {
++          lcod,
++          grid_width,
++          grid_height,
++          precinct_width,
++          slice_height,
++          group_size,
++          sig_group_size,
++          bw,
++          fq: fq_br >> 4,
++          br: fq_br & 0x0f,
++          ppoc: (flags >> 4) & 0x07,
++          cpih: flags & 0x0f,
++          nlx: decomp >> 4,
++          nly: decomp & 0x0f,
++          lh: tail >> 7,
++          rl: (tail >> 6) & 1,
++          qpih: (tail >> 4) & 3,
++          fs: (tail >> 2) & 3,
++          rm: tail & 3,
++          components: Vec::new(),
++          weights: Vec::new(),
++          first_slice: 0,
++        });
++      }
++
++      marker::CDT => {
++        // Three bytes per component in Nikon streams, two in stock JPEG XS,
++        // where every component takes the frame-wide decomposition instead.
++        let frame = pih.as_ref().ok_or_else(|| RawlerError::decoder_failed("JPEG XS: CDT before PIH"))?;
++        // The PIH branch above rejected a zero component count.
++        let stride = body / ncomp;
++        if stride * ncomp != body || !(2..=3).contains(&stride) {
++          return Err(RawlerError::decoder_failed(format!(
++            "JPEG XS: CDT body {} does not hold 2 or 3 bytes for each of {} components",
++            body, ncomp
++          )));
++        }
++        for _ in 0..ncomp {
++          let bit_depth = r.u8()?;
++          let sub = r.u8()?;
++          let (nlx, nly) = if stride == 3 {
++            let d = r.u8()?;
++            (d >> 4, d & 0x0f)
++          } else {
++            (frame.nlx, frame.nly)
++          };
++          components.push(Component {
++            bit_depth,
++            sx: sub >> 4,
++            sy: sub & 0x0f,
++            nlx,
++            nly,
++          });
++        }
++      }
++
++      marker::WGT => {
++        if !body.is_multiple_of(2) {
++          return Err(RawlerError::decoder_failed(format!("JPEG XS: WGT body {} is odd", body)));
++        }
++        for _ in 0..body / 2 {
++          let gain = r.u8()?;
++          let priority = r.u8()?;
++          weights.push((gain, priority));
++        }
++      }
++
++      // Markers Nikon does not emit. Skipping keeps the parser useful elsewhere.
++      _ => r.skip(body)?,
++    }
++
++    if r.pos != body_start + body {
++      return Err(RawlerError::decoder_failed(format!(
++        "JPEG XS: marker {:04x} consumed {} bytes, expected {}",
++        code,
++        r.pos - body_start,
++        body
++      )));
++    }
++  }
++}
++
++/// Real codestream bytes shared by this module's tests and the topology tests
++/// in [`super::pi`].
++#[cfg(test)]
++pub(crate) mod testdata {
++  /// The first 155 bytes of the codestream from a Nikon Z6III HE* file.
++  #[rustfmt::skip]
++  pub(crate) const SAMPLE: [u8; 155] = [
++    0xff, 0x10, 0xff, 0x50, 0x00, 0x22, 0x43, 0x4f, 0x4e, 0x54, 0x41, 0x43,
++    0x54, 0x5f, 0x49, 0x4e, 0x54, 0x4f, 0x50, 0x49, 0x58, 0x5f, 0xef, 0xc0,
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0xff, 0x12, 0x00, 0x27, 0x00, 0xe9, 0xa2, 0x00, 0x00, 0x00,
++    0x00, 0x00, 0x17, 0xb0, 0x0f, 0xc8, 0x00, 0x00, 0x00, 0x10, 0x04, 0x04,
++    0x08, 0x12, 0x44, 0x10, 0x51, 0x14, 0x50, 0x88, 0x70, 0x83, 0xf0, 0x15,
++    0x23, 0xd1, 0x49, 0xcd, 0x3f, 0x7f, 0x07, 0xff, 0x13, 0x00, 0x0e, 0x0e,
++    0x11, 0x51, 0x0e, 0x11, 0x51, 0x0e, 0x11, 0x00, 0x0e, 0x11, 0x51, 0xff,
++    0x14, 0x00, 0x34, 0x03, 0x02, 0x03, 0x13, 0x02, 0x09, 0x02, 0x16, 0x01,
++    0x0a, 0x01, 0x15, 0x02, 0x05, 0x01, 0x03, 0x01, 0x11, 0x00, 0x01, 0x00,
++    0x07, 0x00, 0x0d, 0x00, 0x0b, 0x02, 0x06, 0x01, 0x04, 0x01, 0x10, 0x00,
++    0x00, 0x00, 0x08, 0x00, 0x0e, 0x01, 0x14, 0x00, 0x12, 0x00, 0x0f, 0x00,
++    0x17, 0x00, 0x0c, 0x00, 0x18, 0xff, 0x20, 0x00, 0x04, 0x00, 0x00,
++  ];
++}
++
++#[cfg(test)]
++mod tests {
++  use super::testdata::SAMPLE;
++  use super::*;
++
++  #[test]
++  fn parses_a_nikon_he_header() {
++    let h = parse(&SAMPLE).expect("header parses");
++    assert_eq!(h.lcod, 15_311_360);
++    assert_eq!((h.grid_width, h.grid_height), (6064, 4040));
++    assert_eq!((h.plane_width(), h.plane_height()), (3032, 2020));
++    assert_eq!((h.group_size, h.sig_group_size), (4, 8));
++    assert_eq!((h.bw, h.fq, h.br), (18, 4, 4));
++    assert_eq!((h.nlx, h.nly), (5, 1));
++    assert_eq!(h.ppoc, 1);
++    assert_eq!(h.cpih, 0);
++    assert_eq!((h.qpih, h.fs, h.rm, h.lh, h.rl), (1, 1, 0, 0, 0));
++    assert_eq!((h.precinct_width, h.slice_height), (0, 16));
++    assert_eq!(h.first_slice, 149);
++  }
++
++  #[test]
++  fn reads_the_extended_component_table() {
++    let h = parse(&SAMPLE).unwrap();
++    assert_eq!(h.components.len(), 4);
++    for c in &h.components {
++      assert_eq!((c.bit_depth, c.sx, c.sy), (14, 1, 1));
++    }
++    // Component 2 is the one without a wavelet, not the last one. Stock JPEG XS
++    // cannot express this, which is why the extended CDT exists.
++    let suppressed: Vec<bool> = h.components.iter().map(|c| c.suppressed()).collect();
++    assert_eq!(suppressed, [false, false, true, false]);
++    assert_eq!(h.components.iter().filter(|c| c.suppressed()).count(), 1);
++    assert_eq!(h.components.iter().map(|c| c.bands()).collect::<Vec<_>>(), [8, 8, 1, 8]);
++  }
++
++  #[test]
++  fn band_count_matches_the_weights_table() {
++    let h = parse(&SAMPLE).unwrap();
++    // 3 decomposed components at 8 bands each, plus the suppressed one.
++    assert_eq!(h.total_bands(), 25);
++    assert_eq!(h.weights.len(), 25);
++    // Priorities are a permutation of 0..25.
++    let mut prio: Vec<u8> = h.weights.iter().map(|(_, p)| *p).collect();
++    prio.sort_unstable();
++    assert_eq!(prio, (0..25).collect::<Vec<u8>>());
++  }
++
++  #[test]
++  fn derives_the_slice_geometry() {
++    let h = parse(&SAMPLE).unwrap();
++    assert_eq!(h.precinct_height(), 2);
++    assert_eq!(h.precinct_count(), 1010);
++    assert_eq!(h.slice_count(), 64);
++  }
++
++  #[test]
++  fn rejects_a_truncated_codestream() {
++    assert!(parse(&SAMPLE[..40]).is_err());
++    assert!(parse(&[0xff, 0x11]).is_err());
++    assert!(parse(&[]).is_err());
++  }
++}
+diff --git a/rawler/src/decompressors/jpegxs/mct.rs b/rawler/src/decompressors/jpegxs/mct.rs
+new file mode 100644
+index 0000000..1089962
+--- /dev/null
++++ b/rawler/src/decompressors/jpegxs/mct.rs
+@@ -0,0 +1,366 @@
++// SPDX-License-Identifier: LGPL-2.1
++// Copyright 2026
++
++//! Output stage of the Nikon "High Efficiency" NEF decoder: inverse colour
++//! transform, decompanding and CFA mosaic assembly.
++//!
++//! The four decoded planes are not the Bayer channels. They are a star-tetrix
++//! (TETRIX) decorrelation of them, `(Y, Cr, Δ, Cb)`, even though the header
++//! says `Cpih = 0`. The `CTS` and `CRG` markers that would carry the
++//! transform parameters are missing, so the parameters are fixed here to
++//! `Cf = 3`, `e1 = e2 = 1` and CFA pattern type 0 (RGGB).
++//!
++//! Nikon needs three things on top of the standard inverse:
++//!
++//! * the chroma planes come out low by a small constant factor, so they are
++//!   scaled up first: Cb by 4339/4096, Cr by 4178/4096;
++//! * the planes are stored as `(Y, Cr, Δ, Cb)` while the standard inverse
++//!   wants `(Y, Cb, Cr, Δ)`, so they are permuted `0312`;
++//! * the coded samples are square-root companded rather than sensor values,
++//!   and are decompanded at the very end as `x = (v + V0)² / D + C`, with
++//!   `V0 = 16158`, `D = 191488` and `C = 1050`, close to the 1008 black
++//!   level, clamped to the component depth. That replaces the standard linear
++//!   `(v + 2^(Bw-1) + 2^(Fq-1)) >> Fq` output scaling. `v` is the
++//!   [`super::dwt`] output after the inverse colour transform, still in the
++//!   zero-centred `Bw` domain.
++//!
++//! The chroma gains and the three companding constants are fitted against
++//! lossless shots of a single scene rather than read from the stream, so they
++//! are probably about right rather than exact. Whether they hold for other
++//! cameras is untested.
++
++use super::header::Header;
++use crate::RawlerError;
++use crate::Result;
++
++/// Chroma gains in 1/4096 units, applied before the inverse star-tetrix.
++const CB_GAIN: i64 = 4339; // 1.0594
++const CR_GAIN: i64 = 4178; // 1.0200
++
++/// Square-root companding constants. The encoder was fed
++/// `sqrt((x - C) * D) - V0`, level-shifted to an ordinary 14-bit sample.
++const NLT_V0: i64 = 16158;
++const NLT_D: i64 = 191488;
++const NLT_C: i64 = 1050;
++
++/// Displacement of each spec-order component on the CFA grid (ISO/IEC 21122-1
++/// Table F.10, CFA pattern type 0): `(Δx, Δy)` for `(Y, Cb, Cr, Δ)`.
++const DISPLACEMENT: [(i32, i32); 4] = [(0, 1), (1, 1), (0, 0), (1, 0)];
++
++/// Spec-order component index by CFA grid parity (Table F.11, pattern type
++/// 0), indexed `[x % 2][y % 2]`.
++const COMPONENT_AT: [[usize; 2]; 2] = [[2, 0], [3, 1]];
++
++/// The CFA-grid neighbour read all four inverse steps share (Table F.12).
++///
++/// Component `c`'s sample `(x, y)` sits at grid position `(2x + Δx, 2y + Δy)`;
++/// the step reads the grid sample offset `(rx, ry)` from there, reflecting at
++/// the plane edges. With `Cf = 3` a vertical offset also reflects whenever it
++/// would leave the component's own quad row (`ry + Δy` outside `0..=1`), which
++/// keeps the vertical taps inside the two grid rows the quad spans. The
++/// landing parity picks the plane, per [`COMPONENT_AT`].
++#[inline]
++fn access(comps: &[Vec<i32>; 4], c: usize, x: usize, y: usize, w: usize, h: usize, mut rx: i32, mut ry: i32) -> i32 {
++  let (dx, dy) = DISPLACEMENT[c];
++  if 2 * x as i32 + rx + dx < 0 || 2 * x as i32 + rx + dx >= 2 * w as i32 {
++    rx = -rx;
++  }
++  if ry + dy < 0 || ry + dy > 1 || 2 * y as i32 + ry + dy < 0 || 2 * y as i32 + ry + dy >= 2 * h as i32 {
++    ry = -ry;
++  }
++  let gx = 2 * x as i32 + rx + dx;
++  let gy = 2 * y as i32 + ry + dy;
++  let plane = COMPONENT_AT[(gx % 2) as usize][(gy % 2) as usize];
++  comps[plane][(gy / 2) as usize * w + (gx / 2) as usize]
++}
++
++/// Sum of component `c`'s four diagonal grid neighbours.
++#[inline]
++fn diagonals(comps: &[Vec<i32>; 4], c: usize, x: usize, y: usize, w: usize, h: usize) -> i32 {
++  access(comps, c, x, y, w, h, -1, -1) + access(comps, c, x, y, w, h, 1, -1) + access(comps, c, x, y, w, h, -1, 1) + access(comps, c, x, y, w, h, 1, 1)
++}
++
++/// Sum of component `c`'s four orthogonal grid neighbours.
++#[inline]
++fn cross(comps: &[Vec<i32>; 4], c: usize, x: usize, y: usize, w: usize, h: usize) -> i32 {
++  access(comps, c, x, y, w, h, -1, 0) + access(comps, c, x, y, w, h, 1, 0) + access(comps, c, x, y, w, h, 0, -1) + access(comps, c, x, y, w, h, 0, 1)
++}
++
++/// Inverse average step (Table F.5): Y regains the Δ diagonal average.
++fn inv_avg_step(comps: &mut [Vec<i32>; 4], w: usize, h: usize) {
++  for y in 0..h {
++    for x in 0..w {
++      let s = diagonals(comps, 0, x, y, w, h);
++      comps[0][y * w + x] -= s >> 3;
++    }
++  }
++}
++
++/// Inverse delta step (Table F.6): Δ regains the Y diagonal average.
++fn inv_delta_step(comps: &mut [Vec<i32>; 4], w: usize, h: usize) {
++  for y in 0..h {
++    for x in 0..w {
++      let s = diagonals(comps, 3, x, y, w, h);
++      comps[3][y * w + x] += s >> 2;
++    }
++  }
++}
++
++/// Inverse Y step (Table F.7): both green positions shed their chroma
++/// cross-average. The general step is
++/// `(2^e2 (b_l + b_r) + 2^e1 (r_t + r_b)) >> 3`, which with `e1 = e2 = 1` is
++/// exactly `sum >> 2`. A stream carrying real CTS markers would default to
++/// `e1 = e2 = 0` instead. Neither green reads the other, so the order of the
++/// two is free.
++fn inv_y_step(comps: &mut [Vec<i32>; 4], w: usize, h: usize) {
++  for c in [0, 3] {
++    for y in 0..h {
++      for x in 0..w {
++        let s = cross(comps, c, x, y, w, h);
++        comps[c][y * w + x] -= s >> 2;
++      }
++    }
++  }
++}
++
++/// Inverse CbCr step (Table F.8): Cb and Cr regain the green cross-average.
++fn inv_cbcr_step(comps: &mut [Vec<i32>; 4], w: usize, h: usize) {
++  for c in [1, 2] {
++    for y in 0..h {
++      for x in 0..w {
++        let s = cross(comps, c, x, y, w, h);
++        comps[c][y * w + x] += s >> 2;
++      }
++    }
++  }
++}
++
++/// Inverse star-tetrix transform (Table F.4) for `Cf = 3`, `e1 = e2 = 1`,
++/// CFA pattern type 0. Consumes planes in spec order `(Y, Cb, Cr, Δ)` and
++/// leaves them as the four Bayer quad planes `(R, G1, G2, B)`, quad positions
++/// `(0,0), (0,1), (1,0), (1,1)` in `(row, column)` terms.
++fn inverse_star_tetrix(comps: &mut [Vec<i32>; 4], w: usize, h: usize) {
++  inv_avg_step(comps, w, h);
++  inv_delta_step(comps, w, h);
++  inv_y_step(comps, w, h);
++  inv_cbcr_step(comps, w, h);
++  // The transform leaves R at parity (0, 0) -> slot 2 and B at (1, 1) ->
++  // slot 1 (see COMPONENT_AT); swap into R, G1, G2, B order.
++  comps.swap(0, 2);
++  comps.swap(1, 3);
++}
++
++/// Scale one chroma plane by `gain / 4096`, rounding to nearest.
++fn scale_chroma(plane: &mut [i32], gain: i64) {
++  for v in plane.iter_mut() {
++    *v = ((*v as i64 * gain + (1 << 11)) >> 12) as i32;
++  }
++}
++
++/// Undo the square-root companding of one `Bw`-domain sample, producing a
++/// sensor value clamped to `depth` bits.
++#[inline]
++fn decompand(v: i32, max: i64) -> u16 {
++  let t = (v as i64 + NLT_V0).max(0);
++  let x = (t * t + NLT_D / 2) / NLT_D + NLT_C;
++  x.clamp(0, max) as u16
++}
++
++/// Run the whole output stage on the planes [`super::dwt::Idwt::finish`]
++/// returns, in the component order of the codestream: chroma gains, the
++/// `0312` permutation into spec order, the inverse star-tetrix and the
++/// square-root decompanding. Returns the four Bayer quad planes `(R, G1, G2,
++/// B)` as sensor values; [`interleave`] assembles them into the mosaic.
++pub fn transform(planes: Vec<Vec<i32>>, header: &Header) -> Result<Vec<Vec<u16>>> {
++  let (w, h) = (header.plane_width(), header.plane_height());
++  let planes: [Vec<i32>; 4] = planes
++    .try_into()
++    .map_err(|p: Vec<Vec<i32>>| RawlerError::decoder_failed(format!("JPEG XS: the star-tetrix inverse needs 4 planes, got {}", p.len())))?;
++
++  let depths: Vec<u8> = header.components.iter().map(|c| c.bit_depth).collect();
++  let depth = depths.first().copied().unwrap_or(0);
++  if depths.len() != 4 || depths.iter().any(|&d| d != depth) || depth == 0 || depth > 15 {
++    return Err(RawlerError::decoder_failed(format!(
++      "JPEG XS: the star-tetrix inverse needs 4 components of one depth in 1..=15, got {:?}",
++      depths
++    )));
++  }
++  if w == 0 || h == 0 || planes.iter().any(|p| p.len() != w * h) {
++    return Err(RawlerError::decoder_failed(format!(
++      "JPEG XS: planes do not match the {}x{} component grid",
++      w, h
++    )));
++  }
++
++  // Nikon order (Y, Cr, Δ, Cb) -> spec order (Y, Cb, Cr, Δ).
++  let [y, cr, delta, cb] = planes;
++  let mut comps = [y, cb, cr, delta];
++  scale_chroma(&mut comps[1], CB_GAIN);
++  scale_chroma(&mut comps[2], CR_GAIN);
++  inverse_star_tetrix(&mut comps, w, h);
++
++  let max = (1i64 << depth) - 1;
++  Ok(comps.into_iter().map(|plane| plane.into_iter().map(|v| decompand(v, max)).collect()).collect())
++}
++
++/// Interleave the four Bayer quad planes, each `w` x `h`, into the `2w` x
++/// `2h` RGGB mosaic: plane 0 fills quad position (0,0), plane 1 (0,1),
++/// plane 2 (1,0) and plane 3 (1,1), positions in `(row, column)` terms.
++pub fn interleave(planes: &[Vec<u16>], w: usize, h: usize) -> Result<Vec<u16>> {
++  if planes.len() != 4 || planes.iter().any(|p| p.len() != w * h) {
++    return Err(RawlerError::decoder_failed(format!(
++      "JPEG XS: mosaic assembly wants 4 planes of {} samples, got {:?}",
++      w * h,
++      planes.iter().map(|p| p.len()).collect::<Vec<_>>()
++    )));
++  }
++  let mut mosaic = vec![0u16; 4 * w * h];
++  for y in 0..h {
++    let (top, bottom) = (2 * y * 2 * w, (2 * y + 1) * 2 * w);
++    for x in 0..w {
++      mosaic[top + 2 * x] = planes[0][y * w + x];
++      mosaic[top + 2 * x + 1] = planes[1][y * w + x];
++      mosaic[bottom + 2 * x] = planes[2][y * w + x];
++      mosaic[bottom + 2 * x + 1] = planes[3][y * w + x];
++    }
++  }
++  Ok(mosaic)
++}
++
++#[cfg(test)]
++mod tests {
++  use super::super::header::parse;
++  use super::super::header::testdata::SAMPLE;
++  use super::super::reference;
++  use super::*;
++
++  /// A header for synthetic four-component tests of the given plane size.
++  fn nikon_header(w: u16, h: u16) -> Header {
++    let mut header = parse(&SAMPLE).expect("header parses");
++    header.grid_width = 2 * w;
++    header.grid_height = 2 * h;
++    header
++  }
++
++  #[test]
++  fn decompands_known_values() {
++    // v = 0 sits near mid-grey: (16158² + 95744) / 191488 + 1050.
++    assert_eq!(decompand(0, 16383), 2413);
++    // The zero level of the compander: t = 0 collapses to the C offset.
++    assert_eq!(decompand(-16158, 16383), 1050);
++    // Anything below is clamped before squaring, not folded back up.
++    assert_eq!(decompand(-100_000, 16383), 1050);
++    // Large values clamp to the component depth.
++    assert_eq!(decompand(100_000, 16383), 16383);
++    // The largest value that still decompands below the clamp.
++    assert_eq!(decompand(38_026, 16383), 16382);
++    assert_eq!(decompand(38_027, 16383), 16383);
++  }
++
++  #[test]
++  fn scales_chroma_with_symmetric_rounding_bias() {
++    let mut plane = [4096, -4096, 1, -1, 0, 2048];
++    scale_chroma(&mut plane, CB_GAIN);
++    // (v * 4339 + 2048) >> 12, an arithmetic shift: rounds to nearest,
++    // half away from zero for positives, half towards zero for negatives.
++    assert_eq!(plane, [4339, -4339, 1, -1, 0, 2170]);
++    let mut plane = [4096, -4096];
++    scale_chroma(&mut plane, CR_GAIN);
++    assert_eq!(plane, [4178, -4178]);
++  }
++
++  #[test]
++  fn a_flat_grey_frame_stays_flat() {
++    // With zero chroma and zero delta the inverse transform must reproduce
++    // the Y value on all four Bayer positions: avg and cbcr steps add zero,
++    // the delta step rebuilds G2 = Y, and the y step subtracts zero chroma.
++    let (w, h) = (6, 4);
++    let header = nikon_header(w as u16, h as u16);
++    let grey = 123 << header.fq;
++    let planes = vec![vec![grey; w * h], vec![0; w * h], vec![0; w * h], vec![0; w * h]];
++    let out = transform(planes, &header).expect("transform runs");
++    let expected = decompand(grey, 16383);
++    for (ci, plane) in out.iter().enumerate() {
++      assert!(plane.iter().all(|&v| v == expected), "plane {} is not flat", ci);
++    }
++  }
++
++  #[test]
++  fn interleaves_the_quad_planes_rggb() {
++    let planes: Vec<Vec<u16>> = (0..4).map(|c| (0..6).map(|i| 100 * c + i).collect()).collect();
++    let mosaic = interleave(&planes, 3, 2).expect("interleaves");
++    #[rustfmt::skip]
++    assert_eq!(mosaic, [
++      0,   100, 1,   101, 2,   102,
++      200, 300, 201, 301, 202, 302,
++      3,   103, 4,   104, 5,   105,
++      203, 303, 204, 304, 205, 305,
++    ]);
++    // Plane count and sizes are validated.
++    assert!(interleave(&planes[..3], 3, 2).is_err());
++    assert!(interleave(&planes, 2, 2).is_err());
++  }
++
++  #[test]
++  fn rejects_wrong_component_counts_and_sizes() {
++    let header = nikon_header(4, 4);
++    assert!(transform(vec![vec![0; 16]; 3], &header).is_err(), "3 planes must fail");
++    assert!(transform(vec![vec![0; 15]; 4], &header).is_err(), "short planes must fail");
++    let mut header12 = nikon_header(4, 4);
++    header12.components[2].bit_depth = 12;
++    assert!(transform(vec![vec![0; 16]; 4], &header12).is_err(), "mixed depths must fail");
++  }
++
++  // Whole-pipeline comparison against the patched SVT-JPEG-XS decoder:
++  // entropy -> IDWT -> inverse MCT -> decompanding, against its final planes.
++  // See [`super::super::reference`] for how the tests find the data.
++  // Regenerate with:
++  //
++  //   python3 tools/nefhe.py samples/same-scene/NZ6_3368.NEF \
++  //       --extract he_star.jxs
++  //   env NIKON_TOLERANT=1 NIKON_PORDER=1 NIKON_SPLIT=6 NIKON_FIRSTPREC=0 \
++  //       NIKON_CORDER=0123 NIKON_WGT=2 \
++  //     SvtJpegxsDecApp -i he_star.jxs -o ref_final.planes -v 0
++  //
++  // ref_final.planes is 4 planes (R, G1, G2, B) of 3032x2020 u16le --
++  // 48997120 bytes exactly. Anything else is a truncated write and fails the
++  // test rather than skipping it.
++  #[test]
++  fn matches_the_c_reference_planes() {
++    let Some(dir) = reference::dir("matches_the_c_reference_planes") else {
++      return;
++    };
++    let stream = reference::read(&dir, "he_star.jxs");
++    let want_planes = reference::read(&dir, "ref_final.planes");
++
++    let (header, planes) = super::super::decode_planes(&stream).expect("stream decodes");
++    let (w, h) = (header.plane_width(), header.plane_height());
++    assert_eq!((w, h), (3032, 2020));
++    assert_eq!(want_planes.len(), 4 * w * h * 2, "ref_final.planes is truncated or misshapen");
++
++    for (ci, (plane, want)) in planes.iter().zip(want_planes.chunks_exact(w * h * 2)).enumerate() {
++      for (i, (&g, e)) in plane.iter().zip(want.chunks_exact(2)).enumerate() {
++        let e = u16::from_le_bytes([e[0], e[1]]);
++        assert_eq!(g, e, "plane {} diverges at x={} y={}", ci, i % w, i / w);
++      }
++    }
++  }
++
++  #[test]
++  fn decodes_the_full_frame_to_a_mosaic() {
++    let Some(dir) = reference::dir("decodes_the_full_frame_to_a_mosaic") else {
++      return;
++    };
++    let stream = reference::read(&dir, "he_star.jxs");
++    let (mosaic, width, height) = super::super::decode(&stream).expect("stream decodes");
++    assert_eq!((width, height), (6064, 4040));
++    assert_eq!(mosaic.len(), width * height);
++    // The mosaic is the interleave of the plane decode: spot-check the four
++    // corners of the first quad against decode_planes.
++    let (_, planes) = super::super::decode_planes(&stream).expect("stream decodes");
++    assert_eq!(mosaic[0], planes[0][0]);
++    assert_eq!(mosaic[1], planes[1][0]);
++    assert_eq!(mosaic[width], planes[2][0]);
++    assert_eq!(mosaic[width + 1], planes[3][0]);
++  }
++}
+diff --git a/rawler/src/decompressors/jpegxs/mod.rs b/rawler/src/decompressors/jpegxs/mod.rs
+new file mode 100644
+index 0000000..bd36fa2
+--- /dev/null
++++ b/rawler/src/decompressors/jpegxs/mod.rs
+@@ -0,0 +1,104 @@
++// SPDX-License-Identifier: LGPL-2.1
++// Copyright 2026
++
++//! JPEG XS (ISO/IEC 21122) decoding, as used by Nikon "High Efficiency" NEF.
++//!
++//! Nikon's HE and HE* modes store the CFA payload as a JPEG XS codestream
++//! with a handful of vendor deviations. The encoder looks like intoPIX
++//! TicoRAW: the `CAP` marker reads `CONTACT_INTOPIX_`. HE and HE* are the
++//! same structure and differ only in rate.
++//!
++//! Four things are worth knowing before reading the submodules:
++//!
++//! * the four components are a star-tetrix decorrelation of the Bayer planes,
++//!   `(Y, Cr, Δ, Cb)`, not the planes themselves;
++//! * each component plane is half the CFA grid in both axes, even though the
++//!   subsampling factors read as 1;
++//! * exactly one component skips the wavelet, and it is index 2 rather than
++//!   the last one;
++//! * packets within a precinct are ordered subband-major, and the weights
++//!   table is stored in that same order.
++
++pub mod bitreader;
++pub mod dwt;
++pub mod entropy;
++pub mod header;
++pub mod mct;
++pub mod pi;
++
++use crate::RawlerError;
++use crate::Result;
++
++/// Finds the data the cross-check tests compare against, which is the output
++/// of the patched SVT-JPEG-XS decoder and too large to check in. Point
++/// `RAWLER_JPEGXS_REFERENCE` at a directory holding `he_star.jxs`,
++/// `precinct0.txt` and `ref_final.planes` to run them; [`entropy`] and
++/// [`mct`] say how to regenerate those files.
++///
++/// With the variable unset the tests skip. With it pointed at an incomplete
++/// directory they fail. They cannot pass by accident.
++#[cfg(test)]
++pub(crate) mod reference {
++  use std::path::PathBuf;
++
++  pub fn dir(test: &str) -> Option<PathBuf> {
++    let dir = std::env::var_os("RAWLER_JPEGXS_REFERENCE");
++    if dir.is_none() {
++      eprintln!("skipping {}: set RAWLER_JPEGXS_REFERENCE to the reference data directory", test);
++    }
++    dir.map(PathBuf::from)
++  }
++
++  pub fn read(dir: &PathBuf, name: &str) -> Vec<u8> {
++    std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("RAWLER_JPEGXS_REFERENCE is set but {} is unreadable: {}", name, e))
++  }
++}
++
++/// Decode a Nikon HE/HE* codestream into its four Bayer quad planes `(R, G1,
++/// G2, B)`, each half the CFA grid in both axes, as 14-bit sensor values.
++fn decode_planes_with_header(stream: &[u8], header: &header::Header) -> Result<Vec<Vec<u16>>> {
++  let topology = pi::build(header)?;
++  let mut idwt = dwt::Idwt::new(header, &topology)?;
++
++  let mut offset = header.first_slice;
++  let mut remaining = header.precinct_count();
++  for slice in 0..header.slice_count() {
++    if stream.get(offset..offset + 2) != Some(&[0xff, 0x20]) {
++      return Err(RawlerError::decoder_failed(format!("JPEG XS: no SLH marker at slice {}", slice)));
++    }
++    offset += 6;
++    // Vertical prediction chains through the slice and resets at its start.
++    let mut top: Option<entropy::Precinct> = None;
++    for _ in 0..remaining.min(header.slice_height as usize) {
++      let (precinct, next) = entropy::decode_precinct(stream, offset, header, &topology, top.as_ref())?;
++      offset = next;
++      idwt.push_precinct(&precinct)?;
++      top = Some(precinct);
++      remaining -= 1;
++    }
++  }
++  if stream.get(offset..offset + 2) != Some(&[0xff, 0x11]) {
++    return Err(RawlerError::decoder_failed("JPEG XS: no EOC marker after the last slice"));
++  }
++
++  mct::transform(idwt.finish()?, header)
++}
++
++/// Decode a Nikon HE/HE* codestream into the full-resolution RGGB CFA
++/// mosaic, checking its dimensions against the RAW IFD.
++pub fn decode(stream: &[u8], width: usize, height: usize) -> Result<Vec<u16>> {
++  let header = header::parse(stream)?;
++  let (w, h) = (header.plane_width(), header.plane_height());
++  if (2 * w, 2 * h) != (width, height) {
++    return Err(RawlerError::decoder_failed("NEF: JPEG XS dimensions disagree with the RAW IFD"));
++  }
++  let planes = decode_planes_with_header(stream, &header)?;
++  mct::interleave(&planes, w, h)
++}
++
++#[cfg(test)]
++fn decode_planes(stream: &[u8]) -> Result<(header::Header, Vec<Vec<u16>>)> {
++  let header = header::parse(stream)?;
++  let planes = decode_planes_with_header(stream, &header)?;
++  Ok((header, planes))
++}
+diff --git a/rawler/src/decompressors/jpegxs/pi.rs b/rawler/src/decompressors/jpegxs/pi.rs
+new file mode 100644
+index 0000000..7895f79
+--- /dev/null
++++ b/rawler/src/decompressors/jpegxs/pi.rs
+@@ -0,0 +1,394 @@
++// SPDX-License-Identifier: LGPL-2.1
++// Copyright 2026
++
++//! Picture information: the band and packet topology derived from a parsed
++//! [`Header`]. Pure arithmetic, no bitstream reading.
++//!
++//! Everything downstream keys off this layout:
++//!
++//! * bands are numbered component-major (all of component 0's bands, then
++//!   component 1's, ...), which is the order the per-precinct 2-bit coding
++//!   modes are stored in;
++//! * packets within a precinct are ordered subband-major (vertical half
++//!   first, component second), which is both the emission order of the
++//!   packets *and* the order of the WGT (gain, priority) entries;
++//! * those two orders differ, so the WGT entries are matched to band ids by
++//!   walking the packets. Getting that wrong is silent: the GCLI code is
++//!   unary, so a wrong GTLI changes decoded values but never code lengths.
++
++use core::ops::Range;
++
++use crate::RawlerError;
++use crate::Result;
++
++use super::header::Header;
++
++/// One wavelet band of one component (or the single band of a component with
++/// suppressed decomposition).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Band {
++  pub component: usize,
++  /// Band index within its component; 0 is the most decomposed (lowest
++  /// frequency) band.
++  pub local: usize,
++  /// Width of one band line, in coefficients.
++  pub width: usize,
++  /// Width of one band line in code groups: `ceil(width / Ng)`.
++  pub gcli_width: usize,
++  /// Width of one band line in significance groups: `ceil(gcli_width / Ss)`.
++  pub significance_width: usize,
++  /// Band lines contributed per precinct. 1 for every band of a decomposed
++  /// component here (NLy = 1 halves the vertical resolution of both the
++  /// vertical low- and high-pass), and the full precinct height for the
++  /// single band of a suppressed component.
++  pub lines_per_precinct: usize,
++  /// Quantisation gain and refinement priority, taken from the WGT table
++  /// after it is matched to band ids in [`build`].
++  pub gain: u8,
++  pub priority: u8,
++}
++
++impl Band {
++  /// Greatest trailing line index: how many magnitude bit planes the encoder
++  /// dropped from this band, given the quantisation `qp` and refinement `rp`
++  /// in the precinct header. `max` caps the result at the largest bit-plane
++  /// count the stream can represent.
++  pub fn gtli(&self, qp: u8, rp: u8, max: u8) -> u8 {
++    let refine = if self.priority < rp { 1u8 } else { 0u8 };
++    qp.saturating_sub(self.gain).saturating_sub(refine).min(max)
++  }
++}
++
++/// One packet of a precinct: a contiguous run of one component's bands.
++///
++/// Every packet carries exactly one line of each band it names. For a
++/// decomposed component that is the band's whole per-precinct contribution;
++/// for a suppressed component, whose single band spans the full precinct
++/// height, `line` selects which of its lines this packet carries.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct Packet {
++  pub component: usize,
++  /// Global ids of the bands this packet carries.
++  pub bands: Range<usize>,
++  /// Vertical half of the precinct this packet belongs to; for a suppressed
++  /// component this is also the precinct line the packet carries.
++  pub line: usize,
++}
++
++/// Band and packet layout of one precinct, the same for every precinct in the
++/// frame. Nikon plane heights divide exactly by the precinct height; a ragged
++/// last precinct would need per-precinct heights.
++#[derive(Debug, Clone)]
++pub struct Topology {
++  /// All bands, component-major: component 0's bands first, in frequency
++  /// order (band 0 most decomposed), then component 1's, and so on.
++  pub bands: Vec<Band>,
++  /// Packets of one precinct, in emission order.
++  pub packets: Vec<Packet>,
++  /// Range of global band ids belonging to each component.
++  pub component_bands: Vec<Range<usize>>,
++}
++
++/// Horizontal band widths of a plane of width `w` split `nlx` times, most
++/// decomposed first. Each split takes `w / 2` for the high-pass and leaves
++/// `w - w / 2` for the low-pass, which is split again; band 0 is the final
++/// low-pass. For `w = 3032, nlx = 5` this yields `95, 95, 189, 379, 758,
++/// 1516` (the odd widths come from 379 splitting as 190 + 189).
++fn horizontal_widths(mut w: usize, nlx: u8) -> Vec<usize> {
++  let mut highs = Vec::with_capacity(nlx as usize);
++  for _ in 0..nlx {
++    let high = w / 2;
++    highs.push(high);
++    w -= high;
++  }
++  let mut widths = Vec::with_capacity(nlx as usize + 1);
++  widths.push(w);
++  widths.extend(highs.into_iter().rev());
++  widths
++}
++
++/// Index at which a decomposed component's bands split into its two packets:
++/// the first index where the accumulated per-precinct coefficient count
++/// reaches half the component's total. With NLy = 1 the vertical low-pass
++/// bands (0..=NLx) sum to exactly one plane line, so the split lands after
++/// them and the vertical high-pass pair forms the second packet.
++fn split_index(coeffs: &[usize]) -> usize {
++  let total: usize = coeffs.iter().sum();
++  let mut acc = 0;
++  for (i, c) in coeffs.iter().enumerate() {
++    acc += c;
++    if 2 * acc >= total {
++      return i + 1;
++    }
++  }
++  coeffs.len()
++}
++
++/// Work out the band and packet topology for a parsed header.
++///
++/// Only the Nikon layout is supported: frame NLy = 1, with every component
++/// either skipping the wavelet or decomposed with that same NLy. Anything
++/// else fails rather than producing a layout that looks plausible and is
++/// wrong.
++pub fn build(header: &Header) -> Result<Topology> {
++  if header.components.is_empty() {
++    return Err(RawlerError::decoder_failed("JPEG XS: no components"));
++  }
++  if header.group_size == 0 || header.sig_group_size == 0 {
++    return Err(RawlerError::decoder_failed("JPEG XS: zero group size"));
++  }
++  if header.nly != 1 {
++    return Err(RawlerError::decoder_failed(format!(
++      "JPEG XS: only NLy = 1 layouts are supported, got {}",
++      header.nly
++    )));
++  }
++
++  let plane_width = header.plane_width();
++  let ng = header.group_size as usize;
++  let ss = header.sig_group_size as usize;
++  let precinct_lines = header.precinct_height();
++
++  let mut bands: Vec<Band> = Vec::with_capacity(header.total_bands());
++  let mut component_bands: Vec<Range<usize>> = Vec::with_capacity(header.components.len());
++  for (ci, comp) in header.components.iter().enumerate() {
++    let start = bands.len();
++    let (widths, lines_per_precinct) = if comp.suppressed() {
++      // No wavelet: one band the full plane width, spanning every precinct line.
++      (vec![plane_width], precinct_lines)
++    } else {
++      if comp.nly != 1 {
++        return Err(RawlerError::decoder_failed(format!(
++          "JPEG XS: component {} has unsupported decomposition NLx={} NLy={}",
++          ci, comp.nlx, comp.nly
++        )));
++      }
++      // Bands 0..=NLx are the horizontal decomposition of the vertical
++      // low-pass; the vertical high-pass is split horizontally once, giving
++      // the final two bands (its low half first, `w - w/2` wide).
++      let mut widths = horizontal_widths(plane_width, comp.nlx);
++      widths.push(plane_width - plane_width / 2);
++      widths.push(plane_width / 2);
++      (widths, 1)
++    };
++    for (local, width) in widths.into_iter().enumerate() {
++      let gcli_width = width.div_ceil(ng);
++      bands.push(Band {
++        component: ci,
++        local,
++        width,
++        gcli_width,
++        significance_width: gcli_width.div_ceil(ss),
++        lines_per_precinct,
++        gain: 0,
++        priority: 0,
++      });
++    }
++    component_bands.push(start..bands.len());
++    debug_assert_eq!(bands.len() - start, comp.bands());
++  }
++
++  // Packet layout, subband-major: for each vertical half, walk the
++  // components in index order.
++  let mut packets: Vec<Packet> = Vec::with_capacity(2 * header.components.len());
++  for half in 0..2 {
++    for (ci, comp) in header.components.iter().enumerate() {
++      let range = component_bands[ci].clone();
++      let packet_bands = if comp.suppressed() {
++        // One packet per precinct line, both naming the same single band.
++        range
++      } else {
++        let coeffs: Vec<usize> = bands[range.clone()].iter().map(|b| b.width * b.lines_per_precinct).collect();
++        let split = range.start + split_index(&coeffs);
++        if half == 0 { range.start..split } else { split..range.end }
++      };
++      packets.push(Packet {
++        component: ci,
++        bands: packet_bands,
++        line: half,
++      });
++    }
++  }
++
++  // Map the WGT entries onto bands: entries are in packet-emission order,
++  // each band taking the next entry the first time a packet names it. The
++  // suppressed component's second packet re-names an already-seen band and
++  // consumes nothing.
++  let mut assigned = 0usize;
++  let mut seen = vec![false; bands.len()];
++  for packet in &packets {
++    for id in packet.bands.clone() {
++      if !seen[id] {
++        seen[id] = true;
++        let (gain, priority) = *header
++          .weights
++          .get(assigned)
++          .ok_or_else(|| RawlerError::decoder_failed(format!("JPEG XS: WGT has {} entries but the packet layout needs more", header.weights.len())))?;
++        bands[id].gain = gain;
++        bands[id].priority = priority;
++        assigned += 1;
++      }
++    }
++  }
++  if assigned != header.weights.len() || assigned != bands.len() {
++    return Err(RawlerError::decoder_failed(format!(
++      "JPEG XS: packet layout covers {} of {} bands but WGT has {} entries",
++      assigned,
++      bands.len(),
++      header.weights.len()
++    )));
++  }
++
++  Ok(Topology {
++    bands,
++    packets,
++    component_bands,
++  })
++}
++
++#[cfg(test)]
++mod tests {
++  use super::super::header::parse;
++  use super::super::header::testdata::SAMPLE;
++  use super::*;
++
++  fn nikon_topology() -> Topology {
++    build(&parse(&SAMPLE).expect("header parses")).expect("topology builds")
++  }
++
++  /// The eight band widths of a decomposed component, band 0 first.
++  const WIDTHS: [usize; 8] = [95, 95, 189, 379, 758, 1516, 1516, 1516];
++
++  #[test]
++  fn derives_the_band_widths_from_the_wavelet_split() {
++    let t = nikon_topology();
++    for ci in [0usize, 1, 3] {
++      let widths: Vec<usize> = t.bands[t.component_bands[ci].clone()].iter().map(|b| b.width).collect();
++      assert_eq!(widths, WIDTHS, "component {}", ci);
++    }
++    // Sum is one whole precinct of the component: 2 lines x 3032.
++    assert_eq!(WIDTHS.iter().sum::<usize>(), 6064);
++    // The suppressed component has a single full-width band.
++    assert_eq!(t.bands[t.component_bands[2].clone()].iter().map(|b| b.width).collect::<Vec<_>>(), [3032]);
++  }
++
++  #[test]
++  fn computes_gcli_and_significance_widths() {
++    let t = nikon_topology();
++    // ceil(width / 4) and ceil(gcli_width / 8) for each band width above.
++    let expected = [(24, 3), (24, 3), (48, 6), (95, 12), (190, 24), (379, 48), (379, 48), (379, 48)];
++    for ci in [0usize, 1, 3] {
++      let got: Vec<(usize, usize)> = t.bands[t.component_bands[ci].clone()]
++        .iter()
++        .map(|b| (b.gcli_width, b.significance_width))
++        .collect();
++      assert_eq!(got, expected, "component {}", ci);
++    }
++    let d = &t.bands[t.component_bands[2].start];
++    assert_eq!((d.gcli_width, d.significance_width), (758, 95));
++  }
++
++  #[test]
++  fn numbers_bands_component_major() {
++    let t = nikon_topology();
++    assert_eq!(t.bands.len(), 25);
++    assert_eq!(t.component_bands, [0..8, 8..16, 16..17, 17..25]);
++    for (ci, range) in t.component_bands.iter().enumerate() {
++      for (local, id) in range.clone().enumerate() {
++        assert_eq!(t.bands[id].component, ci);
++        assert_eq!(t.bands[id].local, local);
++      }
++    }
++    // One line per precinct for decomposed bands, the full precinct height
++    // for the suppressed component's band.
++    for b in &t.bands {
++      assert_eq!(b.lines_per_precinct, if b.component == 2 { 2 } else { 1 });
++    }
++  }
++
++  #[test]
++  fn lays_out_packets_subband_major() {
++    let t = nikon_topology();
++    let got: Vec<(usize, Range<usize>, usize)> = t.packets.iter().map(|p| (p.component, p.bands.clone(), p.line)).collect();
++    assert_eq!(
++      got,
++      [
++        (0, 0..6, 0),   // comp0 bands 0..5
++        (1, 8..14, 0),  // comp1 bands 0..5
++        (2, 16..17, 0), // comp2 line 0
++        (3, 17..23, 0), // comp3 bands 0..5
++        (0, 6..8, 1),   // comp0 bands 6,7
++        (1, 14..16, 1), // comp1 bands 6,7
++        (2, 16..17, 1), // comp2 line 1
++        (3, 23..25, 1), // comp3 bands 6,7
++      ]
++    );
++  }
++
++  #[test]
++  fn every_packet_holds_one_plane_line_of_coefficients() {
++    let t = nikon_topology();
++    assert_eq!(t.packets.len(), 8);
++    for (i, p) in t.packets.iter().enumerate() {
++      let coefficients: usize = t.bands[p.bands.clone()].iter().map(|b| b.width).sum();
++      assert_eq!(coefficients, 3032, "packet {}", i);
++    }
++  }
++
++  /// The WGT table is stored in packet-emission order, not band-id order, and
++  /// the suppressed component's two packets share a single entry. Getting
++  /// this mapping wrong is silent: the GCLI code is unary, so a wrong GTLI
++  /// changes decoded values but never code lengths.
++  #[test]
++  fn maps_wgt_entries_in_packet_emission_order() {
++    let t = nikon_topology();
++    #[rustfmt::skip]
++    let band_of_entry: [usize; 25] = [
++      0, 1, 2, 3, 4, 5,        // entries  0..=5   comp0 bands 0..5
++      8, 9, 10, 11, 12, 13,    // entries  6..=11  comp1 bands 0..5
++      16,                      // entry   12       comp2's single band
++      17, 18, 19, 20, 21, 22,  // entries 13..=18  comp3 bands 0..5
++      6, 7,                    // entries 19..=20  comp0 bands 6,7
++      14, 15,                  // entries 21..=22  comp1 bands 6,7
++      23, 24,                  // entries 23..=24  comp3 bands 6,7
++    ];
++    let h = parse(&SAMPLE).unwrap();
++    for (entry, &id) in band_of_entry.iter().enumerate() {
++      assert_eq!((t.bands[id].gain, t.bands[id].priority), h.weights[entry], "entry {}", entry);
++    }
++  }
++
++  #[test]
++  fn applies_the_truncation_rule() {
++    let band = |gain, priority| Band {
++      component: 0,
++      local: 0,
++      width: 0,
++      gcli_width: 0,
++      significance_width: 0,
++      lines_per_precinct: 1,
++      gain,
++      priority,
++    };
++    // qp - gain, minus one refinement bit when priority < rp.
++    assert_eq!(band(1, 10).gtli(4, 3, 15), 3);
++    assert_eq!(band(1, 2).gtli(4, 3, 15), 2);
++    // Saturates at zero rather than wrapping.
++    assert_eq!(band(5, 0).gtli(4, 3, 15), 0);
++    assert_eq!(band(4, 0).gtli(4, 3, 15), 0);
++    // Clamped to the caller's maximum.
++    assert_eq!(band(0, 10).gtli(30, 0, 15), 15);
++  }
++
++  #[test]
++  fn rejects_unsupported_decompositions() {
++    let mut h = parse(&SAMPLE).unwrap();
++    h.nly = 2;
++    assert!(build(&h).is_err());
++
++    let mut h = parse(&SAMPLE).unwrap();
++    h.components[0].nly = 0;
++    h.components[0].nlx = 5; // decomposed, but not the supported NLy = 1
++    assert!(build(&h).is_err());
++  }
++}
+diff --git a/rawler/src/decompressors/mod.rs b/rawler/src/decompressors/mod.rs
+index 65250c9..679e02b 100644
+--- a/rawler/src/decompressors/mod.rs
++++ b/rawler/src/decompressors/mod.rs
+@@ -46,6 +46,7 @@ pub mod crx;
+ pub mod deflate;
+ pub mod jpeg;
+ pub mod jpegxl;
++pub mod jpegxs;
+ pub mod ljpeg;
+ pub mod packed;
+ pub mod radc;

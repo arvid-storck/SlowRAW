@@ -9,7 +9,14 @@ const state = {
   isCatalogMode: true,
   catalogFilter: {},
   catalogDateFilter: '',
-  catalogPage: 0,
+  catalogOffset: 0,
+  catalogTotal: 0,
+  catalogStatus: {},
+  catalogRevision: 0,
+  multiSelectedPaths: [],
+  libraryActivePath: null,
+  selectionAnchorPath: null,
+  imageList: [],
   sortCriteria: { key: 'date_taken', order: 'asc' },
   albumTree: [],
   expandedAlbumGroups: new Set(),
@@ -21,7 +28,7 @@ const state = {
 };
 const ui = { albumActionTarget: null };
 let savedTree = [],
-  response = { images: [{ path: 'a', rating: 4 }], total: 1001 };
+  responseTotal = 1001;
 let pending,
   failSave = false;
 const errors = [];
@@ -50,7 +57,17 @@ const invoke = async (command, args) => {
     savedTree = structuredClone(args.tree);
   }
   if (command === 'GetAlbums') return structuredClone(savedTree);
-  if (command === 'CatalogQueryPage') return pending ?? structuredClone(response);
+  if (command === 'CatalogQueryPage') {
+    const { offset, limit } = args.filter;
+    return (
+      pending ?? {
+        total: responseTotal,
+        images: Array.from({ length: Math.max(0, Math.min(limit, responseTotal - offset)) }, (_, index) => ({
+          path: offset + index === 0 ? 'a' : String(offset + index),
+        })),
+      }
+    );
+  }
 };
 const process = {
   thumbnails: { a: 'a', b: 'b' },
@@ -118,34 +135,64 @@ assert.deepEqual(tree[0].children[0].filter.cameras, ['B', 'C']);
 assert.equal(catalog.updateSmartGroup(tree, 'missing', 'New', {}), false);
 
 state.imageRatings.hidden = 3;
-await catalog.loadCatalogPage();
+await catalog.loadCatalogWindow();
 assert.equal(state.catalogTotal, 1001);
-assert.equal(state.catalogHasMore, true);
+assert.equal(state.imageList.length, 498);
 assert.equal(state.imageRatings.hidden, 3, 'Retain rating of the filtered-out edited image');
-assert.equal(process.thumbnails.b, undefined, 'Prune thumbnails outside the page');
-state.catalogPage = 2;
-await catalog.loadCatalogPage();
-assert.equal(state.catalogHasMore, false);
-assert.equal(invocations.at(-1).args.filter.offset, 1000);
-assert.equal(invocations.at(-1).args.filter.limit, 500);
-state.catalogPage = 9;
-await catalog.loadCatalogPage();
-assert.equal(state.catalogPage, 2, 'Clamp pages when results shrink');
-state.catalogPage = 0;
+assert.equal(process.thumbnails.b, undefined, 'Prune thumbnails outside the window');
+
+await catalog.loadCatalogWindow(340);
+assert.equal(state.catalogOffset, 166);
+assert.equal(state.imageList[0].path, '166', 'Evict the first batch after scrolling');
+assert.equal(state.imageList.length, 498);
+await catalog.loadCatalogWindow(1000);
+assert.equal(invocations.at(-1).args.filter.offset, 664);
+assert.equal(invocations.at(-1).args.filter.limit, 498);
+assert.equal(state.imageList.at(-1).path, '1000');
+
+await catalog.loadCatalogWindow(100);
+assert.equal(state.imageList[0].path, 'a', 'Reload evicted rows when scrolling back');
 let resolve;
 pending = new Promise((done) => {
   resolve = done;
 });
-const loading = catalog.loadCatalogPage();
+const loading = catalog.loadCatalogWindow(340);
+const requests = invocations.length;
+await catalog.loadCatalogWindow(345);
+assert.equal(invocations.length, requests, 'Deduplicate in-flight requests for the same window');
+await catalog.loadCatalogWindow(100);
+resolve({ images: [{ path: 'stale' }], total: 1001 });
+await loading;
+assert.equal(state.imageList[0].path, 'a', 'Discard a reply after scrolling back to the resident window');
+
+pending = new Promise((done) => {
+  resolve = done;
+});
+const stale = catalog.loadCatalogWindow(340);
 state.catalogFilter = { text: 'new filter' };
 resolve({ images: [{ path: 'stale' }], total: 1 });
-await loading;
+await stale;
 assert.equal(state.imageList[0].path, 'a', 'Discard replies from an old filter');
 pending = null;
-response = { images: [], total: 0 };
-await catalog.loadCatalogPage();
+
+await catalog.loadCatalogWindow(1000);
+responseTotal = 2;
+await catalog.loadCatalogWindow(1000, true);
+assert.equal(state.catalogOffset, 0, 'Clamp the window when results shrink');
+assert.equal(state.imageList.length, 2);
+catalog.resetCatalogWindow();
+assert.equal(state.libraryScrollTop, 0);
+responseTotal = 0;
+await catalog.loadCatalogWindow();
 assert.equal(state.catalogTotal, 0);
-assert.equal(state.catalogHasMore, false);
+assert.equal(state.imageList.length, 0);
+
+responseTotal = 60_000;
+await catalog.loadCatalogWindow(0, true);
+await catalog.loadCatalogWindow(30_000);
+assert.equal(state.catalogTotal, 60_000);
+assert.equal(state.imageList.length, 498);
+assert.equal(state.imageList[30_000 - state.catalogOffset].path, '30000');
 
 const actions = load('../src/hooks/useLibraryActions.ts', { '../utils/catalog': catalog }).useLibraryActions();
 await actions.handleCreateAlbumItem('Root group', 'group');
@@ -164,4 +211,4 @@ failSave = true;
 await actions.handleCreateAlbumItem('Not saved', 'group');
 assert.equal(state.albumTree, before, 'Failed saves leave visible album state unchanged');
 assert.equal(errors.length, 1);
-console.log('Passed catalog paging/count/stale-response, smart-filter editing and album-group creation checks.');
+console.log('Passed catalog scrolling/count/stale-response, smart-filter editing and album-group creation checks.');

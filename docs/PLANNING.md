@@ -1,36 +1,61 @@
 ### Bugs
 
-- Does not read the ".rrdata" generated from lightroom properly
-- Cant open nikon HE* files (an unstable fix is to apply the patch from "https://github.com/dnglab/dnglab/pull/835")
-- Make filterbox uniform in width, allow names to span multiple rows
+
+
+#### Code review findings (2026-11-12)
+
+- **File renames can separate photos from their sidecars.** `rename_files`
+  renames all photos first and then their sidecars. If any rename fails, it
+  logs the error, continues with the remaining operations and returns success.
+  A locked photo or XMP can leave the files under different names. The
+  frontend also uses the shortened list of successes by original position,
+  so it can select the wrong photo after a partial failure.
+  See `src-tauri/src/file_management.rs` and `src/hooks/useFileOperations.ts`.
+- **A failed import can leave a destination file that blocks retry.**
+  Copy and move import write the photo before copying its sidecars. If
+  copying an XMP file fails after the photo was written, the photo remains
+  in the destination. The next attempt sees the photo and counts it as
+  already present, skipping the missing sidecar.
+  See `import_files` in `src-tauri/src/file_management.rs`.
+- **Flatpak offline build inputs are stale.** The npm manifest prefetches Vite
+  6.3.5 and lacks the locked 8.2.4 archive. A clean native build also needs
+  Rawler and librtprocess from Git, and the Flatpak manifest only stages
+  ExifTool and the npm and Cargo manifests. Refresh the offline sources and
+  verify a clean sandboxed Flatpak build on Linux.
+  See `packaging/io.github.arvid-storck.SlowRAW.yml`,
+  `src-tauri/rawler/build.rs` and `src-tauri/rcd/build.rs`.
+
+#### Performance findings (2026-11-12)
+
+- **Deep scrolling repeats the filtered count and skips earlier rows.**
+  Every window calls `COUNT(*)` and a separate query with `OFFSET`. Measure
+  filtered scrolling near the end of a large catalog. Preserve scrollbar
+  jumps to arbitrary positions when considering changes.
+  See `catalog_query_page` in `src-tauri/src/catalog.rs`.
+- **Thumbnail workers reread settings for every file.** Each thumbnail job
+  reads and parses `settings.json` and runs the migration checks. Profile
+  cold and warm thumbnail batches before caching settings across jobs.
+  See `start_thumbnail_workers` in `src-tauri/src/file_management.rs`.
+
+#### Follow-up review (2026-11-12)
+
+- **Export can scan the same source again for provenance.** After decoding,
+  the required-metadata pass reopens the source and can scan the whole
+  memory-mapped file for XML and provenance markers. Profile large RAW
+  batches before consolidating this work with the metadata cache. Preserve
+  AI provenance and the existing compressed-XMP fallbacks.
+  See `required_xmp` in `src-tauri/src/export_metadata.rs`.
+
 
 ### Things to change
 
 Easy
 
 - Fix compiling documantation
-- Add all dev tools on CODEMAP.md
-- Remove Clear ".rrdata" files button
-- Fix "src\i18n\locales\en.json", keys: "filteredTotal", "total", "total_one", "total_other". Add key: "filteredTotalOne".
-
-  Should read:
-  
-  "x images" if more or equal to 2 and/or equal to 0.
-  
-  "x image" if its 1
-- Sorting defult should be date captured, newest first
-
-Not easy but not risky
-  
-- Make a build cashe button
-- Remove the 500 images per page thing and dynamilcy load the next page when scrolling down and unload the last page, maby keep 3st 166 images per page files open (previous, current, next)?
 
 Hard and/or risky
 
 - Rename variables, fuctions and classes to to camel case, and upper camel case. But only to make it uniform, not when a langage has a recomended style already.
-- Fix general ineffiencies left
-
-
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
@@ -48,6 +73,10 @@ Hard and/or risky
 
 - How does the queue part work?
 - Is there still android code left?
-- How is edits stored?
-- How is an image without a date sorted?
-
+  - 2026-11-12 review. No Android-specific application code, target, or
+    packaging configuration was found. Tauri's generated schemas and
+    dependency lockfiles still list Android as an upstream platform.
+    Shared desktop dependencies include `wgpu-core-deps-windows-linux-android`.
+  - `src-tauri/src/file_management.rs` still has a generic fallback for
+    platforms outside Windows, macOS and Linux in move-on-import. It is
+    unreachable on the supported targets and can be reviewed for removal.

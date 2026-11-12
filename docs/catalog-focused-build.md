@@ -10,6 +10,7 @@ editing, manual masks, noise reduction, albums, import, and export remain.
 
 - Cameras, lenses, ratings (including 0), tags, colors, and file types use
   multi-select checkbox lists. No Ctrl/Shift modifier is needed.
+- Filter lists fill the available panel width and long values wrap within it.
 - Selections within one list are ORed; different lists are ANDed.
 - An empty selection means all values. Clear filters also clears the date.
 - Smart groups store all selections. Right-click → Edit filters updates an existing
@@ -19,16 +20,17 @@ editing, manual masks, noise reduction, albums, import, and export remain.
 
 ## Bounded catalog loading
 
-SQLite performs filtering and sorting over the catalog before paging. Each
-page holds at most 500 images. A filtered SQL count, read in the same transaction,
-provides page X of Y and navigation boundaries. The header also shows catalog total.
-Selection and bulk operations apply to the loaded page, not every search result.
-Previous/Next controls are at the start of the library header; there is no large Catalog button. Ordinary manually populated
-albums retain their existing loading behavior; smart groups use catalog paging.
+SQLite filters and sorts the catalog, with newest capture date first by default.
+A filtered count sets the size of the virtual grid. Scrolling loads up to three
+batches of 166 images around the viewport and evicts earlier batches. Selection
+and bulk operations work on loaded images. Smart groups use the same scrolling
+window. Ordinary albums load their own members.
 
 Catalog initialization and query loading live in `useCatalog.ts`, mounted by App,
-so hiding the filter panel does not stop loading. Search is debounced. Late replies are ignored after filter/page/album changes.
-Thumbnail maps are pruned on page changes, preserving the currently edited image.
+so hiding the filter panel does not stop loading. Search is debounced. Late
+replies are ignored after a window or query change. Thumbnail maps are pruned
+when the window moves, preserving the currently edited image. The Build Cache
+job in Settings warms thumbnail files for the full indexed catalog.
 Database queries and facet aggregation run on blocking workers rather than the
 UI thread. Integrity checking is performed once per database per process, not
 for each filter request. Tag deduplication happens inside SQLite.
@@ -55,11 +57,6 @@ The packaging script rejects failed builds and refuses to replace an existing
 portable output directory. Choose a fresh output directory for each build.
 Keep the old portable folder and its database until migration is verified.
 
-The older standalone catalog/cache test and smoke-fixture scripts are no longer
-in this tree. Manually verify a full page and a final partial page, combined
-filters, rating changes that remove images from a filter, and thumbnail loading
-after returning to an evicted page. Use a separate test catalog and copied photos.
-
-Passing the production build is not equivalent to passing TypeScript checks.
-Large-collection end-to-end performance still needs measurement on representative
-photo collections; bounded paging is not a measured speed claim.
+Use a separate test catalog and copied photos to verify scrolling across
+multiple windows and back, a final partial row, combined filters and rating
+changes that remove images from a filter.

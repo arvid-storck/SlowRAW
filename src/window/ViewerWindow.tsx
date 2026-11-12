@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
@@ -10,7 +10,7 @@ export default function ViewerWindow() {
   const [error, setError] = useState('');
   const [viewport, setViewport] = useState({ width: innerWidth, height: innerHeight });
   const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
-  const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
+  const [drag, setDrag] = useState<{ pointerId: number; x: number; y: number; px: number; py: number } | null>(null);
   const fit = useCallback(() => setView({ zoom: 1, x: 0, y: 0 }), []);
   const fullscreen = useCallback(async () => {
     const window = getCurrentWindow();
@@ -110,23 +110,19 @@ export default function ViewerWindow() {
   return (
     <div
       className="h-screen w-screen select-none overflow-hidden"
-      style={{ cursor: drag.current ? 'grabbing' : 'grab' }}
+      style={{ cursor: drag ? 'grabbing' : 'grab' }}
       onDoubleClick={() => void fullscreen()}
       onPointerDown={(event) => {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || !event.isPrimary) return;
         event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = { x: event.clientX, y: event.clientY, px: view.x, py: view.y };
+        setDrag({ pointerId: event.pointerId, x: event.clientX, y: event.clientY, px: view.x, py: view.y });
       }}
       onPointerMove={(event) => {
-        const start = drag.current;
-        if (start)
-          setView((old) => ({ ...old, x: start.px + event.clientX - start.x, y: start.py + event.clientY - start.y }));
+        if (drag?.pointerId !== event.pointerId) return;
+        setView((old) => ({ ...old, x: drag.px + event.clientX - drag.x, y: drag.py + event.clientY - drag.y }));
       }}
-      onPointerUp={() => {
-        drag.current = null;
-      }}
-      onPointerCancel={() => {
-        drag.current = null;
+      onLostPointerCapture={(event) => {
+        if (drag?.pointerId === event.pointerId) setDrag(null);
       }}
       onWheel={(event) => {
         event.preventDefault();

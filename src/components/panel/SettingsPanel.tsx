@@ -16,8 +16,6 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { invoke } from '../../utils/jobInvoke';
-import { invoke as nativeInvoke } from '@tauri-apps/api/core';
-import { enqueueJob } from '../../store/useJobStore';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
@@ -29,7 +27,12 @@ import Switch from '../ui/Switch';
 import Input from '../ui/Input';
 import Slider from '../ui/Slider';
 import { ThemeProps, THEMES, DEFAULT_THEME_ID } from '../../utils/themes';
-import { useTranslation, Trans } from 'react-i18next';
+import { useTranslation } from 'react-i18next';
+import { useLibraryStore } from '../../store/useLibraryStore';
+import { useJobStore } from '../../store/useJobStore';
+import { useEditorStore } from '../../store/useEditorStore';
+import { useProcessStore } from '../../store/useProcessStore';
+import { globalImageCache } from '../../utils/ImageLRUCache';
 import { Invokes } from '../ui/AppProperties';
 import {
   formatKeyCode,
@@ -43,8 +46,6 @@ import { TextColors, TextVariants, TextWeights } from '../../types/typography';
 import { useOsPlatform } from '../../hooks/useOsPlatform';
 import { RotateCcw } from 'lucide-react';
 import { useUIStore } from '../../store/useUIStore';
-import { useEditorStore } from '../../store/useEditorStore';
-import { useProcessStore } from '../../store/useProcessStore';
 import { MAX_ZOOM_PERCENT_OPTIONS } from '../../utils/zoom';
 import AdjustmentSectionsSubMenu from './right/AdjustmentSectionsSubMenu';
 
@@ -90,7 +91,6 @@ interface SettingsPanelProps {
   onBack(): void;
   onLibraryRefresh(): void;
   onSettingsChange(settings: any): Promise<void>;
-  rootPaths: string[];
 }
 
 interface MyLens {
@@ -351,16 +351,21 @@ const PreviewModeSwitch = ({ mode, onModeChange }: PreviewModeSwitchProps) => {
   );
 };
 
-export default function SettingsPanel({
-  appSettings,
-  onBack,
-  onLibraryRefresh,
-  onSettingsChange,
-  rootPaths,
-}: SettingsPanelProps) {
+export default function SettingsPanel({ appSettings, onBack, onLibraryRefresh, onSettingsChange }: SettingsPanelProps) {
   const { t } = useTranslation();
-  const [isClearing, setIsClearing] = useState(false);
-  const [clearMessage, setClearMessage] = useState('');
+  const catalogHasImages = useLibraryStore((state) => (state.catalogStatus?.imageCount ?? 0) > 0);
+  const rootPaths = useLibraryStore((state) => state.rootPaths);
+  const sidecarFolders = [
+    ...new Set<string>([...rootPaths, ...(appSettings.rootFolders ?? []), ...(appSettings.catalogFolders ?? [])]),
+  ].filter(Boolean);
+  const isDeletingSidecars = useJobStore((state) =>
+    state.jobs.some((job) => job.kind === 'cleanup' && (job.status === 'queued' || job.status === 'running')),
+  );
+  const [sidecarCleanupMessage, setSidecarCleanupMessage] = useState('');
+  const isBuildingCache = useJobStore((state) =>
+    state.jobs.some((job) => job.kind === 'cache' && (job.status === 'queued' || job.status === 'running')),
+  );
+  const [cacheBuildMessage, setCacheBuildMessage] = useState('');
   const [isClearingCache, setIsClearingCache] = useState(false);
   const [cacheClearMessage, setCacheClearMessage] = useState('');
   const [confirmModalState, setConfirmModalState] = useState<ConfirmModalState>({
@@ -400,6 +405,7 @@ export default function SettingsPanel({
   });
   const [restartRequired, setRestartRequired] = useState(false);
   const [componentBusy, setComponentBusy] = useState(false);
+  const [lensfunRestartRequired, setLensfunRestartRequired] = useState(false);
   const [componentError, setComponentError] = useState(false);
   const [componentMessage, setComponentMessage] = useState('');
   const [activeCategory, setActiveCategory] = useState('general');
@@ -521,7 +527,7 @@ export default function SettingsPanel({
     try {
       const result = await invoke<{ version: string; restartRequired: boolean }>(Invokes.UpdateLensfun);
       setComponentMessage(t('settings.lensfun.updated', { version: result.version.slice(0, 12) }));
-      if (result.restartRequired) setRestartRequired(true);
+      setLensfunRestartRequired(result.restartRequired);
     } catch (error) {
       setComponentError(true);
       setComponentMessage(t('settings.lensfun.failed', { error: String(error) }));
@@ -576,38 +582,49 @@ export default function SettingsPanel({
     onSettingsChange({ ...appSettings, myLenses: newLenses });
   };
 
-  const effectiveRootPaths = Array.from(
-    new Set([...(rootPaths || []), ...(appSettings?.rootFolders || []), ...(appSettings?.catalogFolders || [])]),
-  );
-
-  const executeClearSidecars = async () => {
-    setIsClearing(true);
-    setClearMessage(t('settings.data.statuses.deleting'));
+  const buildCache = async () => {
+    setCacheBuildMessage('');
     try {
-      await enqueueJob('cleanup', async () => {
-        let totalCount = 0;
-        for (const root of effectiveRootPaths) {
-          const count: number = await nativeInvoke(Invokes.ClearAllSidecars, { rootPath: root, confirmed: true });
-          totalCount += count;
-        }
-        await nativeInvoke('clear_image_caches');
-        await nativeInvoke(Invokes.ClearThumbnailCache);
-        useEditorStore.getState().setEditor({ selectedImage: undefined });
-        useProcessStore.getState().clearPreviews();
-        useProcessStore.getState().setProcess({ thumbnails: {}, mediumThumbnails: {} });
-        await nativeInvoke(Invokes.CatalogRebuild);
-        setClearMessage(t('settings.data.statuses.sidecarSuccess', { count: totalCount }));
-        onLibraryRefresh();
-      });
-    } catch (err: any) {
-      console.error('Failed to clear sidecars:', err);
-      setClearMessage(`Error: ${err}`);
-    } finally {
-      setTimeout(() => {
-        setIsClearing(false);
-        setClearMessage('');
-      }, EXECUTE_TIMEOUT);
+      await invoke(Invokes.BuildThumbnailCache);
+      setCacheBuildMessage(t('settings.data.statuses.cacheBuilt'));
+    } catch (error) {
+      setCacheBuildMessage(String(error));
     }
+  };
+
+  const confirmSidecarCleanup = () => {
+    setConfirmModalState({
+      confirmationLabel: t('settings.data.modals.acknowledgeEditSidecarDeletion'),
+      confirmText: t('settings.data.deleteEditSidecarsButton'),
+      confirmVariant: 'destructive',
+      isOpen: true,
+      message: t('settings.data.modals.editSidecarDeletionMessage') + '\n\n' + sidecarFolders.join('\n'),
+      title: t('settings.data.modals.confirmEditSidecarDeletion'),
+      onConfirm: async () => {
+        setSidecarCleanupMessage('');
+        useEditorStore.getState().setEditor({ selectedImage: undefined });
+        try {
+          const count = await invoke<number>(Invokes.DeleteEditSidecars, {
+            folders: sidecarFolders,
+            confirmed: true,
+          });
+          if (count > 0) {
+            globalImageCache.clear();
+            useProcessStore.getState().clearPreviews();
+            useProcessStore.getState().setProcess({ thumbnails: {}, mediumThumbnails: {} });
+            await invoke('clear_image_caches');
+            try {
+              await invoke(Invokes.CatalogRebuild);
+            } finally {
+              onLibraryRefresh();
+            }
+          }
+          setSidecarCleanupMessage(t('settings.data.statuses.editSidecarsDeleted', { count }));
+        } catch (error) {
+          setSidecarCleanupMessage(String(error));
+        }
+      },
+    });
   };
 
   const executeResetLayout = async () => {
@@ -642,18 +659,6 @@ export default function SettingsPanel({
       message: t('settings.data.modals.resetLayoutMessage'),
       onConfirm: executeResetLayout,
       title: t('settings.data.modals.confirmResetLayoutTitle'),
-    });
-  };
-
-  const handleClearSidecars = () => {
-    setConfirmModalState({
-      confirmText: t('settings.data.modals.confirmDeleteAllEdits'),
-      confirmVariant: 'destructive',
-      isOpen: true,
-      message: t('settings.data.modals.sidecarMessage') + '\n\n' + effectiveRootPaths.join('\n'),
-      confirmationLabel: t('settings.data.modals.acknowledgeDeleteEdits'),
-      onConfirm: executeClearSidecars,
-      title: t('settings.data.modals.confirmTitle'),
     });
   };
 
@@ -845,54 +850,6 @@ export default function SettingsPanel({
                           triggerClassName="bg-bg-primary"
                         />
                       </SettingItem>
-
-                      <div className="space-y-4">
-                        <SettingItem
-                          label={t('settings.general.xmpSync')}
-                          description={t('settings.general.xmpSyncDesc')}
-                        >
-                          <Switch
-                            checked={appSettings?.enableXmpSync ?? true}
-                            id="enable-xmp-sync-toggle"
-                            label={t('settings.general.enableXmpSync')}
-                            onChange={(checked) => {
-                              const newSettings = { ...appSettings, enableXmpSync: checked };
-                              if (!checked) {
-                                newSettings.createXmpIfMissing = false;
-                              }
-                              onSettingsChange(newSettings);
-                            }}
-                          />
-                        </SettingItem>
-
-                        <AnimatePresence initial={false}>
-                          {(appSettings?.enableXmpSync ?? true) && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: 'auto', opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              transition={{ duration: 0.3, ease: 'easeInOut' }}
-                              className="overflow-hidden"
-                            >
-                              <div className="pl-4 border-l-2 border-border-color ml-1">
-                                <SettingItem
-                                  label={t('settings.general.createXmp')}
-                                  description={t('settings.general.createXmpDesc')}
-                                >
-                                  <Switch
-                                    checked={appSettings?.createXmpIfMissing ?? false}
-                                    id="create-xmp-missing-toggle"
-                                    label={t('settings.general.createXmpMissing')}
-                                    onChange={(checked) =>
-                                      onSettingsChange({ ...appSettings, createXmpIfMissing: checked })
-                                    }
-                                  />
-                                </SettingItem>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
 
                       <SettingItem
                         label={t('settings.general.displayEditIcon')}
@@ -1344,22 +1301,6 @@ export default function SettingsPanel({
                         />
                       </SettingItem>
 
-                      <SettingItem
-                        label={t('uiText.SettingsPanel.lensfun_database')}
-                        description={t(
-                          'uiText.SettingsPanel.download_the_current_xml_database_directly_from_the_official_lensfun_lensfun_source',
-                        )}
-                      >
-                        <Button disabled={componentBusy} onClick={updateLensfun}>
-                          <RefreshCw size={16} className={componentBusy ? 'animate-spin' : ''} />
-                          {t('uiText.SettingsPanel.update_lensfun')}
-                        </Button>
-                      </SettingItem>
-
-                      {componentMessage && (
-                        <Text color={componentError ? TextColors.error : TextColors.info}>{componentMessage}</Text>
-                      )}
-
                       {restartRequired && (
                         <>
                           <Text
@@ -1383,6 +1324,22 @@ export default function SettingsPanel({
                       {t('settings.processing.preprocessing.title')}
                     </Text>
                     <div className="space-y-8">
+                      <SettingItem
+                        label={t('settings.processing.preprocessing.autoLensCorrection')}
+                        description={t('settings.processing.preprocessing.autoLensCorrectionDesc')}
+                      >
+                        <Switch
+                          checked={appSettings?.rawPreprocessingAutoLens ?? false}
+                          id="raw-auto-lens-correction-toggle"
+                          label={t('settings.processing.preprocessing.autoLensCorrection')}
+                          onChange={async (checked) => {
+                            await onSettingsChange({ ...appSettings, rawPreprocessingAutoLens: checked });
+                            useProcessStore.getState().setProcess({ thumbnails: {}, mediumThumbnails: {} });
+                            onLibraryRefresh();
+                          }}
+                        />
+                      </SettingItem>
+
                       <SettingItem
                         label={t('settings.processing.preprocessing.highlightRecovery')}
                         description={t('settings.processing.preprocessing.highlightRecoveryDesc')}
@@ -1517,29 +1474,46 @@ export default function SettingsPanel({
                       {t('settings.data.title')}
                     </Text>
                     <div className="space-y-8">
+                      <SettingItem
+                        label={t('uiText.SettingsPanel.lensfun_database')}
+                        description={t(
+                          'uiText.SettingsPanel.download_the_current_xml_database_directly_from_the_official_lensfun_lensfun_source',
+                        )}
+                      >
+                        <Button disabled={componentBusy} onClick={updateLensfun}>
+                          <RefreshCw size={16} className={componentBusy ? 'animate-spin' : ''} />
+                          {t('uiText.SettingsPanel.update_lensfun')}
+                        </Button>
+                      </SettingItem>
+
+                      {componentMessage && (
+                        <Text color={componentError ? TextColors.error : TextColors.info}>{componentMessage}</Text>
+                      )}
+
+                      {lensfunRestartRequired && (
+                        <Button onClick={handleSaveAndRelaunch}>{t('settings.processing.saveRelaunch')}</Button>
+                      )}
+
                       <DataActionItem
-                        buttonAction={handleClearSidecars}
-                        buttonText={t('settings.data.clearSidecarsButton')}
-                        description={
-                          <Text as="span" variant={TextVariants.small}>
-                            <Trans
-                              i18nKey="settings.data.clearSidecarsDesc"
-                              components={{
-                                code: <code className="bg-bg-primary px-1 rounded-sm text-text-primary" />,
-                              }}
-                            />
-                            <span className="block font-mono bg-bg-primary p-2 rounded-sm mt-2 break-all border border-border-color whitespace-pre-wrap">
-                              {effectiveRootPaths.length > 0
-                                ? effectiveRootPaths.join('\n')
-                                : t('settings.data.noFolders')}
-                            </span>
-                          </Text>
-                        }
-                        disabled={effectiveRootPaths.length === 0}
+                        buttonAction={buildCache}
+                        buttonText={t('settings.data.buildCache')}
+                        description={t('settings.data.buildCacheDesc')}
+                        disabled={!catalogHasImages || isClearingCache}
+                        icon={<ImageIcon size={16} className="mr-2" />}
+                        isProcessing={isBuildingCache}
+                        message={cacheBuildMessage}
+                        title={t('settings.data.thumbnailCache')}
+                      />
+
+                      <DataActionItem
+                        buttonAction={confirmSidecarCleanup}
+                        buttonText={t('settings.data.deleteEditSidecarsButton')}
+                        description={t('settings.data.deleteEditSidecarsDesc')}
+                        disabled={sidecarFolders.length === 0}
                         icon={<Trash2 size={16} className="mr-2" />}
-                        isProcessing={isClearing}
-                        message={clearMessage}
-                        title={t('settings.data.clearSidecars')}
+                        isProcessing={isDeletingSidecars}
+                        message={sidecarCleanupMessage}
+                        title={t('settings.data.deleteEditSidecars')}
                       />
 
                       <DataActionItem
@@ -1556,6 +1530,7 @@ export default function SettingsPanel({
                         buttonAction={handleClearCache}
                         buttonText={t('settings.data.clearThumbnailButton')}
                         description={t('settings.data.clearThumbnailDesc')}
+                        disabled={isBuildingCache}
                         icon={<Trash2 size={16} className="mr-2" />}
                         isProcessing={isClearingCache}
                         message={cacheClearMessage}

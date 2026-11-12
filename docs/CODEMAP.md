@@ -54,6 +54,11 @@ runtime from development watching, allowing build-time preparation to finish.
 Standard EXIF fields take precedence over duplicate preview/XMP fields, and
 Composite lens IDs fill missing lens names. `exif_processing.rs` owns sidecar
 handling, cached orientation/exposure/date helpers and export writing.
+The editor, catalog and thumbnail paths combine `.rrdata` adjustments with
+XMP metadata through `xmp.rs`. The JSON reader accepts a UTF-8 BOM and omitted
+fields. XMP uses the source stem for RAW photos, the full filename for new
+non-RAW sidecars, and the virtual-copy suffix for copy-specific metadata.
+XMP writes preserve unrelated properties in existing packets.
 ExifTool supplies all source EXIF reads, including GPS and attribution.
 `little_exif` copies full EXIF from supported non-RAW containers and writes EXIF.
 The shared metadata/profile
@@ -62,7 +67,8 @@ cache namespace. Rawler continues to decode RAW sensor data.
 Concurrent misses for the same source share one read through bounded lock shards.
 Catalog indexing prepares metadata in batches of 256 on a dedicated pool of up
 to four workers, then commits each batch through one SQLite writer. Files whose
-source and sidecar timestamps match the catalog are skipped before metadata work.
+source and sidecar timestamps match the catalog are skipped during incremental
+indexing. An explicit catalog rebuild forces metadata refresh.
 SlowRAW targets Windows, macOS and Linux.
 `image-hdr` still requires `kamadak-exif` transitively. SlowRAW supplies decoded
 pixels, exposure and ISO through `HDRInput::with_image`, bypassing that library's
@@ -121,6 +127,8 @@ the source during reload, copy/paste, thumbnail rendering and export; choosing
 off clears stale parameters. Crop controls use `utils/lensProfile.ts` to derive
 their available corrections from either embedded or Lensfun parameters.
 
+Image Preprocessing can default RAW images to Auto when their saved adjustments have no lens choice. The editor, thumbnail renderer and export share this rule. TIFF follows the non-RAW path.
+
 Lensfun automatic matching first accepts unambiguous normalized identities.
 After fixed-camera matching it can use fuzzy name matching, requiring matching
 optical numbers, a compatible maker, a high similarity score and a clear lead
@@ -131,10 +139,6 @@ the standard fixed lens. Failed matching clears automatic correction parameters.
 The thumbnail renderer revision invalidates results from the previous matcher.
 
 `scripts/test-lens-metadata.mjs` checks camera ISO and frontend capabilities.
-The ignored Rust test `supplied_raw_files_use_camera_iso_and_shared_profile_selection`
-reads the six developer-provided `testbilder` RAW files with official ExifTool,
-checks camera ISO, Ricoh matching and manual source handling, and confirms that
-profile selection uses cached metadata without further ExifTool requests.
 
 Catalog scanning reads file metadata outside write transactions and commits up
 to 256 rows with `BEGIN IMMEDIATE`, using prepared statements. Short sidecar
@@ -181,8 +185,8 @@ Native macOS content/webview layers also use zero radius.
 
 Flag actions share selected-image state across the library and editor. Catalog
 flag filters combine with metadata filters and smart groups.
-Flags are mutually exclusive internal `flag:pick`/`flag:reject` sidecar tags; SQLite
-rebuilds the flag column from those tags. Flagging updates sidecar metadata and the catalog index.
+XMP stores pick/reject flags as `xmpDM:pick`. SlowRAW converts them to internal
+`flag:pick` and `flag:reject` tags for the UI and the catalog's flag column.
 `node scripts/test-image-flags.mjs` checks selection scope, queued writes, toggling,
 clear, pending-page overlays and error rollback with in-memory stores/IPC only.
 
@@ -565,20 +569,26 @@ are released when the task ends. `components/ui/JobQueue.tsx` presents these
 records through BottomBar. Batch Auto waits for its native worker and uses a
 RAM-bounded pool of one to four decoding workers.
 
-### Library grid and edit sidecars
+### Library grid and thumbnail cache
 
 `LibraryGrid.tsx` calculates a uniform column count from viewport width,
 thumbnail size and spacing. It publishes that number as `libraryColumnCount`;
 `useKeyboardShortcuts.ts` moves the current sorted-list index by that many images
-for up/down, bounded by the current page. List mode uses one column. Persisted
+for up/down within the loaded window. List mode uses one column. Persisted
 aspect preferences resolve to Cover or Contain on startup.
 
-`SettingsPanel.tsx` collects photo roots and catalog folders for edit-file
-cleanup. `ConfirmModal.tsx` requires a warning acknowledgement before enabling
-confirmation. The native `clear_all_sidecars` command requires confirmation and
-walks regular files recursively with symbolic-link following disabled, deleting
-`.rrdata` files. Cleanup runs as a queued job, then clears image/thumbnail caches and rebuilds
-the catalog.
+`SettingsPanel.tsx` queues `catalog_build_thumbnail_cache` through the shared job
+queue. The command walks indexed paths in bounded batches and shares the
+editor's source decoder, EXIF cache and white-balance lookup. Decoded images
+use the configured in-memory LRU. The thumbnail generator reuses valid
+entries and publishes missing JPEGs through temporary files.
+
+Failed image loads return the current selection to the library. Cached
+previews and fresh image loads share this recovery path.
+
+Settings also queues deletion of `.rrdata` sidecars after the user
+acknowledges the warning and confirms the listed folders. The native command
+walks those folders and skips symbolic links. The catalog refreshes after deletion.
 
 ### Workspace panel layout
 
@@ -594,11 +604,12 @@ which stays accessible when the bottom bar is hidden. Import is available in the
 bottom bar and empty-library prompt.
 
 The library's flex chain uses `min-h-0` and clips the grid to its allotted viewport.
-`LibraryGrid.tsx` gives react-window a 100%-height flex viewport. Its ResizeObserver
-tracks width for row layout. The bottom bar retains its height and uses a separate
-stacking level to remain visible above the thumbnail grid.
+`LibraryGrid.tsx` measures the scroll viewport with a ResizeObserver and computes
+visible row positions from the scroll offset and fixed row height. The scrollbar
+covers the full filtered result set, including rows outside the resident window.
+The filmstrip uses react-window.
 
-### Catalog panels, paging and smart groups
+### Catalog panels, scrolling and smart groups
 
 `useLibraryStore.ts` reconciles active album and smart-group IDs against each
 updated album tree. Removing the active item or its parent group resets the
@@ -614,17 +625,19 @@ compatibility identifier for `Panel.Catalog`.
 `useCatalog.ts`, mounted by App, initializes and loads the catalog independently
 of panel visibility. Search is debounced and stale query replies are discarded.
 `catalog_query_page` returns bounded rows and a filtered SQL count from one SQLite
-read transaction. The shared filter builder ensures the page and count match;
-the header shows page X of Y, match count and catalog total. Empty results show
-page 1 of 1. When results shrink, an out-of-range page is clamped and reloaded.
-Catalog mode owns the page-navigation controls.
+read transaction. `LibraryGrid.tsx` uses that count for the virtual row count
+and passes visible row positions to `loadCatalogWindow`. The store retains up
+to three batches of 166 records around the viewport and discards thumbnails
+outside that window, retaining the open editor image. Absolute row positions
+keep scrolling stable as the window moves. The header uses the filtered count.
 
 Smart-group editing loads saved criteria into a draft. Saving updates the same
 group ID in the hierarchy; cancellation discards the draft. Legacy single-value filters are normalized by `normalizeCatalogFilter`;
 `updateSmartGroup` updates nested smart groups in their existing positions.
 
-Catalog-folder rescans incrementally check disk changes; internal
-refreshes reload index/facet data. The export panel handles GUI export, and external
+Catalog-folder rescans use timestamp checks and continue across inaccessible
+paths, preserving existing entries in folders that were only partially scanned.
+Startup recovery and edit sidecar cleanup request a full metadata refresh. The export panel handles GUI export, and external
 edit sessions coordinate round trips with other editors.
 
 ### Auto levels and tonal processing
@@ -667,7 +680,8 @@ names and frontend data contracts live in `src/components/ui/AppProperties.tsx`;
 Tauri command registration is near the end of `src-tauri/src/lib.rs`.
 
 The catalog database is a rebuildable index. Photos stay at their paths, and
-sidecar/XMP files store edits and metadata. The catalog view queries bounded pages.
+`.rrdata` holds edits and private data. XMP holds ratings, keywords, labels,
+flags, and shareable EXIF overrides. The catalog view queries bounded windows.
 
 Thumbnail requests and caches are bounded. Removing a catalog entry is separate
 from deleting its source file. File operations synchronize the catalog index.
@@ -675,7 +689,7 @@ See [catalog-focused-build.md](catalog-focused-build.md) for query/loading detai
 
 Catalog filters are combined in SQLite, while
 `src/utils/catalog.ts` retains the active image's optimistic rating when a new
-rating removes it from the filtered page. Opening a video catalog entry launches
+rating removes it from the filtered window. Opening a video catalog entry launches
 the system player.
 `catalog_images.exif_json` uses key-sorted serialization through `BTreeMap`.
 Schema version 2 stores `is_raw` and `is_edited` as constrained 0/1 integers;
@@ -742,8 +756,10 @@ are composited during image rendering; the source image remains intact.
 | `scripts/clean.mjs` | Removes explicit generated build paths; `--dependencies` also removes node_modules, with project-boundary and symlink checks. |
 | `scripts/test-desktop-workflow.mjs` | Zoom focus/scale, export-session persistence, metadata and branding regression checks. |
 | `scripts/test-job-queue.mjs` | FIFO, cancellation, failure, background completion and listener-lifetime checks. |
-| `scripts/test-library-arrows.mjs` | Column-count movement and page-boundary checks against the keyboard handler. |
-| `scripts/test-catalog.mjs` | In-memory catalog paging/count/stale-reply, smart-filter editing and album-group creation checks. |
+| `scripts/test-album-navigation.mjs` | Active-album removal and stale album response checks. |
+| `scripts/test-clean.mjs` | Build cleanup, dry-run output and path boundary checks. |
+| `scripts/test-library-arrows.mjs` | Column-count movement and window-boundary checks against the keyboard handler. |
+| `scripts/test-catalog.mjs` | Catalog window movement, counts, stale replies, smart-filter editing and album-group creation checks. |
 | `scripts/test-logging.mjs` | Production console suppression, debug console availability and diagnostic configuration checks. |
 | `scripts/test-image-flags.mjs` | In-memory flag selection, write queue and rollback regression checks. |
 | `scripts/test-white-balance.mjs` | Frontend white-balance defaults, bounds and Kelvin slider scaling checks. |
@@ -756,7 +772,7 @@ are composited during image rendering; the source image remains intact.
 | `scripts/test-dev-sidecars.mjs` | Isolated Vite/Tailwind regression for autosave-triggered page reloads. |
 | `scripts/test-exiftool-staging.mjs` | Platform layouts, offline reuse, checksum rejection and staging cleanup. |
 | `docs/CODEMAP.md` | Source-file map and technical overview (this document). |
-| `docs/catalog-focused-build.md` | Catalog filtering, paging, cache and validation notes. |
+| `docs/catalog-focused-build.md` | Catalog filtering, scrolling, cache and validation notes. |
 
 ## Frontend files (`src/`)
 
@@ -769,7 +785,7 @@ are composited during image rendering; the source image remains intact.
 | `styles.css` | Global styles, theme variables, square workspace corners and Tailwind source scope restricted to src/. |
 | `window/TitleBar.tsx` | Custom window title bar. |
 | `store/useEditorStore.ts` | Selected image, adjustments, editor state, undo/copy state. |
-| `store/useLibraryStore.ts` | Library images, catalog mode, filters, pages, albums, selection; default sort is capture date ascending, with saved preferences restored at startup. |
+| `store/useLibraryStore.ts` | Resident catalog rows, filters, albums and selection. Defaults to newest capture date first and restores saved sorting preferences at startup. |
 | `store/useProcessStore.ts` | Long-running process/progress state. |
 | `store/useSettingsStore.ts` | Loaded application settings and settings updates. |
 | `store/useUIStore.ts` | Active view, panel layout/visibility, dialogs, UI state; discards unsupported panel identifiers from saved layouts. |
@@ -786,7 +802,7 @@ are composited during image rendering; the source image remains intact.
 | --- | --- |
 | `hooks/useAppContextMenus.ts` | App-level context-menu construction. |
 | `hooks/useAppInitialization.ts` | Loads settings, workspace and startup state. |
-| `hooks/useCatalog.ts` | Catalog initialization, debounced paged loading and sort-page reset independent of panel visibility. |
+| `hooks/useCatalog.ts` | Catalog initialization, debounced query loading and scroll reset when criteria change. |
 | `hooks/useAppNavigation.ts` | Switches between library/editor and opens catalog videos in the system player. |
 | `hooks/useEditorActions.ts` | Editor commands such as zoom and adjustment actions. |
 | `hooks/useExportSettings.ts` | Export option state and defaults. |
@@ -800,7 +816,7 @@ are composited during image rendering; the source image remains intact.
 | `hooks/useOsPlatform.ts` | OS detection for UI choices. |
 | `hooks/usePopover.ts` | Open state, container reference and outside-click/Escape handling for popover menus. |
 | `hooks/useProductivityActions.ts` | Higher-level batch/productivity actions. |
-| `hooks/useSortedLibrary.ts` | Non-catalog sorting, grouping, and filtering. Catalog mode is paged in Rust. |
+| `hooks/useSortedLibrary.ts` | Non-catalog sorting, grouping and filtering. Catalog mode uses SQLite query order. |
 | `hooks/useTauriListeners.ts` | Subscribes to backend events and progress notifications. |
 | `hooks/useThumbnails.ts` | Thumbnail request batching and cache coordination. |
 | `hooks/useWaveformControls.ts` | Waveform display controls. |
@@ -910,7 +926,6 @@ are composited during image rendering; the source image remains intact.
 | --- | --- |
 | `i18n/index.ts` | Initializes i18next and registers locale bundles. |
 | `i18n/check-runtime.mjs` | Checks translation keys used at runtime. |
-| `i18n/update_translations.py` | Updates zoom-click strings in existing locale files. |
 | `i18n/locales/en.json` | English source strings. |
 | `@types/i18next.d.ts` | TypeScript declarations for translation keys. |
 
@@ -923,14 +938,14 @@ are composited during image rendering; the source image remains intact.
 | `gpu_geometry.rs` | GPU source residency, geometry maps, output framing and render planning. |
 | `gpu_compute.rs` | Compute pipelines, bounded texture reuse, cached maps and dispatch. |
 | `gpu_lens_blur.rs` | Depth-map preparation, aperture kernels and GPU depth-blur passes. |
-| `app_settings.rs` | Persistent settings schema, defaults, loading/saving, workspace defaults. |
+| `app_settings.rs` | Persistent settings and workspace defaults. Loads and saves share a lock, and writes replace the JSON atomically. Catalog operations update folder membership under that lock. |
 | `app_state.rs` | Shared native application state and caches. |
 | `cache_utils.rs` | Image/render cache keys and cache containers. |
-| `catalog.rs` | SQLite schema/index, catalog folders, metadata facets, filtering, albums/smart groups, paged queries. |
+| `catalog.rs` | SQLite index, catalog folders, facets, bounded queries and the thumbnail cache build job. Capture-date ordering uses a matching index, and shutter ordering compares numeric exposure seconds. |
 | `component_updates.rs` | Downloads Lensfun profile updates. |
 | `culling.rs` | Image culling analysis/actions. |
 | `denoising.rs` | Traditional noise reduction and standalone save/batch flows. |
-| `exif_processing.rs` | Shared stamped metadata/profile cache, sidecar handling, byte-level EXIF helpers and export EXIF writing. |
+| `exif_processing.rs` | Shared stamped metadata/profile cache, sidecar handling, byte-level EXIF helpers and export EXIF writing. JPEG, PNG and WebP exports from TIFF sources use selected ExifTool fields. |
 | `exiftool.rs` | Persistent official ExifTool process, bundled/configured executable lookup, JSON normalization and profile extraction. |
 | `embedded_lens.rs` | DNG opcode interpretation, embedded profile geometry/gain and neutral-profile detection. |
 | `lens_metadata/mod.rs` | Shared numeric-tag access, radial correction tables and camera-model dispatch. |
@@ -942,6 +957,7 @@ are composited during image rendering; the source image remains intact.
 | `lens_metadata/tests.rs` | Numeric-model and official-ExifTool metadata fixtures. |
 | `export_processing.rs` | Export/batch/size-estimate flow, render precision and format encoders. |
 | `export_metadata.rs` | Selective source-type/attribution extraction and XMP container writing. |
+| `xmp.rs` | Companion paths, shared metadata storage, and atomic sidecar writes. |
 | `file_management.rs` | Filesystem operations, import/move/copy, sidecars, and path handling. |
 | `focus_stacking.rs` | Focus-stack processing. |
 | `formats.rs` | Supported image, RAW, and video-format recognition. |
@@ -1012,98 +1028,104 @@ npm run clean:deep -- --dry-run
 npm run clean:deep
 ```
 
-### Updating common libraries
+### Development commands
 
-Update one dependency or related group at a time, retain the lockfiles, rebuild
-and run the affected checks. Cargo update stays within Cargo.toml constraints;
-major-version upgrades also require reviewing the manifest and API changes.
+Run these commands from the repository root. The npm scripts are defined in
+[package.json](../package.json).
 
-```powershell
-npm outdated
-npm update
-cargo update --manifest-path src-tauri/Cargo.toml -p image
-cargo update --manifest-path src-tauri/Cargo.toml -p moxcms
-cargo update --manifest-path src-tauri/Cargo.toml -p jxl-encoder -p jxl-oxide
-cargo update --manifest-path src-tauri/Cargo.toml -p webp
-```
-
-Review frontend/native dependencies together when upgrading Tauri. Lensfun
-profiles update separately through Settings and do not require a RAW rebuild.
-
-### Updating the RAW decoder
-
-```powershell
-npm run update:rawler
-```
-
-This updates the upstream Rawler revision in src-tauri/Cargo.lock. Keep the
-lockfile and rebuild the application. Rawler API changes may require adapting
-raw_processing.rs and exif_processing.rs. RAW support is linked into the app.
-
-### Updating the RCD library
+| Command | Purpose |
+| --- | --- |
+| `npm ci` | Install the dependencies from `package-lock.json`. |
+| `npm start` | Start the desktop app in development mode. |
+| `npm run dev` / `npm run build` | Start the frontend dev server or build the frontend. |
+| `npm run tauri -- info` / `npm run tauri -- build` | Show the Tauri environment or build a desktop release. |
+| `npm run typecheck` | Check TypeScript types. |
+| `npm run lint` / `npm run lint:fix` | Check lint rules or apply available fixes. |
+| `npm run format:check` / `npm run format` | Check or apply formatting. |
+| `npm run i18n:extract` | Update extracted translation keys. |
+| `npm run i18n:check` / `npm run i18n:runtime-check` / `npm run i18n:lint` | Check extraction, runtime keys or translation usage. |
+| `npm run update:exiftool` | Stage the pinned ExifTool release. |
+| `npm run update:rcd` | Update the pinned librtprocess revision. |
+| `npm run clean` / `npm run clean:deep` | Remove generated files. The deep clean also removes downloaded dependencies. Both accept `-- --dry-run`. |
+| `node scripts/test-<name>.mjs` | Run one of the regression scripts listed above. |
+| `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts` | Build a portable Windows ZIP. Use `-Target` to select the architecture. |
 
 ```powershell
-npm run update:rcd
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets
+cargo check --locked --manifest-path src-tauri/Cargo.toml
+cargo test --locked --manifest-path src-tauri/Cargo.toml --workspace --lib -- --test-threads=1
+cargo build --locked --manifest-path src-tauri/Cargo.toml --bin SlowRAW
 ```
 
-This updates src-tauri/rcd/upstream-revision to upstream librtprocess HEAD.
-Keep the pinned revision; the next native build fetches and statically rebuilds
-it. Run workspace tests after updates. API changes belong in rcd/bridge.cpp.
-Rawler remains responsible for RAW decoding and non-Bayer development.
+### Updating packages
+
+Use `npm outdated` to find available npm updates and `npm update <package>`
+to update within the range in `package.json`. To change the range, use
+`npm install <package>@<version>`, adding `-D` for a dev dependency.
+For Rust, use `cargo update --manifest-path src-tauri/Cargo.toml -p <crate>`.
+Change the version requirement in `src-tauri/Cargo.toml` first if needed.
+Keep the corresponding lockfile with each update. When updating Tauri, check
+the matching npm packages, Rust crates and plugins together.
+
+- **Rawler.** Change the dnglab commit in `src-tauri/rawler/upstream-revision`,
+  rebase `nikon-he.patch` and update `src-tauri/rawler/Cargo.toml` if the
+  upstream dependencies changed. Rebuild and test both Nikon HE modes using
+  the sample command in the [Rawler update guide](../src-tauri/rawler/UPSTREAM.md).
+  The guide also covers switching to the official Git dependency once it
+  supports both modes.
+- **librtprocess.** Run `npm run update:rcd` to write the upstream HEAD to
+  `src-tauri/rcd/upstream-revision`. Rebuild and run the Rust workspace tests.
+  If the upstream API changes, update `src-tauri/rcd/bridge.cpp`.
+- **ExifTool.** Update `VERSION` and both archive SHA-256 values in
+  `scripts/update-exiftool.mjs`. Move the old staged copy out of
+  `src-tauri/resources/exiftool` before running `npm run update:exiftool`
+  to verify the new release.
+- **Lensfun profiles.** Update the database through Settings > Data Management.
 
 ### Compiling the program
 
-You'll need to have [Rust](https://www.rust-lang.org/tools/install) and [Node.js](https://nodejs.org/) installed.
+Install [Rust 1.98 or newer](https://www.rust-lang.org/tools/install), [Node.js 24 LTS](https://nodejs.org/), Git and CMake.
 
-### MacOS
+### Windows
 
-Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/).
+Install the C++ Build Tools and WebView2 runtime. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#windows)
+
+### macOS
+
+Install [Homebrew](https://brew.sh/) and the Xcode Command Line Tools. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#macos)
 
 ```bash
-# Install molten-vk
-brew install molten-vk
-
-# Install Perl
-brew install perl
+xcode-select --install
+brew install molten-vk perl
 ```
 
 ### Linux
 
-Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/) for your distribution. 
+Install the system packages for your distribution. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
+
+Install Perl on Debian or Ubuntu.
 
 ```bash
-# Install Perl (Debian / Ubuntu)
 sudo apt install perl
 ```
 
-### For all OS
+### All platforms
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/arvid-storck/SlowRAW.git
 cd SlowRAW
-
-# 2. Install frontend dependencies
-npm install
-
-# 3. Build and run the application
+npm ci
 npm start
 ```
 
-To build the release build:
+Build a release package with `npm run tauri build`. Find the packages in
+`src-tauri/target/release/bundle/`.
 
-```bash
-# 1. Make the release build
-npm run tauri build
-
-# 2. Run the release build
-./src-tauri/target/release/SlowRAW
-```
-
-### Windows alternative for portable build
+### Windows portable build
 
 ```powershell
-./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
 ```
 
 ## Push to github

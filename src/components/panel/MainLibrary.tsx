@@ -1,15 +1,7 @@
-import { Settings, Loader2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Settings, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { CATALOG_PAGE_SIZE } from '../../utils/catalog';
 import Button from '../ui/Button';
-import {
-  AppSettings,
-  ImageFile,
-  LibraryViewMode,
-  ThumbnailSize,
-  ThumbnailAspectRatio,
-  LibraryDisplayMode,
-} from '../ui/AppProperties';
+import { AppSettings, ImageFile, ThumbnailSize, ThumbnailAspectRatio, LibraryDisplayMode } from '../ui/AppProperties';
 import { GroupBadgeInfo, GroupId } from '../../utils/imageGrouping';
 import { useUIStore } from '../../store/useUIStore';
 import { useLibraryStore } from '../../store/useLibraryStore';
@@ -58,18 +50,9 @@ export default function MainLibrary(props: MainLibraryProps) {
   const { t } = useTranslation();
   const setUI = useUIStore((s) => s.setUI);
   const showTopPanel = useUIStore((s) => s.uiVisibility.topPanel);
-  const {
-    catalogStatus,
-    catalogPage,
-    catalogHasMore,
-    catalogTotal,
-    isCatalogMode,
-    sortCriteria,
-    setSortCriteria,
-    setLibrary,
-  } = useLibraryStore();
+  const { catalogStatus, catalogOffset, catalogTotal, isCatalogMode, sortCriteria, setSortCriteria } =
+    useLibraryStore();
   const total = isCatalogMode ? catalogTotal : props.imageList.length;
-  const pages = isCatalogMode ? Math.max(1, Math.ceil(total / CATALOG_PAGE_SIZE)) : 1;
   const mode =
     props.appSettings?.libraryDisplayMode === LibraryDisplayMode.List
       ? LibraryDisplayMode.List
@@ -83,34 +66,9 @@ export default function MainLibrary(props: MainLibraryProps) {
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-bg-secondary rounded-lg">
       {showTopPanel && (
         <header className="shrink-0 flex items-center gap-2 p-3 border-b border-surface">
-          <div className="flex items-center gap-1" aria-label={t('catalog.pages')}>
-            <button
-              type="button"
-              aria-label={t('catalog.previousPage')}
-              title={t('catalog.previousPage')}
-              disabled={props.isLoading || !isCatalogMode || catalogPage === 0}
-              className="rounded p-1.5 text-text-primary hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
-              onClick={() => setLibrary({ catalogPage: catalogPage - 1 })}
-            >
-              <ChevronLeft size={18} />
-            </button>
-            <span className="min-w-12 text-center text-sm text-text-secondary">
-              {t('catalog.page', { page: catalogPage + 1, pages })}
-            </span>
-            <button
-              type="button"
-              aria-label={t('catalog.nextPage')}
-              title={t('catalog.nextPage')}
-              disabled={props.isLoading || !isCatalogMode || !catalogHasMore}
-              className="rounded p-1.5 text-text-primary hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed"
-              onClick={() => setLibrary({ catalogPage: catalogPage + 1 })}
-            >
-              <ChevronRight size={18} />
-            </button>
-          </div>
           <span className="text-sm text-text-secondary grow">
             {isCatalogMode && catalogStatus && total !== catalogStatus.imageCount
-              ? t('catalog.filteredTotal', { matches: total, total: catalogStatus.imageCount })
+              ? t(total === 1 ? 'catalog.filteredTotalOne' : 'catalog.filteredTotal', { images: total })
               : t('catalog.total', { count: total })}
           </span>
           {props.isLoading && <Loader2 className="animate-spin" size={18} />}
@@ -124,6 +82,7 @@ export default function MainLibrary(props: MainLibraryProps) {
             <option value="date_taken">{t('catalog.captureDate')}</option>
             <option value="date">{t('catalog.modifiedDate')}</option>
             <option value="rating">{t('catalog.rating')}</option>
+            <option value="shutter_speed">{t('library.grid.columns.shutter')}</option>
           </select>
           <button
             aria-label={t('catalog.reverse')}
@@ -169,10 +128,10 @@ export default function MainLibrary(props: MainLibraryProps) {
           </Button>
         </header>
       )}
-      {props.imageList.length ? (
+      {total > 0 ? (
         <LibraryGrid
           {...props}
-          libraryViewMode={LibraryViewMode.Flat}
+          catalogRange={isCatalogMode ? { offset: catalogOffset, total } : undefined}
           libraryDisplayMode={mode}
           thumbnailSizeOptions={sizes}
         />

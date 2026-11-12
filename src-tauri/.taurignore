@@ -1,3 +1,4 @@
-# Generated ExifTool downloads and runtime must not restart their own build.
+# Generated dependency sources and runtimes.
+target/
 resources/.exiftool-staging-*/
 resources/exiftool/

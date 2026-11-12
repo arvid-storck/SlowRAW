@@ -1,17 +1,18 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { List, useListCallbackRef } from 'react-window';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import debounce from 'lodash.debounce';
+import { toast } from 'react-toastify';
 import { useTranslation } from 'react-i18next';
 import { Row } from './LibraryItems';
 import { useShallow } from 'zustand/react/shallow';
 import { useLibraryStore } from '../../../store/useLibraryStore';
-import { LibraryViewMode, SortDirection, LibraryDisplayMode } from '../../ui/AppProperties';
+import { ImageFile, SortDirection, LibraryDisplayMode } from '../../ui/AppProperties';
 import Text from '../../ui/Text';
 import { TextColors, TextVariants, TextWeights, TEXT_COLOR_KEYS } from '../../../types/typography';
 import { useProcessStore } from '../../../store/useProcessStore';
 import { ExifOverlay } from '../../ui/AppProperties';
 import { useSettingsStore } from '../../../store/useSettingsStore';
+import { loadCatalogWindow } from '../../../utils/catalog';
 
 function ListHeader({ widths, setWidths, containerRef, sortCriteria, onSortChange }: any) {
   const { t } = useTranslation();
@@ -129,52 +130,22 @@ function ListHeader({ widths, setWidths, containerRef, sortCriteria, onSortChang
   );
 }
 
-const groupImagesByFolder = (images: any[], baseFolderPath: string | null) => {
-  const groups: Record<string, any[]> = {};
-
-  images.forEach((img) => {
-    const physicalPath = img.path.split('?vc=')[0];
-    const separator = physicalPath.includes('/') ? '/' : '\\';
-    const lastSep = physicalPath.lastIndexOf(separator);
-    const dir = lastSep > -1 ? physicalPath.substring(0, lastSep) : physicalPath;
-
-    if (!groups[dir]) {
-      groups[dir] = [];
-    }
-    groups[dir].push(img);
-  });
-
-  const sortedKeys = Object.keys(groups).sort((a, b) => {
-    if (a === baseFolderPath) return -1;
-    if (b === baseFolderPath) return 1;
-    return a.localeCompare(b);
-  });
-
-  return sortedKeys.map((dir) => ({
-    path: dir,
-    images: groups[dir],
-  }));
-};
-
 export default function LibraryGrid(props: any) {
+  const { t } = useTranslation();
   const {
     imageList,
-    libraryViewMode,
     thumbnailSize,
     libraryDisplayMode,
     currentFolderPath,
     activePath,
     multiSelectedPaths,
-    onContextMenu,
-    onImageClick,
-    onImageDoubleClick,
-    thumbnailAspectRatio,
-    imageRatings,
     onRequestThumbnails,
     thumbnailSizeOptions,
     onThumbnailSizeChange,
-    groupBadgeInfo,
+    catalogRange,
   } = props;
+  const catalogOffset: number = catalogRange?.offset ?? 0;
+  const catalogTotal: number | undefined = catalogRange?.total;
   const { listColumnWidths, setLibrary, sortCriteria, setSortCriteria } = useLibraryStore(
     useShallow((state) => ({
       listColumnWidths: state.listColumnWidths,
@@ -183,381 +154,217 @@ export default function LibraryGrid(props: any) {
       setSortCriteria: state.setSortCriteria,
     })),
   );
-
-  const [gridSize, setGridSize] = useState({ width: 0 });
-  const [listHandle, setListHandle] = useListCallbackRef();
-  const [collapsedRecursiveFolders, setCollapsedRecursiveFolders] = useState<Set<string>>(new Set());
-  const libraryContainerRef = useRef<HTMLDivElement>(null);
-  const gridObserverRef = useRef<ResizeObserver | null>(null);
-  const requestQueueRef = useRef<Set<string>>(new Set());
-  const requestTimeoutRef = useRef<any>(null);
   const exifOverlay = useSettingsStore((s) => s.appSettings?.exifOverlay || ExifOverlay.Off);
-  const showExifCols = exifOverlay !== ExifOverlay.Off;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState({ width: 0, height: 0 });
+  const [scrollTop, setScrollTop] = useState(0);
 
-  useEffect(() => {
-    const el = libraryContainerRef.current;
-    if (gridObserverRef.current) {
-      gridObserverRef.current.disconnect();
-      gridObserverRef.current = null;
-    }
-    if (el) {
-      const ro = new ResizeObserver((entries) => {
-        const entry = entries[0];
-        if (entry) {
-          const width = Math.round(entry.contentRect.width);
-
-          setGridSize((prev) => (prev.width === width ? prev : { width }));
-        }
-      });
-      ro.observe(el);
-      gridObserverRef.current = ro;
-    }
-    return () => gridObserverRef.current?.disconnect();
-  }, [libraryContainerRef]);
-
-  useEffect(() => {
-    const handleWheel = (event: any) => {
-      const container = libraryContainerRef.current;
-      if (!container || !container.contains(event.target)) {
-        return;
-      }
-
-      if (event.ctrlKey || event.metaKey) {
-        event.preventDefault();
-        const currentIndex = thumbnailSizeOptions.findIndex((o: any) => o.id === thumbnailSize);
-        if (currentIndex === -1) {
-          return;
-        }
-
-        const nextIndex =
-          event.deltaY < 0
-            ? Math.min(currentIndex + 1, thumbnailSizeOptions.length - 1)
-            : Math.max(currentIndex - 1, 0);
-        if (nextIndex !== currentIndex) {
-          onThumbnailSizeChange(thumbnailSizeOptions[nextIndex].id);
-        }
-      }
+  useLayoutEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+    const measure = () => {
+      const { clientWidth: width, clientHeight: height } = element;
+      setViewport((old) => (old.width === width && old.height === height ? old : { width, height }));
     };
-
-    window.addEventListener('wheel', handleWheel, { passive: false });
-    return () => {
-      window.removeEventListener('wheel', handleWheel);
-    };
-  }, [thumbnailSize, onThumbnailSizeChange, thumbnailSizeOptions]);
-
-  const handleScroll = useMemo(
-    () =>
-      debounce((top: number) => {
-        setLibrary({ libraryScrollTop: top });
-      }, 200),
-    [setLibrary],
-  );
-
-  useEffect(() => () => handleScroll.cancel(), [handleScroll]);
-
-  const queueThumbnailRequest = useCallback(
-    (path: string) => {
-      if (!onRequestThumbnails) return;
-      if (useProcessStore.getState().thumbnails[path]) return;
-      requestQueueRef.current.add(path);
-      if (!requestTimeoutRef.current) {
-        requestTimeoutRef.current = setTimeout(() => {
-          const paths = Array.from(requestQueueRef.current);
-          if (paths.length > 0) {
-            onRequestThumbnails(paths);
-            requestQueueRef.current.clear();
-          }
-          requestTimeoutRef.current = null;
-        }, 50);
-      }
-    },
-    [onRequestThumbnails],
-  );
-
-  const handleToggleRecursiveFolder = useCallback((path: string) => {
-    setCollapsedRecursiveFolders((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
   }, []);
 
-  const gridData = useMemo(() => {
-    if (gridSize.width === 0 || imageList.length === 0) return null;
-
-    const isListView = libraryDisplayMode === LibraryDisplayMode.List;
-    const OUTER_PADDING = isListView ? 0 : 12;
-    const ITEM_GAP = isListView ? 0 : 12;
-    const minThumbWidth = thumbnailSizeOptions.find((o: any) => o.id === thumbnailSize)?.size || 240;
-
-    const availableWidth = gridSize.width - OUTER_PADDING * 2;
-    const columnCount = isListView
-      ? 1
-      : Math.max(1, Math.floor((availableWidth + ITEM_GAP) / (minThumbWidth + ITEM_GAP)));
-    const itemWidth = isListView ? availableWidth : (availableWidth - ITEM_GAP * (columnCount - 1)) / columnCount;
-
-    const totalBase =
-      listColumnWidths.thumbnail +
-      listColumnWidths.name +
-      listColumnWidths.date +
-      listColumnWidths.rating +
-      listColumnWidths.color +
-      (showExifCols
-        ? listColumnWidths.shutter + listColumnWidths.aperture + listColumnWidths.iso + listColumnWidths.focal
-        : 0);
-
-    const listRowHeight = Math.max(36, Math.min(300, (availableWidth * listColumnWidths.thumbnail) / totalBase));
-    const headerHeight = 40;
-
-    const rows: any[] = [];
-
-    if (libraryViewMode === LibraryViewMode.Recursive) {
-      const groups = groupImagesByFolder(imageList, currentFolderPath);
-      groups.forEach((group) => {
-        if (group.images.length === 0) return;
-
-        const isExpanded = !collapsedRecursiveFolders.has(group.path);
-        rows.push({ type: 'header', path: group.path, count: group.images.length, isExpanded });
-
-        if (isExpanded) {
-          for (let i = 0; i < group.images.length; i += columnCount) {
-            rows.push({
-              type: 'images',
-              images: group.images.slice(i, i + columnCount),
-            });
-          }
-        }
-      });
-    } else {
-      for (let i = 0; i < imageList.length; i += columnCount) {
-        rows.push({
-          type: 'images',
-          images: imageList.slice(i, i + columnCount),
-        });
-      }
-    }
-
-    rows.push({ type: 'footer' });
-
-    return {
-      rows,
-      itemWidth,
-      listRowHeight,
-      OUTER_PADDING,
-      ITEM_GAP,
-      columnCount,
-      isListView,
-      headerHeight,
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const index = thumbnailSizeOptions.findIndex((option: { id: string }) => option.id === thumbnailSize);
+      if (index < 0) return;
+      const next = Math.min(thumbnailSizeOptions.length - 1, Math.max(0, index + (event.deltaY < 0 ? 1 : -1)));
+      if (index !== next) onThumbnailSizeChange(thumbnailSizeOptions[next].id);
     };
-  }, [
-    gridSize.width,
-    imageList,
-    libraryViewMode,
-    libraryDisplayMode,
-    collapsedRecursiveFolders,
-    thumbnailSize,
-    listColumnWidths.thumbnail,
-    currentFolderPath,
-    thumbnailSizeOptions,
-    thumbnailAspectRatio,
-  ]);
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [thumbnailSize, thumbnailSizeOptions, onThumbnailSizeChange]);
+
+  const saveScroll = useMemo(() => debounce((top: number) => setLibrary({ libraryScrollTop: top }), 200), [setLibrary]);
+  useEffect(() => () => saveScroll.cancel(), [saveScroll]);
+
+  const queueThumbnailRequest = useMemo(() => {
+    const paths = new Set<string>();
+    const flush = debounce(
+      () => {
+        onRequestThumbnails?.([...paths]);
+        paths.clear();
+      },
+      50,
+      { maxWait: 100 },
+    );
+    return {
+      add(path: string) {
+        if (!onRequestThumbnails || useProcessStore.getState().thumbnails[path]) return;
+        paths.add(path);
+        flush();
+      },
+      cancel: flush.cancel,
+    };
+  }, [onRequestThumbnails]);
+  useEffect(() => () => queueThumbnailRequest.cancel(), [queueThumbnailRequest]);
+
+  const isListView = libraryDisplayMode === LibraryDisplayMode.List;
+  const padding = isListView ? 0 : 12;
+  const gap = isListView ? 0 : 12;
+  const availableWidth = Math.max(1, viewport.width - 2 * padding);
+  const minThumbWidth = thumbnailSizeOptions.find((option: { id: string }) => option.id === thumbnailSize)?.size || 240;
+  const columns = isListView ? 1 : Math.max(1, Math.floor((availableWidth + gap) / (minThumbWidth + gap)));
+  const itemWidth = (availableWidth - gap * (columns - 1)) / columns;
+  const { thumbnail, name, date, rating, color, shutter, aperture, iso, focal } = listColumnWidths;
+  const totalWidth =
+    thumbnail + name + date + rating + color + (exifOverlay !== ExifOverlay.Off ? shutter + aperture + iso + focal : 0);
+  const itemHeight = isListView ? Math.max(36, Math.min(300, (availableWidth * thumbnail) / totalWidth)) : itemWidth;
+  const rowHeight = itemHeight + gap;
+  const imageCount = catalogTotal ?? imageList.length;
+  const rowCount = Math.ceil(imageCount / columns);
+  const fullHeight = rowCount * rowHeight + (isListView ? 24 : padding);
+  const scrollHeight = Math.min(fullHeight, 16_000_000);
+  const scale = Math.max(1, fullHeight - viewport.height) / Math.max(1, scrollHeight - viewport.height);
+  const logicalTop = scrollTop * scale;
+  const first = Math.min(rowCount - 1, Math.max(0, Math.floor((logicalTop - padding) / rowHeight)));
+  const last = Math.min(rowCount - 1, Math.floor((logicalTop + viewport.height - padding) / rowHeight));
+  const ready = viewport.width > 0 && viewport.height > 0;
+
+  useLayoutEffect(() => {
+    const element = viewportRef.current;
+    if (!element || !ready) return;
+    element.scrollTop = useLibraryStore.getState().libraryScrollTop;
+    setScrollTop(element.scrollTop);
+  }, [currentFolderPath, ready]);
 
   useEffect(() => {
-    if (!listHandle?.element || !gridData) return;
-
-    const savedTop = useLibraryStore.getState().libraryScrollTop;
-    const element = listHandle.element as HTMLElement;
-
-    if (savedTop > 0) {
-      element.scrollTop = savedTop;
-    }
-  }, [listHandle, currentFolderPath]);
+    if (catalogTotal === undefined || !ready || last < first) return;
+    const index = Math.floor((first + last) / 2) * columns;
+    loadCatalogWindow(index).catch((error) => toast.error(t('catalog.loadError', { error: String(error) })));
+  }, [catalogTotal, columns, first, last, ready, t]);
 
   useEffect(() => {
-    setLibrary({ libraryColumnCount: gridData?.columnCount ?? 1 });
-  }, [gridData?.columnCount, setLibrary]);
+    setLibrary({ libraryColumnCount: columns });
+  }, [columns, setLibrary]);
 
-  const prevActivePath = useRef<string | null>(null);
-  const prevDisplayMode = useRef<LibraryDisplayMode | null>(null);
-  const prevListElement = useRef<HTMLElement | null>(null);
-
+  const previousActive = useRef({ path: null as string | null, mode: libraryDisplayMode, ready: false });
   useEffect(() => {
-    if (!listHandle?.element || !gridData || multiSelectedPaths.length > 1) {
-      prevActivePath.current = activePath;
-      prevDisplayMode.current = libraryDisplayMode;
-      if (listHandle?.element) prevListElement.current = listHandle.element as HTMLElement;
-      return;
-    }
-
-    const element = listHandle.element as HTMLElement;
-    const isPathSame = activePath === prevActivePath.current;
-    const isModeSame = libraryDisplayMode === prevDisplayMode.current;
-    const isElementSame = element === prevListElement.current;
-
-    if (isPathSame && isModeSame && isElementSame) return;
-
-    prevActivePath.current = activePath;
-    prevDisplayMode.current = libraryDisplayMode;
-    prevListElement.current = element;
-
-    let targetTop = 0;
-    let found = false;
-    let targetHeight = 0;
-    for (const row of gridData.rows) {
-      const height =
-        row.type === 'header'
-          ? gridData.headerHeight
-          : row.type === 'footer'
-            ? 0
-            : gridData.isListView
-              ? gridData.listRowHeight
-              : gridData.itemWidth + gridData.ITEM_GAP;
-      if (row.type === 'images' && row.images.some((image: { path: string }) => image.path === activePath)) {
-        targetHeight = height;
-        found = true;
-        break;
-      }
-      targetTop += height;
-    }
-
-    if (found) {
-      const clientHeight = element.clientHeight;
-      const scrollTop = element.scrollTop;
-      const itemBottom = targetTop + targetHeight;
-      const SCROLL_OFFSET = 120;
-
-      if (!isModeSame || !isElementSame) {
-        element.scrollTo({
-          top: Math.max(0, targetTop - clientHeight / 2 + targetHeight / 2),
-          behavior: 'instant',
-        });
-      } else if (itemBottom > scrollTop + clientHeight) {
-        element.scrollTo({
-          top: itemBottom - clientHeight + SCROLL_OFFSET,
-          behavior: 'smooth',
-        });
-      } else if (targetTop < scrollTop) {
-        element.scrollTo({
-          top: Math.max(0, targetTop - SCROLL_OFFSET),
-          behavior: 'smooth',
-        });
-      }
+    const previous = previousActive.current;
+    previousActive.current = { path: activePath, mode: libraryDisplayMode, ready };
+    const element = viewportRef.current;
+    if (!element || !ready || multiSelectedPaths.length > 1 || !activePath) return;
+    if (previous.ready && previous.path === activePath && previous.mode === libraryDisplayMode) return;
+    const index = imageList.findIndex((image: ImageFile) => image.path === activePath);
+    if (index < 0) return;
+    const top = Math.floor((catalogOffset + index) / columns) * rowHeight + padding;
+    const visibleTop = element.scrollTop * scale;
+    if (!previous.ready || previous.mode !== libraryDisplayMode) {
+      element.scrollTop = Math.max(0, top - (element.clientHeight - rowHeight) / 2) / scale;
+    } else if (top < visibleTop) {
+      element.scrollTo({ top: Math.max(0, top - 120) / scale, behavior: 'smooth' });
+    } else if (top + rowHeight > visibleTop + element.clientHeight) {
+      element.scrollTo({ top: (top + rowHeight - element.clientHeight + 120) / scale, behavior: 'smooth' });
     }
   }, [
     activePath,
-    gridData,
+    catalogOffset,
+    columns,
+    imageList,
+    libraryDisplayMode,
     multiSelectedPaths.length,
-    listHandle,
-    currentFolderPath,
-    imageList,
-    libraryViewMode,
-    libraryDisplayMode,
+    padding,
+    ready,
+    rowHeight,
+    scale,
   ]);
 
-  const memoizedRowProps = useMemo(() => {
-    if (!gridData) return {};
-
-    return {
-      rows: gridData.rows,
-      activePath,
-      multiSelectedSet: new Set(multiSelectedPaths),
-      onContextMenu,
-      onImageClick,
-      onImageDoubleClick,
-      thumbnailAspectRatio,
-      imageRatings,
-      baseFolderPath: currentFolderPath,
-      itemWidth: gridData.itemWidth,
-      itemHeight: gridData.isListView ? gridData.listRowHeight : gridData.itemWidth,
-      outerPadding: gridData.OUTER_PADDING,
-      gap: gridData.ITEM_GAP,
-      isListView: gridData.isListView,
-      columnWidths: listColumnWidths,
-      queueThumbnailRequest,
-      onToggleRecursiveFolder: handleToggleRecursiveFolder,
-      groupBadgeInfo,
-    };
-  }, [
-    gridData,
-    activePath,
-    multiSelectedPaths,
-    onContextMenu,
-    onImageClick,
-    onImageDoubleClick,
-    thumbnailAspectRatio,
-    imageRatings,
-    currentFolderPath,
-    listColumnWidths,
-    queueThumbnailRequest,
-    handleToggleRecursiveFolder,
-    groupBadgeInfo,
-  ]);
-
-  const getItemSize = useCallback(
-    (index: number) => {
-      if (!gridData) return 0;
-      const row = gridData.rows[index];
-      if (row.type === 'footer') return gridData.isListView ? 24 : gridData.OUTER_PADDING;
-      if (row.type === 'header') return gridData.headerHeight;
-      return gridData.isListView ? gridData.listRowHeight : gridData.itemWidth + gridData.ITEM_GAP;
-    },
-    [gridData],
-  );
-
-  if (!gridData) {
-    return (
-      <div
-        ref={libraryContainerRef}
-        className="relative flex-1 min-h-0 min-w-0 w-full overflow-hidden"
-        onClick={props.onClearSelection}
-        onContextMenu={props.onEmptyAreaContextMenu}
-      />
+  const getImages = useMemo(() => {
+    const rows = new Map<number, ImageFile[]>();
+    for (let row = Math.ceil(catalogOffset / columns); row < rowCount; row++) {
+      const start = row * columns;
+      const end = Math.min(start + columns, imageCount) - catalogOffset;
+      if (end > imageList.length) break;
+      rows.set(row, imageList.slice(start - catalogOffset, end));
+    }
+    return (index: number) => rows.get(index);
+  }, [catalogOffset, columns, imageCount, imageList, rowCount]);
+  const selected = useMemo(() => new Set<string>(multiSelectedPaths), [multiSelectedPaths]);
+  const renderedRows = [];
+  const startRow = Math.max(0, first - 2);
+  const endRow = Math.min(rowCount - 1, last + 2);
+  for (let index = startRow; ready && index <= endRow; index++) {
+    if (!getImages(index)) continue;
+    renderedRows.push(
+      <Row
+        key={index}
+        index={index}
+        style={{
+          position: 'absolute',
+          top: padding + index * rowHeight + scrollTop - logicalTop,
+          height: rowHeight,
+        }}
+        getImages={getImages}
+        activePath={activePath}
+        multiSelectedSet={selected}
+        onContextMenu={props.onContextMenu}
+        onImageClick={props.onImageClick}
+        onImageDoubleClick={props.onImageDoubleClick}
+        thumbnailAspectRatio={props.thumbnailAspectRatio}
+        imageRatings={props.imageRatings}
+        itemWidth={itemWidth}
+        itemHeight={itemHeight}
+        outerPadding={padding}
+        gap={gap}
+        isListView={isListView}
+        columnWidths={listColumnWidths}
+        queueThumbnailRequest={queueThumbnailRequest.add}
+        groupBadgeInfo={props.groupBadgeInfo}
+        rowCount={rowCount}
+      />,
     );
   }
 
   const handleHeaderSort = (key: string) => {
     props.onClearSelection();
-    setSortCriteria((prev: any) => {
-      if (prev.key === key) {
-        if (prev.order === SortDirection.Ascending) {
-          return { ...prev, order: SortDirection.Descending };
-        } else {
-          return { key: 'name', order: SortDirection.Ascending };
-        }
-      }
-      return { key, order: SortDirection.Ascending };
+    setSortCriteria((previous) => {
+      if (previous.key !== key) return { key, order: SortDirection.Ascending };
+      if (previous.order === SortDirection.Ascending) return { key, order: SortDirection.Descending };
+      return { key: 'name', order: SortDirection.Ascending };
     });
   };
 
   return (
     <div
-      ref={libraryContainerRef}
-      className="relative flex-1 min-h-0 min-w-0 w-full overflow-hidden"
+      ref={containerRef}
+      className="flex flex-col flex-1 min-h-0 min-w-0 w-full overflow-hidden"
       onClick={props.onClearSelection}
       onContextMenu={props.onEmptyAreaContextMenu}
     >
-      <div className="flex flex-col min-h-0 w-full h-full">
-        {gridData.isListView && (
-          <ListHeader
-            widths={listColumnWidths}
-            setWidths={(w: any) => setLibrary({ listColumnWidths: typeof w === 'function' ? w(listColumnWidths) : w })}
-            containerRef={libraryContainerRef}
-            sortCriteria={sortCriteria}
-            onSortChange={handleHeaderSort}
-          />
-        )}
-        <div className="flex-1 min-h-0 w-full overflow-hidden">
-          <List
-            style={{ height: '100%', width: '100%' }}
-            listRef={setListHandle}
-            rowCount={gridData.rows.length}
-            rowHeight={getItemSize}
-            onScroll={(e: React.UIEvent<HTMLElement>) => handleScroll(e.currentTarget.scrollTop)}
-            className="custom-scrollbar"
-            rowComponent={Row as (props: any) => React.ReactElement | null}
-            rowProps={memoizedRowProps}
-          />
+      {isListView && (
+        <ListHeader
+          widths={listColumnWidths}
+          setWidths={(update: any) => setLibrary({ listColumnWidths: update(listColumnWidths) })}
+          containerRef={containerRef}
+          sortCriteria={sortCriteria}
+          onSortChange={handleHeaderSort}
+        />
+      )}
+      <div
+        ref={viewportRef}
+        role="list"
+        className="relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden custom-scrollbar [overflow-anchor:none] [scrollbar-gutter:stable]"
+        onScroll={(event) => {
+          const top = event.currentTarget.scrollTop;
+          setScrollTop(top);
+          saveScroll(top);
+        }}
+      >
+        <div className="relative overflow-clip" style={{ height: scrollHeight }}>
+          {renderedRows}
         </div>
       </div>
     </div>

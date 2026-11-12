@@ -46,6 +46,18 @@ export function useTauriListeners({ refreshImageList, markGenerated }: TauriList
       ratingBuffer.current = {};
       editStatusBuffer.current = {};
 
+      const library = useLibraryStore.getState();
+      if (library.isCatalogMode) {
+        const visible = new Set(library.imageList.map((image) => image.path));
+        const edited = useEditorStore.getState().selectedImage?.path;
+        if (edited) visible.add(edited);
+        for (const buffer of [pendingThumbs, pendingMediumThumbs, pendingRatings, pendingEdits]) {
+          for (const path of Object.keys(buffer)) {
+            if (!visible.has(path)) delete buffer[path];
+          }
+        }
+      }
+
       if (Object.keys(pendingThumbs).length > 0) {
         useProcessStore.getState().setProcess((state) => ({
           thumbnails: { ...state.thumbnails, ...pendingThumbs },
@@ -131,6 +143,8 @@ export function useTauriListeners({ refreshImageList, markGenerated }: TauriList
       listen('image-metadata-loaded', (event: any) => {
         if (!isEffectActive) return;
         const { path, rating, is_edited, tags } = event.payload;
+        const library = useLibraryStore.getState();
+        if (library.isCatalogMode && !library.imageList.some((image) => image.path === path)) return;
 
         useLibraryStore.getState().setLibrary((state) => ({
           imageRatings: { ...state.imageRatings, [path]: rating },

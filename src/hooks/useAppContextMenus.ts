@@ -1005,7 +1005,6 @@ export function useAppContextMenus(props: UseAppContextMenusProps) {
                     isCatalogMode: true,
                     catalogFilter: normalizeCatalogFilter(item.filter),
                     catalogDateFilter: item.filter.date ?? '',
-                    catalogPage: 0,
                   });
                   setUI((state) => ({
                     activeView: 'library',

@@ -39,7 +39,8 @@ export enum Invokes {
   ApplyDenoising = 'apply_denoising',
   CalculateAutoAdjustments = 'calculate_auto_adjustments',
   CancelExport = 'cancel_export',
-  ClearAllSidecars = 'clear_all_sidecars',
+  BuildThumbnailCache = 'catalog_build_thumbnail_cache',
+  DeleteEditSidecars = 'delete_edit_sidecars',
   ClearThumbnailCache = 'clear_thumbnail_cache',
   CatalogStatus = 'catalog_status',
   CatalogAddFolder = 'catalog_add_folder',
@@ -178,7 +179,6 @@ export interface AppSettings {
   lastRootPath: string | null;
   rootFolders?: string[];
   catalogFolders?: string[];
-  libraryViewMode?: LibraryViewMode;
   sortCriteria?: SortCriteria;
   theme: Theme;
   thumbnailSize?: ThumbnailSize;
@@ -191,8 +191,7 @@ export interface AppSettings {
   myLenses?: any;
   displayEditIcon?: boolean;
   linearRawMode?: string;
-  enableXmpSync?: boolean;
-  createXmpIfMissing?: boolean;
+  rawPreprocessingAutoLens?: boolean;
   isWaveformVisible?: boolean;
   waveformHeight?: number;
   activeWaveformChannel?: string;
@@ -225,11 +224,6 @@ export interface BrushSettings {
   feather: number;
   size: number;
   tool: ToolType;
-}
-
-export enum LibraryViewMode {
-  Flat = 'flat',
-  Recursive = 'recursive',
 }
 
 export const EditedStatus = {

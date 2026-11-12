@@ -2159,7 +2159,7 @@ pub async fn save_focus_stack(
         .save_with_format(&output_path, ImageFormat::Tiff)
         .map_err(|e| format!("Failed to save {}: {}", output_path.display(), e))?;
 
-    crate::exif_processing::write_rrexif_sidecar(&first_path_str, &output_path).ok();
+    crate::exif_processing::copy_exif_to_xmp(&first_path_str, &output_path).ok();
 
     Ok(output_path.to_string_lossy().to_string())
 }

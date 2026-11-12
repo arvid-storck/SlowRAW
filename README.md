@@ -47,11 +47,14 @@ This project is based on RapidRAW v1.6.3 by CyberTimon (Timon Käch):
 
 https://github.com/CyberTimon/RapidRAW/tree/v1.6.3
 
+The original RapidRAW project provides the foundation for this version.
+Selected processing, healing and grain code is also adapted from [RapidRAW v1.6.9](https://github.com/CyberTimon/RapidRAW/tree/v1.6.9).
+
 This version has been modified substantially, especially in the following areas:
 
 * local SQLite catalog architecture
 * large-library performance
-* catalog filtering, sorting, paging, albums, and smart groups
+* catalog filtering, sorting, continuous scrolling, albums, and smart groups
 * import and catalog workflows
 * RAW compatibility improvements
 * separate Lensfun updates
@@ -59,9 +62,11 @@ This version has been modified substantially, especially in the following areas:
 * local photo processing
 * stability and performance improvements
 
-Development and maintenance of these modifications have been made by ChatGPT. I dislike that i had to use ChatGPT but i did not have the knowledge or expetice to do this myself. The changes i did from the original projekt is vibecoded, i hate that.
+Development and maintenance of these modifications have been made by ChatGPT. I dislike that i had to use ChatGPT but i did not have the knowledge or expetice to do this myself. The changes i did from the original projekt is vibecoded, i hate that. But i decided the direction and scope of the projekt. 
 
 I would have prefered to use someone else not vibecoded projekt or purchase one instead.
+
+See the upstream repository for the original project, its contributors, and its complete historical development record.
 
 ## The Idea
 
@@ -117,13 +122,13 @@ See [System Requirements](#system-requirements) for supported desktop platforms.
 
 ## System Requirements
 
+Editing requires a supported native GPU and a current graphics driver.
+
 | Platform | Requirements | Graphics backend |
 | --- | --- | --- |
 | Windows | Windows 10 22H2 or Windows 11, 64-bit; Microsoft Edge WebView2 runtime | Vulkan |
 | macOS | macOS 13 Ventura or newer; Metal-capable GPU | Vulkan through bundled MoltenVK |
 | Linux | Modern 64-bit distribution with Wayland, Vulkan drivers, GTK 3 and WebKitGTK 4.1 | Vulkan |
-
-If it's not listed above, it might work anyways. There is no code that specifically stops it working artificially.
 
 ## Maintainer Documentation
 
@@ -135,60 +140,52 @@ for contributor workflow and documentation responsibilities,
 
 ## Compiling
 
-You'll need to have [Rust](https://www.rust-lang.org/tools/install) and [Node.js](https://nodejs.org/) installed.
+Install [Rust 1.98 or newer](https://www.rust-lang.org/tools/install), [Node.js 24 LTS](https://nodejs.org/), Git and CMake.
 
-### MacOS
+### Windows
 
-Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/).
+Install the C++ Build Tools and WebView2 runtime. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#windows)
+
+### macOS
+
+Install [Homebrew](https://brew.sh/) and the Xcode Command Line Tools. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#macos)
 
 ```bash
-# Install molten-vk
-brew install molten-vk
-
-# Install Perl
-brew install perl
+xcode-select --install
+brew install molten-vk perl
 ```
 
 ### Linux
 
-Read the [Taure prerequsites](https://v2.tauri.app/start/prerequisites/) for your distribution. 
+Install the system packages for your distribution. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
+
+Install Perl on Debian or Ubuntu.
 
 ```bash
-# Install Perl (Debian / Ubuntu)
 sudo apt install perl
 ```
 
-### For all OS
+### All platforms
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/arvid-storck/SlowRAW.git
 cd SlowRAW
-
-# 2. Install frontend dependencies
-npm install
-
-# 3. Build and run the application
+npm ci
 npm start
 ```
 
-To build the release build:
+Build a release package with `npm run tauri build`. Find the packages in
+`src-tauri/target/release/bundle/`.
 
-```bash
-# 1. Make the release build
-npm run tauri build
-
-# 2. Run the release build
-./src-tauri/target/release/SlowRAW
-```
-
-### Windows alternative for portable build
+### Windows portable build
 
 ```powershell
-./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
 ```
 
 ## Developer tools
+
+See [CODEMAP](docs/CODEMAP.md#development-commands) for the full command list.
 
 ### Clean up tool
 
@@ -204,13 +201,8 @@ npm run clean:deep
 
 ### Updating the RAW decoder
 
-```powershell
-npm run update:rawler
-```
-
-This updates the upstream Rawler revision in src-tauri/Cargo.lock. Keep the
-lockfile and rebuild the application. Rawler API changes may require adapting
-raw_processing.rs and exif_processing.rs. RAW support is linked into the app.
+The first build downloads the pinned Rawler revision and applies the Nikon
+HE/HE* patch. See [Rawler update instructions](src-tauri/rawler/UPSTREAM.md).
 
 ### RAW Format Issues
 
@@ -235,5 +227,7 @@ This project is based on and builds upon the following open-source projects:
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
 See the [LICENSE](LICENSE) file for the complete license text.
+
+This repository is based on RapidRAW by CyberTimon and contains substantial modifications.
 
 If there is any issues with a lack of license or its done wrong, please send a message and i will correct it.

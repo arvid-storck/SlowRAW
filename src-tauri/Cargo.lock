@@ -41,6 +41,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rgb",
+ "roxmltree",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4597,29 +4598,35 @@ dependencies = [
 [[package]]
 name = "rawler"
 version = "0.8.0"
-source = "git+https://github.com/dnglab/dnglab.git#ae01bcb2d0f8a74f9dfbb9f7b5c7e315c8e668b7"
 dependencies = [
  "backtrace",
  "bitstream-io",
+ "blake3",
  "byteorder",
  "chrono",
+ "dirs",
  "enumn",
  "glob",
+ "half",
  "hex",
  "image",
  "itertools",
  "jxl-oxide",
  "lazy_static",
  "libflate",
+ "libloading 0.8.9",
  "log",
  "md5",
  "memmap2",
+ "moxcms",
  "multiversion",
  "num",
  "num_enum",
  "rayon",
- "rustc_version",
  "serde",
+ "serde_arrays",
+ "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "toml 0.8.2",
  "uuid",
@@ -4826,6 +4833,15 @@ name = "rle-decode-fast"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3582f63211428f83597b51b2ddb88e2a91a9d52d12831f9d08f5e624e8977422"
+
+[[package]]
+name = "roxmltree"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9da7f59328b09405b181fee1018925fad50f157afb43c0c0f5c522c256dd5907"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "rsqlite-vfs"
@@ -5165,6 +5181,15 @@ dependencies = [
  "serde",
  "serde_core",
  "typeid",
+]
+
+[[package]]
+name = "serde_arrays"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94a16b99c5ea4fe3daccd14853ad260ec00ea043b2708d1fd1da3106dcd8d9df"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

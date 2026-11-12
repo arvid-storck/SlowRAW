@@ -49,23 +49,60 @@ export function updateSmartGroup(tree: AlbumItem[], id: string, name: string, fi
   });
 }
 
-export const CATALOG_PAGE_SIZE = 500;
+const BATCH_SIZE = 166;
+const WINDOW_SIZE = BATCH_SIZE * 3;
 let requestId = 0;
+let pendingOffset: number | undefined;
+let focusIndex = 0;
+let windowRevision: number | undefined;
 
-export async function loadCatalogPage() {
-  const id = ++requestId;
+export function resetCatalogWindow() {
+  ++requestId;
+  pendingOffset = undefined;
+  focusIndex = 0;
+  windowRevision = undefined;
+  useLibraryStore.getState().setLibrary({
+    imageList: [],
+    catalogTotal: 0,
+    catalogOffset: 0,
+    libraryScrollTop: 0,
+    isViewLoading: true,
+    multiSelectedPaths: [],
+    libraryActivePath: null,
+    selectionAnchorPath: null,
+  });
+}
+
+export async function loadCatalogWindow(index = focusIndex, refresh = false) {
   const state = useLibraryStore.getState();
-  if (!state.isCatalogMode) return;
+  if (!state.isCatalogMode || !state.catalogStatus) return;
+  focusIndex = index;
+  const lastBatch = Math.max(0, Math.ceil(state.catalogTotal / BATCH_SIZE) - 1);
+  const batch = Math.floor(index / BATCH_SIZE);
+  const offset = Math.max(0, Math.min(batch - 1, lastBatch - 2)) * BATCH_SIZE;
+  if (!refresh) {
+    if (pendingOffset === offset) return;
+    if (windowRevision === state.catalogRevision && state.imageList.length && state.catalogOffset === offset) {
+      if (pendingOffset !== undefined) {
+        ++requestId;
+        pendingOffset = undefined;
+        state.setLibrary({ isViewLoading: false });
+      }
+      return;
+    }
+  }
+  const id = ++requestId;
+  pendingOffset = offset;
   state.setLibrary({ isViewLoading: true });
   try {
     const { images: rows, total } = await invoke<{ images: ImageFile[]; total: number }>(Invokes.CatalogQueryPage, {
       filter: {
         ...state.catalogFilter,
         date: state.catalogDateFilter,
-        limit: CATALOG_PAGE_SIZE,
+        limit: WINDOW_SIZE,
         sortKey: state.sortCriteria.key,
         sortDescending: state.sortCriteria.order === 'desc',
-        offset: state.catalogPage * CATALOG_PAGE_SIZE,
+        offset,
       },
     });
     const latest = useLibraryStore.getState();
@@ -73,24 +110,26 @@ export async function loadCatalogPage() {
       id !== requestId ||
       !latest.isCatalogMode ||
       latest.catalogFilter !== state.catalogFilter ||
-      latest.catalogPage !== state.catalogPage ||
+      latest.catalogRevision !== state.catalogRevision ||
+      latest.activeAlbumId !== state.activeAlbumId ||
       latest.catalogDateFilter !== state.catalogDateFilter ||
       latest.sortCriteria !== state.sortCriteria
     )
       return;
-    const lastPage = Math.max(0, Math.ceil(total / CATALOG_PAGE_SIZE) - 1);
-    if (state.catalogPage > lastPage) {
-      state.setLibrary({ catalogPage: lastPage });
+    if (offset > 0 && offset >= total) {
+      state.setLibrary({ catalogTotal: total });
+      await loadCatalogWindow(Math.max(0, total - 1), true);
       return;
     }
-    const files = rows.slice(0, CATALOG_PAGE_SIZE).map(withPendingImageFlag);
+    const files = rows.map(withPendingImageFlag);
     const visible = new Set(files.map((file) => file.path));
+    const contains = (path: string | null) => path !== null && visible.has(path);
     const edited = useEditorStore.getState().selectedImage?.path;
     if (edited) visible.add(edited);
     const imageRatings = Object.fromEntries(files.map((file) => [file.path, file.rating ?? 0]));
     const imageFlags = Object.fromEntries(files.map((file) => [file.path, getImageFlag(file.tags)]));
     if (edited && !(edited in imageFlags)) imageFlags[edited] = latest.imageFlags[edited] ?? null;
-    // A rating change can remove the open image from the filtered page. Keep its
+    // A rating change can remove the open image from the filtered window. Keep its
     // optimistic rating until the editor is closed instead of displaying 0 stars.
     if (edited && !(edited in imageRatings)) {
       imageRatings[edited] = latest.imageRatings[edited] ?? 0;
@@ -101,18 +140,25 @@ export async function loadCatalogPage() {
         Object.entries(process.mediumThumbnails).filter(([path]) => visible.has(path)),
       ),
     }));
+    windowRevision = latest.catalogRevision;
     state.setLibrary({
       imageList: files,
       imageRatings,
       imageFlags,
-      catalogHasMore: (state.catalogPage + 1) * CATALOG_PAGE_SIZE < total,
+      catalogOffset: offset,
       catalogTotal: total,
-      multiSelectedPaths: [],
-      libraryActivePath: null,
+      multiSelectedPaths: latest.multiSelectedPaths.filter((path) => visible.has(path)),
+      libraryActivePath: contains(latest.libraryActivePath) ? latest.libraryActivePath : null,
+      selectionAnchorPath: contains(latest.selectionAnchorPath) ? latest.selectionAnchorPath : null,
       currentFolderPath: state.activeAlbumId ? state.currentFolderPath : 'Catalog',
     });
+  } catch (error) {
+    if (id === requestId) throw error;
   } finally {
-    if (id === requestId) state.setLibrary({ isViewLoading: false });
+    if (id === requestId) {
+      pendingOffset = undefined;
+      if (useLibraryStore.getState().isCatalogMode) state.setLibrary({ isViewLoading: false });
+    }
   }
 }
 
@@ -127,7 +173,6 @@ export async function refreshCatalog() {
 }
 
 export function showAllCatalog() {
-  ++requestId;
   useLibraryStore.getState().setLibrary({
     isCatalogMode: true,
     currentFolderPath: 'Catalog',
@@ -135,10 +180,10 @@ export function showAllCatalog() {
     editingSmartGroupId: null,
     catalogFilter: { ...EMPTY_CATALOG_FILTER },
     catalogDateFilter: '',
-    catalogPage: 0,
     multiSelectedPaths: [],
     libraryActivePath: null,
   });
+  resetCatalogWindow();
 }
 
 export async function addCatalogFolder() {
@@ -159,10 +204,13 @@ export async function addCatalogFolder() {
 
 export async function initializeCatalog() {
   let status = await invoke<CatalogStatus>(Invokes.CatalogStatus);
-  if (!status.folders.length && useSettingsStore.getState().appSettings?.catalogFolders?.length) {
-    status = await invoke<CatalogStatus>(Invokes.CatalogRebuild);
+  try {
+    if (!status.folders.length && useSettingsStore.getState().appSettings?.catalogFolders?.length) {
+      status = await invoke<CatalogStatus>(Invokes.CatalogRebuild);
+    }
+  } finally {
+    const albumTree = await invoke<AlbumItem[]>(Invokes.GetAlbums);
+    useLibraryStore.getState().setLibrary({ catalogStatus: status, albumTree });
+    await refreshCatalog();
   }
-  const albumTree = await invoke<AlbumItem[]>(Invokes.GetAlbums);
-  useLibraryStore.getState().setLibrary({ catalogStatus: status, albumTree });
-  await refreshCatalog();
 }

@@ -67,7 +67,7 @@ export default function LibraryView({
     currentFolderPath,
     libraryActivePath,
     multiSelectedPaths,
-    imageList,
+    catalogTotal,
     imageRatings,
     isCatalogMode,
     isViewLoading,
@@ -77,7 +77,7 @@ export default function LibraryView({
       currentFolderPath: state.currentFolderPath,
       libraryActivePath: state.libraryActivePath,
       multiSelectedPaths: state.multiSelectedPaths,
-      imageList: state.imageList,
+      catalogTotal: state.catalogTotal,
       imageRatings: state.imageRatings,
       isCatalogMode: state.isCatalogMode,
       isViewLoading: state.isViewLoading,
@@ -149,7 +149,7 @@ export default function LibraryView({
             onReset={() => handleResetAdjustments()}
             rating={imageRatings[libraryActivePath || ''] || 0}
             thumbnailAspectRatio={thumbnailAspectRatio}
-            totalImages={imageList.length}
+            totalImages={isCatalogMode ? catalogTotal : sortedImageList.length}
           />
         )}
       </div>

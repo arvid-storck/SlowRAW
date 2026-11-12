@@ -11,7 +11,6 @@ import { COPYABLE_ADJUSTMENT_KEYS } from '../utils/adjustments';
 import {
   FilterCriteria,
   Invokes,
-  LibraryViewMode,
   RawStatus,
   EditedStatus,
   Theme,
@@ -26,8 +25,6 @@ interface UseAppInitializationProps {
   setThumbnailSize: (size: ThumbnailSize) => void;
   thumbnailAspectRatio: ThumbnailAspectRatio;
   setThumbnailAspectRatio: (ratio: ThumbnailAspectRatio) => void;
-  libraryViewMode: LibraryViewMode;
-  setLibraryViewMode: (mode: LibraryViewMode) => void;
 }
 
 const getDefaultLanguage = (i18nInstance: any): string => {
@@ -52,8 +49,6 @@ export const useAppInitialization = ({
   setThumbnailSize,
   thumbnailAspectRatio,
   setThumbnailAspectRatio,
-  libraryViewMode,
-  setLibraryViewMode,
 }: UseAppInitializationProps) => {
   const isInitialMount = useRef(true);
   const { i18n } = useTranslation();
@@ -119,7 +114,6 @@ export const useAppInitialization = ({
   );
 
   const defaultThumbnailSize = ThumbnailSize.Medium;
-  const defaultLibraryViewMode = LibraryViewMode.Flat;
 
   useEffect(() => {
     initPlatform();
@@ -200,7 +194,6 @@ export const useAppInitialization = ({
         if (settings?.activeWaveformChannel) setEditor({ activeWaveformChannel: settings.activeWaveformChannel });
         if (typeof settings?.waveformHeight === 'number') setEditor({ waveformHeight: settings.waveformHeight });
 
-        setLibraryViewMode(settings?.libraryViewMode ?? defaultLibraryViewMode);
         setThumbnailSize(settings?.thumbnailSize ?? defaultThumbnailSize);
         if (settings?.thumbnailAspectRatio) {
           setThumbnailAspectRatio(
@@ -233,7 +226,6 @@ export const useAppInitialization = ({
           lastRootPath: null,
           theme: DEFAULT_THEME_ID as Theme,
           thumbnailSize: defaultThumbnailSize,
-          libraryViewMode: defaultLibraryViewMode,
         });
       })
       .finally(() => {
@@ -243,14 +235,12 @@ export const useAppInitialization = ({
     setAppSettings,
     setTheme,
     setUI,
-    defaultLibraryViewMode,
     defaultThumbnailSize,
     setSortCriteria,
     setFilterCriteria,
     setEditor,
     setLibrary,
     preloadedDataRef,
-    setLibraryViewMode,
     setThumbnailSize,
     setThumbnailAspectRatio,
   ]);
@@ -290,13 +280,6 @@ export const useAppInitialization = ({
       handleSettingsChange({ ...appSettings, thumbnailAspectRatio });
     }
   }, [thumbnailAspectRatio, appSettings, handleSettingsChange]);
-
-  useEffect(() => {
-    if (isInitialMount.current || !appSettings) return;
-    if (appSettings.libraryViewMode !== libraryViewMode) {
-      handleSettingsChange({ ...appSettings, libraryViewMode });
-    }
-  }, [libraryViewMode, appSettings, handleSettingsChange]);
 
   useEffect(() => {
     if (isInitialMount.current || !appSettings) return;

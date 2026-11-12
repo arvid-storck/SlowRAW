@@ -56,6 +56,7 @@ mod white_balance;
 mod window_customizer;
 #[cfg(target_os = "windows")]
 mod windows_display;
+mod xmp;
 
 // Fail a release build if dependency features ever re-enable native log calls.
 #[cfg(not(debug_assertions))]
@@ -755,8 +756,7 @@ async fn save_hdr(
         .map_err(|e| format!("Failed to save hdr image: {}", e))?;
 
     let (real_path, _) = crate::file_management::parse_virtual_path(&first_path_str);
-    let _ =
-        crate::exif_processing::write_rrexif_sidecar(&real_path.to_string_lossy(), &output_path);
+    let _ = crate::exif_processing::copy_exif_to_xmp(&real_path.to_string_lossy(), &output_path);
 
     Ok(output_path.to_string_lossy().to_string())
 }
@@ -1447,7 +1447,8 @@ pub fn run() {
             file_management::reset_adjustments_for_paths,
             file_management::apply_auto_lens_correction_to_paths,
             file_management::apply_auto_adjustments_to_paths,
-            file_management::clear_all_sidecars,
+            catalog::catalog_build_thumbnail_cache,
+            file_management::delete_edit_sidecars,
             file_management::clear_thumbnail_cache,
             file_management::set_color_label_for_paths,
             file_management::set_rating_for_paths,

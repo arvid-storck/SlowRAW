@@ -8,11 +8,11 @@ use rusqlite::{
     Connection, OptionalExtension, ToSql, TransactionBehavior, params, params_from_iter,
 };
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
-use crate::app_settings::{load_settings, save_settings};
-use crate::exif_processing::{get_primary_sidecar_path, load_sidecar, read_exif_data};
+use crate::app_settings::{load_settings, update_catalog_folders};
+use crate::exif_processing::{get_primary_sidecar_path, read_exif_data};
 use crate::formats::{is_raw_file, is_supported_media_file, is_supported_video_file};
 
 const SCHEMA_VERSION: i64 = 2;
@@ -227,7 +227,8 @@ fn open_db_path(path: &Path) -> Result<Connection, String> {
              CREATE INDEX IF NOT EXISTS idx_catalog_images_rating ON catalog_images(rating);
              CREATE INDEX IF NOT EXISTS idx_catalog_images_color ON catalog_images(color);
              CREATE INDEX IF NOT EXISTS idx_catalog_images_modified ON catalog_images(modified);
-             CREATE INDEX IF NOT EXISTS idx_catalog_images_page ON catalog_images(date_taken DESC, modified DESC, path ASC);
+             CREATE INDEX IF NOT EXISTS idx_catalog_images_capture_path ON catalog_images(date_taken DESC, path ASC);
+             DROP INDEX IF EXISTS idx_catalog_images_page;
              CREATE INDEX IF NOT EXISTS idx_catalog_images_extension ON catalog_images(extension);
              CREATE INDEX IF NOT EXISTS idx_catalog_images_name ON catalog_images(filename COLLATE NOCASE, path);"
         )?;
@@ -311,12 +312,23 @@ fn normalized_capture_date(value: &str) -> Option<String> {
     }
 }
 
-fn index_folder(
-    conn: &mut Connection,
-    folder: &Path,
-    enable_xmp_sync: bool,
-    force_metadata: bool,
-) -> Result<u64, String> {
+fn sidecar_stamp(source: &Path, edits: &Path) -> i64 {
+    let stamp = |path: &Path| {
+        fs::metadata(path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |time| time.as_nanos() as i64)
+    };
+    stamp(edits).wrapping_add(
+        crate::xmp::existing_path(source, edits)
+            .as_deref()
+            .map_or(0, stamp)
+            .rotate_left(7),
+    )
+}
+
+fn index_folder(conn: &mut Connection, folder: &Path, force_metadata: bool) -> Result<u64, String> {
     if !folder.is_dir() {
         return Err(format!(
             "Catalog folder does not exist: {}",
@@ -334,8 +346,15 @@ fn index_folder(
     let mut seen = HashSet::new();
     let mut candidates = Vec::with_capacity(INDEX_BATCH_SIZE);
     let mut indexed = 0u64;
+    let mut walk_errors = Vec::new();
     for entry in WalkDir::new(folder).follow_links(false).into_iter() {
-        let entry = entry.map_err(|e| e.to_string())?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                walk_errors.push(error.to_string());
+                continue;
+            }
+        };
         let path = entry.path();
         if !entry.file_type().is_file() || !is_supported_media_file(path) {
             continue;
@@ -348,19 +367,7 @@ fn index_folder(
         };
         let modified = file_meta.modified().map(unix_seconds).unwrap_or(0);
         let sidecar = get_primary_sidecar_path(path);
-        let xmp_path = crate::file_management::resolve_xmp_path(path);
-        let sidecar_modified = fs::metadata(&sidecar)
-            .and_then(|m| m.modified())
-            .map(unix_seconds)
-            .unwrap_or(0)
-            .max(
-                xmp_path
-                    .as_ref()
-                    .and_then(|xmp| fs::metadata(xmp).ok())
-                    .and_then(|m| m.modified().ok())
-                    .map(unix_seconds)
-                    .unwrap_or(0),
-            );
+        let sidecar_modified = sidecar_stamp(path, &sidecar);
         let existing: Option<(i64, i64)> = conn
             .query_row(
                 "SELECT modified,sidecar_modified FROM catalog_images WHERE path=?1",
@@ -373,10 +380,7 @@ fn index_folder(
             continue;
         }
 
-        let mut sidecar_data = load_sidecar(&sidecar);
-        if enable_xmp_sync {
-            crate::file_management::sync_metadata_from_xmp(path, &mut sidecar_data);
-        }
+        let sidecar_data = crate::xmp::load_metadata(path, &sidecar);
         candidates.push(IndexCandidate {
             path: path.to_path_buf(),
             file_meta,
@@ -385,13 +389,16 @@ fn index_folder(
             sidecar_data,
         });
         if candidates.len() == INDEX_BATCH_SIZE {
-            let mut rows = prepare_catalog_rows(&mut candidates, &folder_text, force_metadata)?;
+            let mut rows = prepare_catalog_rows(&mut candidates, &folder_text)?;
             write_catalog_batch(conn, &mut rows, UPSERT_IMAGE)?;
         }
         indexed += 1;
     }
-    let mut rows = prepare_catalog_rows(&mut candidates, &folder_text, force_metadata)?;
+    let mut rows = prepare_catalog_rows(&mut candidates, &folder_text)?;
     write_catalog_batch(conn, &mut rows, UPSERT_IMAGE)?;
+    if !walk_errors.is_empty() {
+        return Err(walk_errors.join("\n"));
+    }
 
     let mut stale = conn
         .prepare("SELECT path FROM catalog_images WHERE folder_path=?1")
@@ -429,7 +436,6 @@ struct IndexCandidate {
 fn prepare_catalog_rows(
     candidates: &mut Vec<IndexCandidate>,
     folder_text: &str,
-    force_metadata: bool,
 ) -> Result<Vec<Vec<rusqlite::types::Value>>, String> {
     use rayon::prelude::*;
     static WORKERS: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
@@ -458,14 +464,12 @@ fn prepare_catalog_rows(
                 } = candidate;
                 let path = path.as_path();
                 let path_text = path.to_string_lossy().into_owned();
-                let sidecar = get_primary_sidecar_path(path);
-                let exif = if is_supported_video_file(path) {
+                let mut exif = if is_supported_video_file(path) {
                     HashMap::new()
-                } else if let Some(exif) = sidecar_data.exif.clone().filter(|_| !force_metadata) {
-                    exif
                 } else {
                     read_exif_data(&path_text, &[])
                 };
+                exif.extend(sidecar_data.exif.unwrap_or_default());
                 let tags = sidecar_data.tags.unwrap_or_default();
                 let color = tags
                     .iter()
@@ -523,7 +527,12 @@ fn prepare_catalog_rows(
                         .map_err(|e| e.to_string())?
                         .into(),
                     i64::from(is_raw_file(path)).into(),
-                    i64::from(sidecar.exists()).into(),
+                    i64::from(crate::image_processing::is_image_edited(
+                        &sidecar_data.adjustments,
+                        is_raw_file(&path),
+                        None,
+                    ))
+                    .into(),
                     unix_seconds(SystemTime::now()).into(),
                 ])
             })
@@ -596,6 +605,83 @@ pub fn catalog_status(app_handle: AppHandle) -> Result<CatalogStatus, String> {
 }
 
 #[tauri::command]
+pub async fn catalog_build_thumbnail_cache(app_handle: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app_handle)?;
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM catalog_images", [], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let mut query = conn
+            .prepare("SELECT path FROM catalog_images WHERE path > ? ORDER BY path LIMIT 64")
+            .map_err(|e| e.to_string())?;
+        let cache_dir = crate::file_management::get_thumb_cache_dir(&app_handle)?;
+        let settings = load_settings(app_handle.clone()).unwrap_or_default();
+        let state = app_handle.state::<crate::AppState>();
+        let gpu = crate::gpu_processing::get_or_init_gpu_context(&state, &app_handle).ok();
+        let mut after = String::new();
+        let mut current = 0;
+        let mut failed = 0;
+        let emit_progress = |current| {
+            let _ = app_handle.emit(
+                "thumbnail-cache-build-progress",
+                serde_json::json!({ "current": current, "total": total.max(current) }),
+            );
+        };
+        emit_progress(current);
+        loop {
+            let paths = query
+                .query_map([&after], |row| row.get::<_, String>(0))
+                .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
+                .map_err(|e| e.to_string())?;
+            if paths.is_empty() {
+                break;
+            }
+            for path in paths {
+                let source = Path::new(&path);
+                if !is_supported_video_file(source) {
+                    match crate::image_loader::load_cached_source(source, &settings, &state, None) {
+                        Ok((image, _)) => {
+                            crate::white_balance::as_shot_white_balance(&path);
+                            if crate::file_management::generate_single_thumbnail_and_cache(
+                                &path,
+                                &cache_dir,
+                                gpu.as_ref(),
+                                Some(image.as_ref()),
+                                false,
+                                &app_handle,
+                                &settings,
+                            )
+                            .is_none()
+                            {
+                                failed += 1;
+                            }
+                        }
+                        Err(error) => {
+                            log::warn!("Could not cache {path}: {error}");
+                            failed += 1;
+                        }
+                    }
+                }
+                after = path;
+                current += 1;
+                if current % 8 == 0 {
+                    emit_progress(current);
+                }
+            }
+        }
+        emit_progress(current);
+        if failed > 0 {
+            return Err(format!(
+                "Could not prepare the cache for {failed} catalog images."
+            ));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn catalog_add_folder(
     path: String,
     app_handle: AppHandle,
@@ -604,17 +690,12 @@ pub async fn catalog_add_folder(
     tauri::async_runtime::spawn_blocking(move || {
         let _scan = CATALOG_SCAN.lock().map_err(|e| e.to_string())?;
         let mut conn = open_db(&worker_app)?;
-        let mut settings = load_settings(worker_app.clone()).unwrap_or_default();
-        index_folder(
-            &mut conn,
-            Path::new(&path),
-            settings.enable_xmp_sync.unwrap_or(false),
-            false,
-        )?;
-        if !settings.catalog_folders.iter().any(|p| p == &path) {
-            settings.catalog_folders.push(path);
-        }
-        save_settings(settings, worker_app.clone())?;
+        index_folder(&mut conn, Path::new(&path), false)?;
+        update_catalog_folders(&worker_app, |folders| {
+            if !folders.contains(&path) {
+                folders.push(path);
+            }
+        })?;
         status_from(&conn, &worker_app)
     })
     .await
@@ -669,24 +750,15 @@ pub async fn catalog_import_paths_in_place(
                 already_exists += 1;
             }
         }
-        let mut settings = load_settings(worker_app.clone()).unwrap_or_default();
         for folder in scan_roots(folders) {
+            index_folder(&mut conn, &folder, false)?;
             let folder_text = folder.to_string_lossy().into_owned();
-            index_folder(
-                &mut conn,
-                &folder,
-                settings.enable_xmp_sync.unwrap_or(false),
-                false,
-            )?;
-            if !settings
-                .catalog_folders
-                .iter()
-                .any(|path| path == &folder_text)
-            {
-                settings.catalog_folders.push(folder_text);
-            }
+            update_catalog_folders(&worker_app, |folders| {
+                if !folders.contains(&folder_text) {
+                    folders.push(folder_text);
+                }
+            })?;
         }
-        save_settings(settings, worker_app.clone())?;
         Ok((status_from(&conn, &worker_app)?, already_exists))
     })
     .await
@@ -694,16 +766,28 @@ pub async fn catalog_import_paths_in_place(
 }
 
 #[tauri::command]
-pub fn catalog_remove_folder(path: String, app_handle: AppHandle) -> Result<CatalogStatus, String> {
-    let conn = open_db(&app_handle)?;
-    conn.execute("DELETE FROM catalog_images WHERE folder_path=?1", [&path])
-        .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM catalog_folders WHERE path=?1", [&path])
-        .map_err(|e| e.to_string())?;
-    let mut settings = load_settings(app_handle.clone()).unwrap_or_default();
-    settings.catalog_folders.retain(|p| p != &path);
-    save_settings(settings, app_handle.clone())?;
-    status_from(&conn, &app_handle)
+pub async fn catalog_remove_folder(
+    path: String,
+    app_handle: AppHandle,
+) -> Result<CatalogStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _scan = CATALOG_SCAN.lock().map_err(|e| e.to_string())?;
+        let mut conn = open_db(&app_handle)?;
+        let transaction = conn.transaction().map_err(|e| e.to_string())?;
+        transaction
+            .execute("DELETE FROM catalog_images WHERE folder_path=?1", [&path])
+            .map_err(|e| e.to_string())?;
+        transaction
+            .execute("DELETE FROM catalog_folders WHERE path=?1", [&path])
+            .map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        update_catalog_folders(&app_handle, |folders| {
+            folders.retain(|folder| folder != &path)
+        })?;
+        status_from(&conn, &app_handle)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -727,16 +811,20 @@ pub fn catalog_remove_images(
 }
 
 #[tauri::command]
-pub fn catalog_refresh_paths(paths: Vec<String>, app_handle: AppHandle) -> Result<u64, String> {
+pub fn catalog_refresh_paths(
+    paths: Vec<String>,
+    refresh_exif: Option<bool>,
+    app_handle: AppHandle,
+) -> Result<u64, String> {
     let mut conn = open_db(&app_handle)?;
     let mut pending = Vec::with_capacity(INDEX_BATCH_SIZE);
-    let sql = "UPDATE catalog_images SET rating=?1,color=?2,flag=?3,tags_json=?4,sidecar_modified=?5,is_edited=?6,indexed_at=?7 WHERE path=?8";
+    let sql = "UPDATE catalog_images SET rating=?1,color=?2,flag=?3,tags_json=?4,sidecar_modified=?5,is_edited=?6,indexed_at=?7,exif_json=COALESCE(?9,exif_json) WHERE path=?8";
     let mut updated = 0u64;
     for virtual_path in paths {
         let (path, _) = crate::file_management::parse_virtual_path(&virtual_path);
         let path_text = path.to_string_lossy().into_owned();
         let sidecar = get_primary_sidecar_path(&path);
-        let sidecar_data = load_sidecar(&sidecar);
+        let sidecar_data = crate::xmp::load_metadata(&path, &sidecar);
         let tags = sidecar_data.tags.unwrap_or_default();
         let color = tags
             .iter()
@@ -746,11 +834,18 @@ pub fn catalog_refresh_paths(paths: Vec<String>, app_handle: AppHandle) -> Resul
             .iter()
             .find_map(|tag| tag.strip_prefix("flag:"))
             .map(str::to_owned);
-        let sidecar_modified = fs::metadata(&sidecar)
-            .and_then(|m| m.modified())
-            .map(unix_seconds)
-            .unwrap_or(0);
+        let sidecar_modified = sidecar_stamp(&path, &sidecar);
         use rusqlite::types::Value;
+        let exif = if refresh_exif.unwrap_or(false) {
+            let mut exif = read_exif_data(&path_text, &[]);
+            exif.extend(sidecar_data.exif.unwrap_or_default());
+            let ordered: BTreeMap<_, _> = exif.into_iter().collect();
+            serde_json::to_string(&ordered)
+                .map_err(|error| error.to_string())?
+                .into()
+        } else {
+            Value::Null
+        };
         pending.push(vec![
             i64::from(sidecar_data.rating).into(),
             color.map(Value::from).unwrap_or(Value::Null),
@@ -759,9 +854,15 @@ pub fn catalog_refresh_paths(paths: Vec<String>, app_handle: AppHandle) -> Resul
                 .map_err(|e| e.to_string())?
                 .into(),
             sidecar_modified.into(),
-            i64::from(sidecar.exists()).into(),
+            i64::from(crate::image_processing::is_image_edited(
+                &sidecar_data.adjustments,
+                is_raw_file(&path),
+                None,
+            ))
+            .into(),
             unix_seconds(SystemTime::now()).into(),
             path_text.into(),
+            exif,
         ]);
         if pending.len() == INDEX_BATCH_SIZE {
             updated += write_catalog_batch(&mut conn, &mut pending, sql)?;
@@ -772,21 +873,23 @@ pub fn catalog_refresh_paths(paths: Vec<String>, app_handle: AppHandle) -> Resul
 }
 
 #[tauri::command]
-pub async fn catalog_rebuild(app_handle: AppHandle) -> Result<CatalogStatus, String> {
+pub async fn catalog_rebuild(
+    force_metadata: Option<bool>,
+    app_handle: AppHandle,
+) -> Result<CatalogStatus, String> {
     let worker_app = app_handle.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _scan = CATALOG_SCAN.lock().map_err(|e| e.to_string())?;
-        let folders = load_settings(worker_app.clone())
-            .unwrap_or_default()
-            .catalog_folders;
-        let enable_xmp_sync = load_settings(worker_app.clone())
-            .unwrap_or_default()
-            .enable_xmp_sync
-            .unwrap_or(false);
+        let folders = load_settings(worker_app.clone())?.catalog_folders;
         let mut conn = open_db(&worker_app)?;
+        let mut errors = Vec::new();
         for folder in scan_roots(folders.into_iter().map(PathBuf::from).collect()) {
-            index_folder(&mut conn, &folder, enable_xmp_sync, true)
-                .map_err(|e| format!("Catalog rescan failed for {}: {e}", folder.display()))?;
+            if let Err(error) = index_folder(&mut conn, &folder, force_metadata.unwrap_or(true)) {
+                errors.push(format!("{}: {error}", folder.display()));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(format!("Catalog rescan failed for:\n{}", errors.join("\n")));
         }
         status_from(&conn, &worker_app)
     })
@@ -920,6 +1023,14 @@ fn filtered_query(
         Some("edited") => "is_edited",
         Some("iso") => {
             "CAST(COALESCE(NULLIF(json_extract(exif_json, '$.ISO'), 65535), json_extract(exif_json, '$.PhotographicSensitivity'), json_extract(exif_json, '$.ISOSpeedRatings'), json_extract(exif_json, '$.RecommendedExposureIndex'), json_extract(exif_json, '$.StandardOutputSensitivity')) AS REAL)"
+        }
+        Some("shutter_speed") => {
+            "COALESCE(CASE WHEN instr(json_extract(exif_json, '$.ExposureTime'), '/') > 0
+                  THEN CAST(substr(json_extract(exif_json, '$.ExposureTime'), 1,
+                                   instr(json_extract(exif_json, '$.ExposureTime'), '/') - 1) AS REAL)
+                     / CAST(substr(json_extract(exif_json, '$.ExposureTime'),
+                                   instr(json_extract(exif_json, '$.ExposureTime'), '/') + 1) AS REAL)
+                  ELSE CAST(json_extract(exif_json, '$.ExposureTime') AS REAL) END, 0)"
         }
         Some("focal_length") => "CAST(focal_length AS REAL)",
         Some("aperture") => "CAST(json_extract(exif_json, '$.FNumber') AS REAL)",
@@ -1057,7 +1168,7 @@ mod tests {
                 .save(photos.join(format!("{width}.jpg")))
                 .unwrap();
         }
-        assert_eq!(index_folder(&mut conn, &photos, false, false).unwrap(), 24);
+        assert_eq!(index_folder(&mut conn, &photos, false).unwrap(), 24);
         for width in 12..36 {
             let path = photos.join(format!("{width}.jpg"));
             let json: String = conn
@@ -1072,7 +1183,7 @@ mod tests {
             assert_eq!(fields["ImageHeight"], "8");
         }
         let requests = crate::exiftool::request_count();
-        assert_eq!(index_folder(&mut conn, &photos, false, false).unwrap(), 0);
+        assert_eq!(index_folder(&mut conn, &photos, false).unwrap(), 0);
         assert_eq!(crate::exiftool::request_count(), requests);
     }
 
@@ -1104,7 +1215,7 @@ mod tests {
             }
             writes
         });
-        let imported = index_folder(&mut conn, &photos, false, false);
+        let imported = index_folder(&mut conn, &photos, false);
         stop.store(true, Ordering::Relaxed);
         assert!(writer.join().unwrap() > 0);
         assert_eq!(imported.unwrap(), 60_000);
@@ -1114,9 +1225,9 @@ mod tests {
                 .unwrap(),
             60_000
         );
-        assert_eq!(index_folder(&mut conn, &photos, false, false).unwrap(), 0);
+        assert_eq!(index_folder(&mut conn, &photos, false).unwrap(), 0);
         fs::remove_file(photos.join("00000.mp4")).unwrap();
-        index_folder(&mut conn, &photos, false, true).unwrap();
+        index_folder(&mut conn, &photos, true).unwrap();
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM catalog_images", [], |r| r
                 .get::<_, i64>(0))
@@ -1168,6 +1279,34 @@ mod tests {
             ["a", "b"]
         );
     }
+    #[test]
+    fn shutter_speed_sorts_fractions_and_seconds() {
+        let conn = fixture();
+        for (path, exposure) in [("a", "1/50 s"), ("b", "0.5"), ("c", "1/200")] {
+            conn.execute(
+                "UPDATE catalog_images SET exif_json=json_object('ExposureTime', ?) WHERE path=?",
+                params![exposure, path],
+            )
+            .unwrap();
+        }
+        for (descending, expected) in [(false, ["d", "c", "a", "b"]), (true, ["b", "a", "c", "d"])]
+        {
+            let rows = query_from_connection(
+                &conn,
+                CatalogFilter {
+                    sort_key: Some("shutter_speed".into()),
+                    sort_descending: Some(descending),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                rows.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
     #[test]
     fn flags_filter_with_metadata_and_unflagged() {
         let conn = fixture();

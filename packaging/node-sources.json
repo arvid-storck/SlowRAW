@@ -244,27 +244,6 @@
     },
     {
         "type": "file",
-        "url": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.25.9.tgz",
-        "sha512": "e56348d4368cb7143bb7b07ac5ae7bd97317a4701a23ff479e193c95cc45e3354de31b2d5204e5bee183a2b060b8a12764eef4ab011c2e97e27cc2e8c623ea1d",
-        "dest-filename": "48d4368cb7143bb7b07ac5ae7bd97317a4701a23ff479e193c95cc45e3354de31b2d5204e5bee183a2b060b8a12764eef4ab011c2e97e27cc2e8c623ea1d",
-        "dest": "flatpak-node/npm-cache/_cacache/content-v2/sha512/e5/63"
-    },
-    {
-        "type": "file",
-        "url": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.25.9.tgz",
-        "sha512": "203add7529a94afe757ed5ac94932f977436653f7c7d448bdbfae5517b95a915c70ace44505d7f7fe8db8c5e7e346f547df503302893ca1f2279ceeef119532e",
-        "dest-filename": "dd7529a94afe757ed5ac94932f977436653f7c7d448bdbfae5517b95a915c70ace44505d7f7fe8db8c5e7e346f547df503302893ca1f2279ceeef119532e",
-        "dest": "flatpak-node/npm-cache/_cacache/content-v2/sha512/20/3a"
-    },
-    {
-        "type": "file",
-        "url": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.25.9.tgz",
-        "sha512": "23ce7788c67585665d3659615592a6df87f8c04adde25332795ec12f3104c46108658b0ecea0d60dffb2d3cda2cd8504f20b499d81dd783a4dffab54770bdf8b",
-        "dest-filename": "7788c67585665d3659615592a6df87f8c04adde25332795ec12f3104c46108658b0ecea0d60dffb2d3cda2cd8504f20b499d81dd783a4dffab54770bdf8b",
-        "dest": "flatpak-node/npm-cache/_cacache/content-v2/sha512/23/ce"
-    },
-    {
-        "type": "file",
         "url": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.9.tgz",
         "sha512": "5c8a480cc0233842e2ffd3c1df4bc46d532cdc6575bf6ce490f9eec9145445b86a8f2cc820dc23fa76d00138781fd1b15201f5905b04c90331c222c52944ba46",
         "dest-filename": "480cc0233842e2ffd3c1df4bc46d532cdc6575bf6ce490f9eec9145445b86a8f2cc820dc23fa76d00138781fd1b15201f5905b04c90331c222c52944ba46",
@@ -584,20 +563,6 @@
         "sha512": "f9dd05e0c28c09b795509c06f7ab90e12800ce764d4aaf7723757ef4d1c0e0ea6fa86f26442a4674a98af25fdd974da1d820831f05b616a8a59d3c837009ea8c",
         "dest-filename": "05e0c28c09b795509c06f7ab90e12800ce764d4aaf7723757ef4d1c0e0ea6fa86f26442a4674a98af25fdd974da1d820831f05b616a8a59d3c837009ea8c",
         "dest": "flatpak-node/npm-cache/_cacache/content-v2/sha512/f9/dd"
-    },
-    {
-        "type": "file",
-        "url": "https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.50.0.tgz",
-        "sha512": "955829790cb2e1f58de5061e6ed5b86ee4ffe249f8a78209fa40cd078b98353e5bf1cf032c90e0ead8ad836d0d220ec4f115b075664e456eaf5057eb2f21b729",
-        "dest-filename": "29790cb2e1f58de5061e6ed5b86ee4ffe249f8a78209fa40cd078b98353e5bf1cf032c90e0ead8ad836d0d220ec4f115b075664e456eaf5057eb2f21b729",
-        "dest": "flatpak-node/npm-cache/_cacache/content-v2/sha512/95/58"
-    },
-    {
-        "type": "file",
-        "url": "https://registry.npmjs.org/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.50.0.tgz",
-        "sha512": "d8eef7751e0373d6e9fb049886f88feac0f38aeac1e7f1c2ca6ef120b2a27d6744f54b0e7b616d35c33e238c598caadf2c99eae5447c93dae207cee06ae890b7",
-        "dest-filename": "f7751e0373d6e9fb049886f88feac0f38aeac1e7f1c2ca6ef120b2a27d6744f54b0e7b616d35c33e238c598caadf2c99eae5447c93dae207cee06ae890b7",
-        "dest": "flatpak-node/npm-cache/_cacache/content-v2/sha512/d8/ee"
     },
     {
         "type": "file",
@@ -3275,12 +3240,6 @@
     },
     {
         "type": "inline",
-        "contents": "3200c6f1b02500c71e25f71e0860dbcc21d409c1\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.50.0.tgz\", \"integrity\": \"sha512-lVgpeQyy4fWN5QYebtW4buT/4kn4p4IJ+kDNB4uYNT5b8c8DLJDg6titg20NIg7E8RWwdWZORW6vUFfrLyG3KQ==\", \"time\": 0, \"size\": 743182, \"metadata\": {\"url\": \"https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.50.0.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
-        "dest-filename": "9ee6207bcd485ae3164c564e6685d78d6bb21c2ff33689d039b6a4af4e3b",
-        "dest": "flatpak-node/npm-cache/_cacache/index-v5/58/e5"
-    },
-    {
-        "type": "inline",
         "contents": "34f479c2fa6fdf9826d80d2d4a40fd556e3c0902\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/prop-types/-/prop-types-15.8.1.tgz\", \"integrity\": \"sha512-oj87CgZICdulUohogVAR7AjlC0327U4el4L6eAvOqCeudMDVU0NThNaV+b9Df4dXgSP1gXMTnPdhfe/2qDH5cg==\", \"time\": 0, \"size\": 22651, \"metadata\": {\"url\": \"https://registry.npmjs.org/prop-types/-/prop-types-15.8.1.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
         "dest-filename": "3502bfdeb6c8f1a33e096a8d8c91590b5b4b7af85d52ce646105b97d74d5",
         "dest": "flatpak-node/npm-cache/_cacache/index-v5/11/c3"
@@ -3338,12 +3297,6 @@
         "contents": "3bd50f68c4c557b92ad139d25c10db462f64d144\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/electron-to-chromium/-/electron-to-chromium-1.5.211.tgz\", \"integrity\": \"sha512-IGBvimJkotaLzFnwIVgW9/UD/AOJ2tByUmeOrtqBfACSbAw5b1G0XpvdaieKyc7ULmbwXVx+4e4Be8pOPBrYkw==\", \"time\": 0, \"size\": 30410, \"metadata\": {\"url\": \"https://registry.npmjs.org/electron-to-chromium/-/electron-to-chromium-1.5.211.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
         "dest-filename": "e944dbbc192f707b159c693b09fab3a0cc787c839b26a94fcceba9cb49ef",
         "dest": "flatpak-node/npm-cache/_cacache/index-v5/8c/4d"
-    },
-    {
-        "type": "inline",
-        "contents": "3ed7c0718842ae59673783a0eb937033351e76c6\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.50.0.tgz\", \"integrity\": \"sha512-2O73dR4Dc9bp+wSYhviP6sDziurB5/HCym7xILKifWdE9UsOe2FtNcM+I4xZjKrfLJnq5UR8k9riB87gauiQtw==\", \"time\": 0, \"size\": 789609, \"metadata\": {\"url\": \"https://registry.npmjs.org/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.50.0.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
-        "dest-filename": "cc45c43070fe172c3271523cec0d55a561d08e17aec34ea702483208a1da",
-        "dest": "flatpak-node/npm-cache/_cacache/index-v5/fa/92"
     },
     {
         "type": "inline",
@@ -4445,12 +4398,6 @@
     },
     {
         "type": "inline",
-        "contents": "af0b1cce7c8fdbf665cb47fd1948a7da173debc3\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.25.9.tgz\", \"integrity\": \"sha512-5WNI1DaMtxQ7t7B6xa572XMXpHAaI/9Hnhk8lcxF4zVN4xstUgTlvuGDorBguKEnZO70qwEcLpfifMLoxiPqHQ==\", \"time\": 0, \"size\": 3248814, \"metadata\": {\"url\": \"https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.25.9.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
-        "dest-filename": "4f720f65aed600c804d318e620192034c21a7ff8b5d327d5306b4ad60dc9",
-        "dest": "flatpak-node/npm-cache/_cacache/index-v5/05/55"
-    },
-    {
-        "type": "inline",
         "contents": "af7455c4495313aa9e845cac458efc0ae4b44703\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/@tauri-apps/cli-linux-arm-gnueabihf/-/cli-linux-arm-gnueabihf-2.8.3.tgz\", \"integrity\": \"sha512-9pri7KWES6x0M0DWCr5RIsGtXD4yy83Zsf8xuSmn8z6xboFquSnfJZmFsfPz25G8awLFIhxUkxP0YtZGiIUy7g==\", \"time\": 0, \"size\": 8636018, \"metadata\": {\"url\": \"https://registry.npmjs.org/@tauri-apps/cli-linux-arm-gnueabihf/-/cli-linux-arm-gnueabihf-2.8.3.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
         "dest-filename": "bff6973a7279245b1e7fdcaa72819b63b9468baab123cd210cfb442abe55",
         "dest": "flatpak-node/npm-cache/_cacache/index-v5/f5/f5"
@@ -4550,12 +4497,6 @@
         "contents": "ba90e37539a36b46920e00d2681d9ed495307be0\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/jackspeak/-/jackspeak-3.4.3.tgz\", \"integrity\": \"sha512-OGlZQpz2yfahA/Rd1Y8Cd9SIEsqvXkLVoSw/cgwhnhFMDbsQFeZYoJJ7bIZBS9BcamUW96asq/npPWugM+RQBw==\", \"time\": 0, \"size\": 61399, \"metadata\": {\"url\": \"https://registry.npmjs.org/jackspeak/-/jackspeak-3.4.3.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
         "dest-filename": "b31bac7729a131d89d24a4c7be131750bca42a48de465bfea2234034fbef",
         "dest": "flatpak-node/npm-cache/_cacache/index-v5/45/20"
-    },
-    {
-        "type": "inline",
-        "contents": "bb3da8a53683f221a0667b31457c432ad6a460cb\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.25.9.tgz\", \"integrity\": \"sha512-IDrddSmpSv51ftWslJMvl3Q2ZT98fUSL2/rlUXuVqRXHCs5EUF1/f+jbjF5+NG9UffUDMCiTyh8iec7u8RlTLg==\", \"time\": 0, \"size\": 4205341, \"metadata\": {\"url\": \"https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.25.9.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
-        "dest-filename": "eece6b25684d98cc1ad60edc71728ad2d0b75d99d0c8e9e1e3785aabc218",
-        "dest": "flatpak-node/npm-cache/_cacache/index-v5/7a/4b"
     },
     {
         "type": "inline",
@@ -4778,12 +4719,6 @@
         "contents": "d427ad28a679ac3953b0948801cea28622f821db\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/@clerk/types/-/types-4.86.0.tgz\", \"integrity\": \"sha512-YFaOYIAZWbpXehAmtgUB0YNf1v5b/hlwePvdqxlD5vdwrNsap28RpupWZat0hp1+PTtb9uAwSa5AFCOxkYLUJQ==\", \"time\": 0, \"size\": 133173, \"metadata\": {\"url\": \"https://registry.npmjs.org/@clerk/types/-/types-4.86.0.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
         "dest-filename": "17fa8fe3d30c13392ccc56367630c5b33b487e80054450616b0e5045ec92",
         "dest": "flatpak-node/npm-cache/_cacache/index-v5/93/61"
-    },
-    {
-        "type": "inline",
-        "contents": "d5584655e627c04852491adc7c330f69fd8862e6\t{\"key\": \"make-fetch-happen:request-cache:https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.25.9.tgz\", \"integrity\": \"sha512-I853iMZ1hWZdNllhVZKm34f4wErd4lMyeV7BLzEExGEIZYsOzqDWDf+y082izYUE8gtJnYHdeDpN/6tUdwvfiw==\", \"time\": 0, \"size\": 3248813, \"metadata\": {\"url\": \"https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.25.9.tgz\", \"reqHeaders\": {}, \"resHeaders\": {}}}",
-        "dest-filename": "d4427a7605b47b3bc9fc1b3efb0446d043bb99ae6fdb94303190cf08feb7",
-        "dest": "flatpak-node/npm-cache/_cacache/index-v5/96/85"
     },
     {
         "type": "inline",

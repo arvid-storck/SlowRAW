@@ -332,34 +332,30 @@ export default function SidePanelArea({
   const topHeight = useUIStore((s) => (side === 'left' ? s.leftTopHeight : s.rightTopHeight));
   const setUI = useUIStore((s) => s.setUI);
   const colContainerRef = useRef<HTMLDivElement>(null);
+  const verticalDrag = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null);
+
+  const startVerticalResize = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0 || !e.isPrimary) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      verticalDrag.current = { pointerId: e.pointerId, startY: e.clientY, startHeight: topHeight };
+    },
+    [topHeight],
+  );
 
   const handleVerticalResize = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const startY = e.clientY;
-      const startHeight = topHeight;
+      const drag = verticalDrag.current;
+      if (drag?.pointerId !== e.pointerId) return;
 
-      const doDrag = (moveEvent: PointerEvent) => {
-        const containerHeight = colContainerRef.current?.clientHeight || window.innerHeight;
-        const maxTopHeight = Math.max(250, containerHeight - 250);
-        const newHeight = Math.max(250, Math.min(maxTopHeight, startHeight + (moveEvent.clientY - startY)));
-
-        if (side === 'left') {
-          setUI({ leftTopHeight: newHeight });
-        } else {
-          setUI({ rightTopHeight: newHeight });
-        }
-      };
-
-      const stopDrag = () => {
-        window.removeEventListener('pointermove', doDrag);
-        window.removeEventListener('pointerup', stopDrag);
-      };
-      window.addEventListener('pointermove', doDrag);
-      window.addEventListener('pointerup', stopDrag);
+      const containerHeight = colContainerRef.current?.clientHeight || window.innerHeight;
+      const maxTopHeight = Math.max(250, containerHeight - 250);
+      const newHeight = Math.max(250, Math.min(maxTopHeight, drag.startHeight + (e.clientY - drag.startY)));
+      setUI(side === 'left' ? { leftTopHeight: newHeight } : { rightTopHeight: newHeight });
     },
-    [topHeight, side, setUI],
+    [side, setUI],
   );
 
   const handleVerticalResizeReset = useCallback(() => {
@@ -431,8 +427,12 @@ export default function SidePanelArea({
 
         {hasTop && hasBottom && (
           <div
-            className="shrink-0 h-2 cursor-row-resize z-20"
-            onPointerDown={handleVerticalResize}
+            className="shrink-0 h-2 cursor-row-resize touch-none z-20"
+            onPointerDown={startVerticalResize}
+            onPointerMove={handleVerticalResize}
+            onLostPointerCapture={(e) => {
+              if (verticalDrag.current?.pointerId === e.pointerId) verticalDrag.current = null;
+            }}
             onDoubleClick={handleVerticalResizeReset}
           />
         )}
