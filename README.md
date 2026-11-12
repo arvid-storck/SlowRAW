@@ -47,9 +47,6 @@ This project is based on RapidRAW v1.6.3 by CyberTimon (Timon Käch):
 
 https://github.com/CyberTimon/RapidRAW/tree/v1.6.3
 
-The original RapidRAW project provides the foundation for this version.
-Selected processing, healing and grain code is also adapted from [RapidRAW v1.6.9](https://github.com/CyberTimon/RapidRAW/tree/v1.6.9).
-
 This version has been modified substantially, especially in the following areas:
 
 * local SQLite catalog architecture
@@ -62,11 +59,9 @@ This version has been modified substantially, especially in the following areas:
 * local photo processing
 * stability and performance improvements
 
-Development and maintenance of these modifications have been made by ChatGPT. I dislike that i had to use ChatGPT but i did not have the knowledge or expetice to do this myself. The changes i did from the original projekt is vibecoded, i hate that. But i decided the direction and scope of the projekt. 
+Development and maintenance of these modifications have been made by ChatGPT. I dislike that i had to use ChatGPT but i did not have the knowledge or expetice to do this myself. The changes i did from the original projekt is vibecoded, i hate that.
 
 I would have prefered to use someone else not vibecoded projekt or purchase one instead.
-
-See the upstream repository for the original project, its contributors, and its complete historical development record.
 
 ## The Idea
 
@@ -122,13 +117,13 @@ See [System Requirements](#system-requirements) for supported desktop platforms.
 
 ## System Requirements
 
-Editing requires a supported native GPU and a current graphics driver.
-
 | Platform | Requirements | Graphics backend |
 | --- | --- | --- |
 | Windows | Windows 10 22H2 or Windows 11, 64-bit; Microsoft Edge WebView2 runtime | Vulkan |
 | macOS | macOS 13 Ventura or newer; Metal-capable GPU | Vulkan through bundled MoltenVK |
 | Linux | Modern 64-bit distribution with Wayland, Vulkan drivers, GTK 3 and WebKitGTK 4.1 | Vulkan |
+
+If it's not listed above, it might work anyways. There is no code that specifically stops it working artificially.
 
 ## Maintainer Documentation
 
@@ -140,11 +135,11 @@ for contributor workflow and documentation responsibilities,
 
 ## Compiling
 
-Install [Rust 1.98 or newer](https://www.rust-lang.org/tools/install), [Node.js 24 LTS](https://nodejs.org/), Git and CMake.
+Install [Rust](https://www.rust-lang.org/tools/install), [Node.js](https://nodejs.org/), CMake.
 
 ### Windows
 
-Install the C++ Build Tools and WebView2 runtime. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#windows)
+Install the C++ Build Tools (it's likley that you already have it installed). [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#windows)
 
 ### macOS
 
@@ -162,14 +157,16 @@ Install the system packages for your distribution. [Tauri prerequisites](https:/
 Install Perl on Debian or Ubuntu.
 
 ```bash
+# Depending on what linux distro
 sudo apt install perl
+sudo dnf install perl
+sudo pacman install perl
 ```
 
 ### All platforms
 
 ```bash
-git clone https://github.com/arvid-storck/SlowRAW.git
-cd SlowRAW
+# When at the root folder of the code
 npm ci
 npm start
 ```
@@ -227,7 +224,5 @@ This project is based on and builds upon the following open-source projects:
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
 See the [LICENSE](LICENSE) file for the complete license text.
-
-This repository is based on RapidRAW by CyberTimon and contains substantial modifications.
 
 If there is any issues with a lack of license or its done wrong, please send a message and i will correct it.
