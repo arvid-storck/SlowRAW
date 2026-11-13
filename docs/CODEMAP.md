@@ -1141,7 +1141,7 @@ git commit -m "Read docs/CHANGELOG"
 git push -u origin main
 ```
 
-### Dependency and distribution size
+### Dependency
 
 - Application file/process operations run in Rust. `tauri-plugin-fs` arrives transitively through
   the dialog plugin, whose filesystem scope integration is optional.
@@ -1155,12 +1155,3 @@ git push -u origin main
 - Release uses speed optimization, LTO and symbol stripping, with unwinding
   retained for panics.
 - Portable Windows packaging includes the EXE and application resources/licenses. It reports EXE, folder and ZIP sizes.
-
-`npm run clean` removes generated build caches. Export portable output before
-cleaning. Both cleanup modes also remove interrupted ExifTool staging directories.
-Use a fresh output directory for portable builds.
-`npm run clean:deep` also removes `node_modules`, downloaded ExifTool and generated MoltenVK notices. Both commands support `-- --dry-run` to preview cleanup targets.
-
-Package sizes depend on the toolchain, dependency versions and bundled resources.
-Use the portable script's size report for the build being distributed.
-Interactive UI and real-camera regression checks are separate from automated tests.
