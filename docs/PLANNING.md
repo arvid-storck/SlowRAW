@@ -1,7 +1,7 @@
 ### Bugs
 
 När automatic lens correction är på, när den är av så fixar det sig
-- Lens correctopn automatiskt satt på går aldrog från "Waiting for Auto-Detect" till "Lens profile not found" då ingen lins profil finns
+- Lens correctopn automatiskt satt på går aldrog från "Waiting for Auto-Detect" till "Lens profile not found" då ingen lins profil finns. Försvinner inte tills jag ändrar till "manual" manuellt
 - Texten från "Lens profile not found" uppdateras inte korrekt, måste manuellt uppdatera den
 - Den visar "No native gpu preview" fast det går men bara tar lite tid
 - Ibland så uppdaterar den inte preview (stannar på "Native GPU preview unavailable"), funkar dock så fort jag ändrar en enda inställning eller byter bild fram ock tillbacka
@@ -9,7 +9,7 @@ När automatic lens correction är på, när den är av så fixar det sig
 Annat
 - Varför används inte databasens info för att läsa in camera, lins, brännvidd, f värde?
 - Låt lins och kamera namnet ta flera rader om det behövs
-- På kameras nikon z6iii och 24-120mm f4 s så hittar inte den inbyggda lins profilen ibland men ibland hittas den. (Jag misstänker avrundings fel med nära 0 fel)
+- På kameras nikon z6iii och 24-120mm f4 s så hittar inte den inbyggda lins profilen ibland men ibland hittas den.
 
 #### Code review findings (2026-11-12)
 
