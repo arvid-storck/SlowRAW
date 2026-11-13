@@ -1016,18 +1016,6 @@ instance ownership to wgpu-hal. MoltenVK translates the common Vulkan shaders an
 commands to Metal. It is a platform runtime, not another application rendering path.
 The normal initialization and compute-only export/analysis retry use this factory.
 
-### Clean up tool
-
-```powershell
-npm run clean -- --dry-run
-npm run clean
-```
-
-```powershell
-npm run clean:deep -- --dry-run
-npm run clean:deep
-```
-
 ### Development commands
 
 Run these commands from the repository root. The npm scripts are defined in
@@ -1048,25 +1036,59 @@ Run these commands from the repository root. The npm scripts are defined in
 | `npm run update:rcd` | Update the pinned librtprocess revision. |
 | `npm run clean` / `npm run clean:deep` | Remove generated files. The deep clean also removes downloaded dependencies. Both accept `-- --dry-run`. |
 | `node scripts/test-<name>.mjs` | Run one of the regression scripts listed above. |
-| `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts` | Build a portable Windows ZIP. Use `-Target` to select the architecture. |
+| `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts` | Build a portable Windows ZIP. |
+
+### Clean up tool
 
 ```powershell
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets
-cargo check --locked --manifest-path src-tauri/Cargo.toml
-cargo test --locked --manifest-path src-tauri/Cargo.toml --workspace --lib -- --test-threads=1
-cargo build --locked --manifest-path src-tauri/Cargo.toml --bin SlowRAW
+npm run clean -- --dry-run
+npm run clean
+```
+
+```powershell
+npm run clean:deep -- --dry-run
+npm run clean:deep
 ```
 
 ### Updating packages
 
-Use `npm outdated` to find available npm updates and `npm update <package>`
-to update within the range in `package.json`. To change the range, use
-`npm install <package>@<version>`, adding `-D` for a dev dependency.
-For Rust, use `cargo update --manifest-path src-tauri/Cargo.toml -p <crate>`.
-Change the version requirement in `src-tauri/Cargo.toml` first if needed.
-Keep the corresponding lockfile with each update. When updating Tauri, check
-the matching npm packages, Rust crates and plugins together.
+### Updating common libraries
+
+Update one dependency or related group at a time, retain the lockfiles, rebuild
+and run the affected checks. Cargo update stays within Cargo.toml constraints;
+major-version upgrades also require reviewing the manifest and API changes.
+
+```powershell
+npm outdated
+npm update
+cargo update --manifest-path src-tauri/Cargo.toml -p image
+cargo update --manifest-path src-tauri/Cargo.toml -p moxcms
+cargo update --manifest-path src-tauri/Cargo.toml -p jxl-encoder -p jxl-oxide
+cargo update --manifest-path src-tauri/Cargo.toml -p webp
+```
+
+Review frontend/native dependencies together when upgrading Tauri. Lensfun
+profiles update separately through Settings and do not require a RAW rebuild.
+
+### Updating the RAW decoder
+
+This updates the upstream Rawler revision in src-tauri/Cargo.lock. Keep the
+lockfile and rebuild the application. Rawler API changes may require adapting
+raw_processing.rs and exif_processing.rs. RAW support is linked into the app.
+
+#### If the latest rawler does not support nikons HE and HE*
+
+```powershell
+npm run update:rawler
+```
+
+#### If the latest rawler support nikons HE and HE*
+
+```powershell
+npm run update:rawler:removepatch
+```
+
+REPLACE THIS TO ONE COMMAND THING, "update:rawler:removepatch" does not exist yet. Then remove src-tauri/rawler/UPSTREAM.md.
 
 - **Rawler.** Change the dnglab commit in `src-tauri/rawler/upstream-revision`,
   rebase `nikon-he.patch` and update `src-tauri/rawler/Cargo.toml` if the
@@ -1074,26 +1096,34 @@ the matching npm packages, Rust crates and plugins together.
   the sample command in the [Rawler update guide](../src-tauri/rawler/UPSTREAM.md).
   The guide also covers switching to the official Git dependency once it
   supports both modes.
-- **librtprocess.** Run `npm run update:rcd` to write the upstream HEAD to
-  `src-tauri/rcd/upstream-revision`. Rebuild and run the Rust workspace tests.
-  If the upstream API changes, update `src-tauri/rcd/bridge.cpp`.
-- **ExifTool.** Update `VERSION` and both archive SHA-256 values in
-  `scripts/update-exiftool.mjs`. Move the old staged copy out of
-  `src-tauri/resources/exiftool` before running `npm run update:exiftool`
-  to verify the new release.
-- **Lensfun profiles.** Update the database through Settings > Data Management.
 
-### Compiling the program
+### Update exiftool
 
-Install [Rust 1.98 or newer](https://www.rust-lang.org/tools/install), [Node.js 24 LTS](https://nodejs.org/), Git and CMake.
+```powershell
+npm run update:exiftool
+```
+
+### Updating the RCD library
+
+```powershell
+npm run update:rcd
+```
+
+This updates src-tauri/rcd/upstream-revision to upstream librtprocess HEAD.
+Keep the pinned revision; the next native build fetches and statically rebuilds
+it. API changes belong in rcd/bridge.cpp.
+
+## Compiling
+
+Install [Rust](https://www.rust-lang.org/tools/install), [Node.js](https://nodejs.org/), CMake, Tauri ([prerequisites](https://v2.tauri.app/start/prerequisites))
 
 ### Windows
 
-Install the C++ Build Tools and WebView2 runtime. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#windows)
+Install the C++ Build Tools (it's likley that you already have it installed).
 
 ### macOS
 
-Install [Homebrew](https://brew.sh/) and the Xcode Command Line Tools. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#macos)
+Install [Homebrew](https://brew.sh/) and the Xcode Command Line Tools.
 
 ```bash
 xcode-select --install
@@ -1102,19 +1132,21 @@ brew install molten-vk perl
 
 ### Linux
 
-Install the system packages for your distribution. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
+Install the system packages for your distribution.
 
 Install Perl on Debian or Ubuntu.
 
 ```bash
+# Depending on what linux distro
 sudo apt install perl
+sudo dnf install perl
+sudo pacman install perl
 ```
 
 ### All platforms
 
 ```bash
-git clone https://github.com/arvid-storck/SlowRAW.git
-cd SlowRAW
+# When at the root folder of the code
 npm ci
 npm start
 ```
@@ -1128,7 +1160,7 @@ Build a release package with `npm run tauri build`. Find the packages in
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
 ```
 
-## Push to github
+### Push to github
 
 ```powershell
 git init
