@@ -1,6 +1,12 @@
 ### Bugs
 
-
+- Lens correctopn automatiskt satt på går aldrog från "Waiting for Auto-Detect" till "Lens profile not found" då ingen lins profil finns
+- Texten från "Lens profile not found" uppdateras inte korrekt, måste manuellt uppdatera den
+- Den visar "No native gpu preview" fast det går men bara tar lite tid
+- På kameras nikon z6iii och 24-120mm f4 s så hittar inte den inbyggda lins profilen ibland men ibland hittas den. (Jag misstänker avrundings fel med nära 0 fel)
+- Ibland så uppdaterar den inte preview (stannar på "Native GPU preview unavailable"), funkar dock så fort jag ändrar en enda inställning eller byter bild fram ock tillbacka
+- Varför används inte databasens info för att läsa in camera, lins, brännvidd, f värde?
+- Låt lins och kamera namnet ta flera rader om det behövs
 
 #### Code review findings (2026-11-12)
 
@@ -80,3 +86,4 @@ Hard and/or risky
   - `src-tauri/src/file_management.rs` still has a generic fallback for
     platforms outside Windows, macOS and Linux in move-on-import. It is
     unreachable on the supported targets and can be reviewed for removal.
+- Vad är det som tar tid vin inläsningen av metadatan när jag först öppnas en bild?
