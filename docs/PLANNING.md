@@ -7,7 +7,7 @@ När automatic lens correction är på, när den är av så fixar det sig
 - Ibland så uppdaterar den inte preview (stannar på "Native GPU preview unavailable"), funkar dock så fort jag ändrar en enda inställning eller byter bild fram ock tillbacka
 
 Annat
-- Varför används inte databasens info för att läsa in camera, lins, brännvidd, f värde?
+- Varför används inte databasens info för att läsa in camera, lins, brännvidd, f värde? (lagra f värdet i databasen)
 - Låt lins och kamera namnet ta flera rader om det behövs
 - På kameras nikon z6iii och 24-120mm f4 s så hittar inte den inbyggda lins profilen ibland men ibland hittas den.
 
