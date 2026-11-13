@@ -60,6 +60,7 @@ Annat
 Easy
 
 - Fix compiling documantation
+- Ta bort build cache, den funkar inte
 
 Hard and/or risky
 
