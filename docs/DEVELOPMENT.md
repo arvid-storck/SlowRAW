@@ -29,6 +29,8 @@ Try to reuse existing functions and dont write several functions that do almost 
 
 If a problem can be solved with a well made external libary, concider using it, unless a custom solution is way esier and more efficent. Only use well regarded external libary that is proven to work and tested by time and/or other software and users.
 
+Do not add documantion anyware else other then in docs. Also only in the current files.
+
 ## Verification
 
 Use focused checks for changed behavior.
