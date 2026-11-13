@@ -10,26 +10,29 @@
 
 ## Contributor workflow
 
-Consider reading CODEMAP.md to learn the structure and file resonability.
+### Documents
 
-Remove obsolete code, dependencies and files when replacing an implementation,
-and check remaining references. 
+Respect the current document responsabilites, There should be no need for any other documents. Do not add any loose documents randomly in the code.
+
+Consider reading CODEMAP.md to learn the structure and file resonability.
 
 Keep the documents updated and relevant to the project. Especially CODEMAP if any of the files is changed/added/removed to keep it up to date.
 
 Keep compiling simple and understandable for the users, no need for details. This is for both README and CODEMAP.
 
-Dont add comments unless the function is completly unredable, but if the funktion is unredable, consider writing it in a more clearer way.
+### Code quality goals
 
-If a function does not work for one of the supported OS, DO NOT IMPLEMENT IT.
+Remove obsolete code, dependencies and files when replacing an implementation, and check remaining references.
 
-Make the implementation work for all supported OS with one path only if possible, try to not make a special version for one OS.
+Only implent a feature that works for all of the supported OS, if a feature does not work for all OS, DO NOT IMPLEMENT IT.
 
 Try to reuse existing functions and dont write several functions that do almost the same thing.
 
+Dont add comments unless the function is completly unredable, but if the funktion is unredable, consider writing it in a more clearer way.
+
 If a problem can be solved with a well made external libary, concider using it, unless a custom solution is way esier and more efficent. Only use well regarded external libary that is proven to work and tested by time and/or other software and users.
 
-Do not add documantion anyware else other then in docs. Also only in the current files.
+Make the implementation work for all supported OS with one path only if possible, try to not make a special version for one OS.
 
 ## Verification
 
