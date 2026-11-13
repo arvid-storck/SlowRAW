@@ -1050,8 +1050,6 @@ npm run clean:deep -- --dry-run
 npm run clean:deep
 ```
 
-### Updating packages
-
 ### Updating common libraries
 
 Update one dependency or related group at a time, retain the lockfiles, rebuild
@@ -1088,7 +1086,7 @@ npm run update:rawler
 npm run update:rawler:removepatch
 ```
 
-REPLACE THIS TO ONE COMMAND THING, "update:rawler:removepatch" does not exist yet. Then remove src-tauri/rawler/UPSTREAM.md.
+REPLACE THIS TO ONE COMMAND THING, "update:rawler:removepatch" does not exist yet. Then remove src-tauri/rawler/UPSTREAM.md. The text below is kept temporarely for refrence.
 
 - **Rawler.** Change the dnglab commit in `src-tauri/rawler/upstream-revision`,
   rebase `nikon-he.patch` and update `src-tauri/rawler/Cargo.toml` if the
