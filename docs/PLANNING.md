@@ -1,12 +1,15 @@
 ### Bugs
 
+När automatic lens correction är på, när den är av så fixar det sig
 - Lens correctopn automatiskt satt på går aldrog från "Waiting for Auto-Detect" till "Lens profile not found" då ingen lins profil finns
 - Texten från "Lens profile not found" uppdateras inte korrekt, måste manuellt uppdatera den
 - Den visar "No native gpu preview" fast det går men bara tar lite tid
-- På kameras nikon z6iii och 24-120mm f4 s så hittar inte den inbyggda lins profilen ibland men ibland hittas den. (Jag misstänker avrundings fel med nära 0 fel)
 - Ibland så uppdaterar den inte preview (stannar på "Native GPU preview unavailable"), funkar dock så fort jag ändrar en enda inställning eller byter bild fram ock tillbacka
+
+Annat
 - Varför används inte databasens info för att läsa in camera, lins, brännvidd, f värde?
 - Låt lins och kamera namnet ta flera rader om det behövs
+- På kameras nikon z6iii och 24-120mm f4 s så hittar inte den inbyggda lins profilen ibland men ibland hittas den. (Jag misstänker avrundings fel med nära 0 fel)
 
 #### Code review findings (2026-11-12)
 
@@ -42,15 +45,14 @@
   reads and parses `settings.json` and runs the migration checks. Profile
   cold and warm thumbnail batches before caching settings across jobs.
   See `start_thumbnail_workers` in `src-tauri/src/file_management.rs`.
-
-#### Follow-up review (2026-11-12)
-
 - **Export can scan the same source again for provenance.** After decoding,
   the required-metadata pass reopens the source and can scan the whole
   memory-mapped file for XML and provenance markers. Profile large RAW
   batches before consolidating this work with the metadata cache. Preserve
   AI provenance and the existing compressed-XMP fallbacks.
   See `required_xmp` in `src-tauri/src/export_metadata.rs`.
+
+
 
 
 ### Things to change
