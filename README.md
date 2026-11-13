@@ -219,7 +219,7 @@ This project is based on and builds upon the following open-source projects:
 * **[darktable](https://github.com/darktable-org/darktable):** Reference implementations for parts of the image-processing workflow.
 * **[vldk](https://github.com/hanatos/vkdt):** Refrence image to display method.
 
-## License & Philosophy
+## License
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
 
