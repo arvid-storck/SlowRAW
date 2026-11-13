@@ -135,15 +135,15 @@ for contributor workflow and documentation responsibilities,
 
 ## Compiling
 
-Install [Rust](https://www.rust-lang.org/tools/install), [Node.js](https://nodejs.org/), CMake.
+Install [Rust](https://www.rust-lang.org/tools/install), [Node.js](https://nodejs.org/), CMake, Tauri ([prerequisites](https://v2.tauri.app/start/prerequisites))
 
 ### Windows
 
-Install the C++ Build Tools (it's likley that you already have it installed). [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#windows)
+Install the C++ Build Tools (it's likley that you already have it installed).
 
 ### macOS
 
-Install [Homebrew](https://brew.sh/) and the Xcode Command Line Tools. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#macos)
+Install [Homebrew](https://brew.sh/) and the Xcode Command Line Tools.
 
 ```bash
 xcode-select --install
@@ -152,7 +152,7 @@ brew install molten-vk perl
 
 ### Linux
 
-Install the system packages for your distribution. [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
+Install the system packages for your distribution.
 
 Install Perl on Debian or Ubuntu.
 
