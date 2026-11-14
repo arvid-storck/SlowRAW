@@ -20,9 +20,11 @@ Keep the documents updated and relevant to the project. Especially CODEMAP if an
 
 Keep compiling simple and understandable for the users, no need for details. This is for both README and CODEMAP.
 
-### Code quality goals
+### Code style goals
 
 Remove obsolete code, dependencies and files when replacing an implementation, and check remaining references.
+
+Whenever possible, reduce the amount of code assuming its redundant.
 
 Only implent a feature that works for all of the supported OS, if a feature does not work for all OS, DO NOT IMPLEMENT IT.
 
