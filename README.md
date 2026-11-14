@@ -180,10 +180,6 @@ npm run tauri build
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
 ```
 
-## Developer tools
-
-See [CODEMAP](docs/CODEMAP.md#development-commands) for the full command list.
-
 ### Clean up tool
 
 ```powershell
@@ -195,17 +191,6 @@ npm run clean
 npm run clean:deep -- --dry-run
 npm run clean:deep
 ```
-
-### Updating the RAW decoder
-
-The first build downloads the pinned Rawler revision and applies the Nikon
-HE/HE* patch. See [Rawler update instructions](src-tauri/rawler/UPSTREAM.md).
-
-### RAW Format Issues
-
-If a camera RAW file is unsupported, first check whether it is supported by [dnglab / rawler](https://github.com/dnglab/dnglab/tree/main/rawler).
-
-If support does not exist there, the appropriate upstream RAW-decoder issue is the normal starting point.
 
 ## Special Thanks
 
