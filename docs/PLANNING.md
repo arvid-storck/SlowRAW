@@ -59,7 +59,6 @@ När automatic lens correction är på, när den är av så fixar det sig
 
 Easy
 
-- Fix compiling documantation
 - Ta bort build cache, den funkar inte
 
 Hard and/or risky
