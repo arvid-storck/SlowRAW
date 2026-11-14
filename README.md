@@ -169,10 +169,10 @@ sudo pacman install perl
 # When at the root folder of the code
 npm ci
 npm start
-```
 
-Build a release package with `npm run tauri build`. Find the packages in
-`src-tauri/target/release/bundle/`.
+# Release build (you will find the package in `src-tauri/target/release/bundle/`)
+npm run tauri build
+```
 
 ### Windows portable build
 
