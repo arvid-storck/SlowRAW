@@ -6,7 +6,6 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use image::{DynamicImage, GrayImage};
 use serde::{Deserialize, Serialize};
-use sysinfo::Disks;
 use tokio::task::JoinHandle;
 use wgpu::{Texture, TextureView};
 
@@ -54,6 +53,7 @@ pub struct GpuProcessorState {
 }
 
 pub struct PreviewJob {
+    pub path: Option<String>,
     pub adjustments: serde_json::Value,
     pub is_interactive: bool,
     pub target_resolution: Option<u32>,
@@ -87,8 +87,6 @@ pub struct ThumbnailManager {
     pub queue: Mutex<VecDeque<String>>,
     pub cvar: Condvar,
     pub processing_now: Mutex<HashSet<String>>,
-    pub rotational_disk: AtomicBool,
-    pub io_gate: Mutex<()>,
 }
 
 impl ThumbnailManager {
@@ -97,8 +95,6 @@ impl ThumbnailManager {
             queue: Mutex::new(VecDeque::new()),
             cvar: Condvar::new(),
             processing_now: Mutex::new(HashSet::new()),
-            rotational_disk: AtomicBool::new(false),
-            io_gate: Mutex::new(()),
         })
     }
 }
@@ -153,6 +149,4 @@ pub struct AppState {
     pub decoded_image_cache: Mutex<DecodedImageCache>,
     pub thumbnail_manager: Arc<ThumbnailManager>,
     pub metadata_manager: Arc<MetadataManager>,
-    pub disks_cache: Mutex<Option<Disks>>,
-    pub disks_cache_refreshing: AtomicBool,
 }

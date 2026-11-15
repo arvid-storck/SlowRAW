@@ -49,27 +49,6 @@ export function useImageLoader(cachedEditStateRef: React.RefObject<any>) {
     if (selectedImage && !selectedImage.isReady && selectedImage.path) {
       let isEffectActive = true;
 
-      const loadMetadataEarly = async () => {
-        try {
-          await invoke('clear_session_caches').catch((e) => console.warn('Cache clear failed:', e));
-
-          const metadata: any = await invoke(Invokes.LoadMetadata, { path: selectedImage.path, forEditor: true });
-          if (!isEffectActive) return;
-
-          let initialAdjusts;
-          if (metadata.adjustments && !metadata.adjustments.is_null) {
-            initialAdjusts = normalizeLoadedAdjustments(metadata.adjustments);
-          } else {
-            initialAdjusts = { ...INITIAL_ADJUSTMENTS };
-          }
-
-          setEditor({ adjustments: initialAdjusts });
-          resetHistory(initialAdjusts);
-        } catch (err) {
-          console.error('Failed to load metadata early:', err);
-        }
-      };
-
       const loadFullImageData = async () => {
         try {
           const loadImageResult: any = await invoke(Invokes.LoadImage, { path: selectedImage.path });
@@ -95,31 +74,27 @@ export function useImageLoader(cachedEditStateRef: React.RefObject<any>) {
             setEditor({ previewSize: { width: 0, height: 0 } });
           }
 
+          const saved = loadImageResult.metadata?.adjustments;
+          const initialAdjustments = saved ? normalizeLoadedAdjustments(saved) : { ...INITIAL_ADJUSTMENTS };
+          if (!initialAdjustments.aspectRatio && !initialAdjustments.crop) {
+            initialAdjustments.aspectRatio = width / height;
+          }
+          resetHistory(initialAdjustments);
           setEditor((state) => {
-            if (state.selectedImage && state.selectedImage.path === selectedImage.path) {
-              return {
-                selectedImage: {
-                  ...state.selectedImage,
-                  asShotWhiteBalance: loadImageResult.as_shot_white_balance,
-                  exif: loadImageResult.exif,
-                  height: loadImageResult.height,
-                  isRaw: loadImageResult.is_raw,
-                  isReady: true,
-                  metadata: loadImageResult.metadata,
-                  width: loadImageResult.width,
-                },
-              };
-            }
-            return state;
-          });
-
-          setEditor((state) => {
-            if (!state.adjustments.aspectRatio && !state.adjustments.crop) {
-              return {
-                adjustments: { ...state.adjustments, aspectRatio: loadImageResult.width / loadImageResult.height },
-              };
-            }
-            return state;
+            if (state.selectedImage?.path !== selectedImage.path) return state;
+            return {
+              adjustments: initialAdjustments,
+              selectedImage: {
+                ...state.selectedImage,
+                asShotWhiteBalance: loadImageResult.as_shot_white_balance,
+                exif: { ...state.selectedImage.exif, ...loadImageResult.exif },
+                height,
+                isRaw: loadImageResult.is_raw,
+                isReady: true,
+                metadata: loadImageResult.metadata,
+                width,
+              },
+            };
           });
         } catch (err) {
           if (isEffectActive) {
@@ -132,14 +107,7 @@ export function useImageLoader(cachedEditStateRef: React.RefObject<any>) {
         }
       };
 
-      const loadAll = async () => {
-        await loadMetadataEarly();
-        if (isEffectActive) {
-          await loadFullImageData();
-        }
-      };
-
-      loadAll();
+      void loadFullImageData();
 
       return () => {
         isEffectActive = false;

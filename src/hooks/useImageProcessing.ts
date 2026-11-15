@@ -17,11 +17,10 @@ export function useImageProcessing(
   prevAdjustmentsRef: React.RefObject<any>,
   renderRefs: {
     previewJobIdRef: React.RefObject<number>;
-    latestRenderedJobIdRef: React.RefObject<number>;
     currentResRef: React.RefObject<number>;
   },
 ) {
-  const { previewJobIdRef, latestRenderedJobIdRef, currentResRef } = renderRefs;
+  const { previewJobIdRef, currentResRef } = renderRefs;
   const { t } = useTranslation();
 
   const selectedImage = useEditorStore((state) => state.selectedImage);
@@ -63,14 +62,6 @@ export function useImageProcessing(
   const dragIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeWaveformChannelRef = useRef(activeWaveformChannel);
   activeWaveformChannelRef.current = activeWaveformChannel;
-
-  const selectedImagePathRef = useRef<string | null>(null);
-  useEffect(() => {
-    setEditor({ hasRenderedFirstFrame: false, previewError: null });
-  }, [selectedImage?.path, setEditor]);
-  useEffect(() => {
-    selectedImagePathRef.current = selectedImage?.path ?? null;
-  }, [selectedImage?.path]);
 
   const calculateROI = useCallback(() => {
     if (!transformWrapperRef.current) return null;
@@ -147,48 +138,48 @@ export function useImageProcessing(
         lastAnalyticsTimeRef.current = 0;
       }
 
+      if (currentPath !== useEditorStore.getState().selectedImage?.path) return;
       const payload = structuredClone(currentAdjustments);
-      if (currentPath !== selectedImagePathRef.current) return;
       const jobId = ++previewJobIdRef.current;
       const roi = viewerResolutionRef.current ? null : calculateROI();
+      const isCurrent = () =>
+        jobId === previewJobIdRef.current && currentPath === useEditorStore.getState().selectedImage?.path;
 
-      try {
-        await invoke(Invokes.ApplyAdjustments, {
-          jsAdjustments: payload,
-          isInteractive: dragging,
-          targetResolution: Math.max(targetRes || 0, viewerResolutionRef.current) || null,
-          roi: roi || null,
-          requestAnalytics: shouldRequestAnalytics,
-          computeWaveform: requestAnalytics && !!isWaveformVisible,
-          activeWaveformChannel: activeWaveformChannelRef.current || null,
-        });
-
-        if (currentPath !== selectedImagePathRef.current) return;
-
-        if (jobId >= latestRenderedJobIdRef.current) {
-          latestRenderedJobIdRef.current = jobId;
-          setEditor({ previewError: null });
-        }
-      } catch (err) {
-        if (
-          err !== 'Superseded or worker failed' &&
-          currentPath === selectedImagePathRef.current &&
-          jobId >= latestRenderedJobIdRef.current
-        ) {
-          latestRenderedJobIdRef.current = jobId;
-          setEditor({ previewError: displayErrorText(String(err)), hasRenderedFirstFrame: false });
+      for (let attempt = 0; isCurrent(); attempt++) {
+        try {
+          await invoke(Invokes.ApplyAdjustments, {
+            path: currentPath,
+            jsAdjustments: payload,
+            isInteractive: dragging,
+            targetResolution: Math.max(targetRes || 0, viewerResolutionRef.current) || null,
+            roi: roi || null,
+            requestAnalytics: shouldRequestAnalytics,
+            computeWaveform: requestAnalytics && !!isWaveformVisible,
+            activeWaveformChannel: activeWaveformChannelRef.current || null,
+          });
+          if (isCurrent()) setEditor({ hasRenderedFirstFrame: true, previewError: null });
+          return;
+        } catch (error) {
+          if (!isCurrent()) return;
+          const message = String(error);
+          if (message === 'Superseded or worker failed') return;
+          if (
+            message === 'NATIVE_DISPLAY_RETRY' ||
+            message === 'NATIVE_DISPLAY_UNAVAILABLE' ||
+            message === 'No original image loaded'
+          ) {
+            if (attempt < 4) {
+              await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** attempt));
+              continue;
+            }
+            if (message === 'NATIVE_DISPLAY_RETRY') return;
+          }
+          setEditor({ previewError: displayErrorText(message), hasRenderedFirstFrame: false });
+          return;
         }
       }
     },
-    [
-      selectedImage?.path,
-      calculateROI,
-      isWaveformVisible,
-      setEditor,
-      previewJobIdRef,
-      latestRenderedJobIdRef,
-      displayErrorText,
-    ],
+    [selectedImage?.path, calculateROI, isWaveformVisible, setEditor, previewJobIdRef, displayErrorText],
   );
 
   useEffect(() => {

@@ -392,10 +392,8 @@ export default function ExportPanel({
     [isVisible],
   );
 
-  useEffect(() => {
-    if (!isPanelReallyActive) return;
-
-    const exportSettings: ExportSettings = {
+  const exportSettings = useMemo<ExportSettings>(
+    () => ({
       filenameTemplate,
       jpegQuality: encoding.quality,
       encoding,
@@ -421,7 +419,37 @@ export default function ExportPanel({
               opacity: watermarkOpacity,
             }
           : null,
-    };
+    }),
+    [
+      filenameTemplate,
+      encoding,
+      keepAuthor,
+      tiffBitDepth,
+      pngBitDepth,
+      colorSpace,
+      keepMetadata,
+      preserveTimestamps,
+      preserveFolders,
+      destinationType,
+      subfolder,
+      enableResize,
+      resizeMode,
+      resizeValue,
+      dontEnlarge,
+      stripGps,
+      exportMasks,
+      enableWatermark,
+      watermarkPath,
+      watermarkAnchor,
+      watermarkScale,
+      watermarkSpacing,
+      watermarkOpacity,
+    ],
+  );
+
+  useEffect(() => {
+    if (!isPanelReallyActive) return;
+
     const format = FILE_FORMATS.find((f: FileFormat) => f.id === fileFormat)?.extensions[0] || 'jpeg';
     const runEstimate = () =>
       debouncedEstimateSize(pathsToExport, adjustmentsRef.current, selectedImage?.path, exportSettings, format);
@@ -446,28 +474,8 @@ export default function ExportPanel({
     pathsToExport,
     selectedImage?.path,
     fileFormat,
-    encoding,
-    keepAuthor,
-    tiffBitDepth,
-    pngBitDepth,
-    colorSpace,
-    enableResize,
-    resizeMode,
-    resizeValue,
-    dontEnlarge,
-    keepMetadata,
-    preserveTimestamps,
-    stripGps,
-    filenameTemplate,
-    enableWatermark,
-    watermarkPath,
-    watermarkAnchor,
-    watermarkScale,
-    watermarkSpacing,
-    watermarkOpacity,
+    exportSettings,
     debouncedEstimateSize,
-    exportMasks,
-    preserveFolders,
     isLibraryContext,
   ]);
 
@@ -487,34 +495,6 @@ export default function ExportPanel({
 
   const handleExport = async () => {
     if (numImages === 0 || isExporting || !validColorSpace) return;
-
-    const exportSettings: ExportSettings = {
-      filenameTemplate,
-      jpegQuality: encoding.quality,
-      encoding,
-      keepAuthor,
-      tiffBitDepth,
-      pngBitDepth,
-      colorSpace,
-      keepMetadata,
-      preserveTimestamps,
-      preserveFolders,
-      destinationType,
-      subfolder,
-      resize: enableResize ? { mode: resizeMode, value: resizeValue, dontEnlarge } : null,
-      stripGps,
-      exportMasks: exportMasks,
-      watermark:
-        enableWatermark && watermarkPath
-          ? {
-              path: watermarkPath,
-              anchor: watermarkAnchor,
-              scale: watermarkScale,
-              spacing: watermarkSpacing,
-              opacity: watermarkOpacity,
-            }
-          : null,
-    };
 
     const lastExportPath = appSettings?.exportPresets?.find((p) => p.id === '__last_used__')?.lastExportPath;
 

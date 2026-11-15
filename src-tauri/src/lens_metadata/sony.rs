@@ -60,5 +60,6 @@ pub(super) fn decode(tags: &Tags) -> Option<RadialProfile> {
             .map(|v| v[n..].iter().map(|v| 1.0 + v / 2097152.0).collect())
             .unwrap_or_default(),
         gain,
+        ..Default::default()
     })
 }

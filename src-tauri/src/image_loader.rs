@@ -180,18 +180,6 @@ pub fn load_image_with_orientation(
     Ok(DynamicImage::ImageRgb32F(oriented_image.to_rgb32f()))
 }
 
-#[tauri::command]
-pub fn is_image_cached(path: String, state: tauri::State<'_, AppState>) -> bool {
-    let (source_path, _) = parse_virtual_path(&path);
-    let source_path_str = source_path.to_string_lossy().to_string();
-    state
-        .decoded_image_cache
-        .lock()
-        .unwrap()
-        .get(&source_path_str)
-        .is_some()
-}
-
 pub(crate) fn load_cached_source(
     source: &Path,
     settings: &AppSettings,

@@ -652,8 +652,15 @@ impl WgpuDisplay {
                     match self.surface.get_current_texture() {
                         wgpu::CurrentSurfaceTexture::Success(tex)
                         | wgpu::CurrentSurfaceTexture::Suboptimal(tex) => tex,
-                        _ => return Err("NATIVE_DISPLAY_LOST".into()),
+                        wgpu::CurrentSurfaceTexture::Lost
+                        | wgpu::CurrentSurfaceTexture::Validation => {
+                            return Err("NATIVE_DISPLAY_LOST".into());
+                        }
+                        _ => return Err("NATIVE_DISPLAY_RETRY".into()),
                     }
+                }
+                wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                    return Err("NATIVE_DISPLAY_RETRY".into());
                 }
                 _ => return Err("NATIVE_DISPLAY_LOST".into()),
             };
@@ -3362,9 +3369,7 @@ fn process_and_get_dynamic_image_inner(
 
     if output_to_display {
         let mut display_guard = context.display.lock().unwrap_or_else(|e| e.into_inner());
-        let display = display_guard
-            .as_mut()
-            .ok_or("Native display is unavailable")?;
+        let display = display_guard.as_mut().ok_or("NATIVE_DISPLAY_UNAVAILABLE")?;
         display.set_frame(
             device,
             queue,

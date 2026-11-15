@@ -249,7 +249,9 @@ async fn update_wgpu_transform(
                 if error == "NATIVE_DISPLAY_LOST" {
                     display_lock.take();
                 }
-                let _ = window.emit_to(window.label(), "wgpu-display-unavailable", error);
+                if error != "NATIVE_DISPLAY_RETRY" {
+                    let _ = window.emit_to(window.label(), "wgpu-display-unavailable", error);
+                }
             }
         }
     })
@@ -270,6 +272,7 @@ fn process_preview_job(
     request_analytics: bool,
     compute_waveform: bool,
     active_waveform_channel: Option<&str>,
+    path: Option<&str>,
 ) -> Result<(), String> {
     let context = get_or_init_gpu_context(&state, app_handle)?;
     let adjustments_clone = adjustments_json;
@@ -280,6 +283,9 @@ fn process_preview_job(
         .ok_or("No original image loaded")?
         .clone();
     drop(loaded_image_guard);
+    if path.is_some_and(|path| path != loaded_image.path) {
+        return Err("Superseded or worker failed".into());
+    }
 
     let new_transform_hash = calculate_transform_hash(&adjustments_clone);
     let settings = load_settings(app_handle.clone()).unwrap_or_default();
@@ -500,6 +506,7 @@ fn start_preview_worker(app_handle: tauri::AppHandle) {
                 job.request_analytics,
                 job.compute_waveform,
                 job.active_waveform_channel.as_deref(),
+                job.path.as_deref(),
             );
             let _ = responder.send(result);
         }
@@ -516,6 +523,7 @@ async fn apply_adjustments(
     request_analytics: bool,
     compute_waveform: bool,
     active_waveform_channel: Option<String>,
+    path: Option<String>,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -524,6 +532,7 @@ async fn apply_adjustments(
         let tx_guard = state.preview_worker_tx.lock().unwrap();
         if let Some(worker_tx) = tx_guard.as_ref() {
             let job = PreviewJob {
+                path,
                 adjustments: js_adjustments,
                 is_interactive,
                 target_resolution,
@@ -1112,7 +1121,9 @@ pub fn run() {
                         display.surface.configure(&ctx.device, &display.config);
                         if let Err(error) = display.render(&ctx.device, &ctx.queue) {
                             if error == "NATIVE_DISPLAY_LOST" { display_lock.take(); }
-                            let _ = window.emit_to(window.label(), "wgpu-display-unavailable", error);
+                            if error != "NATIVE_DISPLAY_RETRY" {
+                                let _ = window.emit_to(window.label(), "wgpu-display-unavailable", error);
+                            }
                         }
                     }
         })
@@ -1142,15 +1153,6 @@ pub fn run() {
 
             if let Ok(cache_dir) = app_handle.path().app_cache_dir() {
                 crate::exif_processing::initialize_cache_dir(cache_dir);
-            }
-
-            {
-                let disks_app_handle = app_handle.clone();
-                std::thread::spawn(move || {
-                    let disks = sysinfo::Disks::new_with_refreshed_list();
-                    let state = disks_app_handle.state::<AppState>();
-                    *state.disks_cache.lock().unwrap() = Some(disks);
-                });
             }
 
             let config_dir = portable_paths::app_config_dir(&app_handle).expect("Failed to get config dir");
@@ -1381,8 +1383,6 @@ pub fn run() {
             decoded_image_cache: Mutex::new(DecodedImageCache::new(5)),
             thumbnail_manager: ThumbnailManager::new(),
             metadata_manager: MetadataManager::new(),
-            disks_cache: Mutex::new(None),
-            disks_cache_refreshing: AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             spot_removal::find_spot_source,
@@ -1399,7 +1399,6 @@ pub fn run() {
             frontend_ready,
             cancel_thumbnail_generation,
             update_wgpu_transform,
-            cache_utils::clear_session_caches,
             cache_utils::clear_image_caches,
             catalog::catalog_status,
             catalog::catalog_add_folder,
@@ -1419,7 +1418,6 @@ pub fn run() {
             focus_stacking::stitch_focus_stack,
             focus_stacking::save_focus_stack,
             image_loader::load_image,
-            image_loader::is_image_cached,
             panorama_stitching::stitch_panorama,
             panorama_stitching::save_panorama,
             export_processing::export_images,
@@ -1430,9 +1428,6 @@ pub fn run() {
             mask_generation::generate_mask_overlay,
             file_management::update_exif_fields,
             file_management::get_supported_file_types,
-            file_management::read_exif_for_paths,
-            file_management::list_images_in_dir,
-            file_management::list_images_recursive,
             file_management::update_thumbnail_queue,
             file_management::copy_files,
             file_management::move_files,
@@ -1447,7 +1442,6 @@ pub fn run() {
             file_management::reset_adjustments_for_paths,
             file_management::apply_auto_lens_correction_to_paths,
             file_management::apply_auto_adjustments_to_paths,
-            catalog::catalog_build_thumbnail_cache,
             file_management::delete_edit_sidecars,
             file_management::clear_thumbnail_cache,
             file_management::set_color_label_for_paths,

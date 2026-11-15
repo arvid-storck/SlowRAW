@@ -37,7 +37,7 @@ interface CollageModalState {
   sourceImages: Array<Pick<ImageFile, 'path'>>;
 }
 
-interface PanoramaModalState {
+interface ImageMergeModalState {
   error: string | null;
   finalImageBase64: string | null;
   isOpen: boolean;
@@ -54,15 +54,6 @@ interface FocusStackModalState {
   isProcessing: boolean;
   progressMessage: string | null;
   sourcePaths: Array<string>;
-}
-
-interface HdrModalState {
-  error: string | null;
-  finalImageBase64: string | null;
-  isOpen: boolean;
-  isProcessing: boolean;
-  progressMessage: string | null;
-  stitchingSourcePaths: Array<string>;
 }
 
 interface DenoiseModalState {
@@ -232,9 +223,9 @@ interface UIState {
   albumActionTarget: string | null;
 
   confirmModalState: ConfirmModalState;
-  panoramaModalState: PanoramaModalState;
+  panoramaModalState: ImageMergeModalState;
   focusStackModalState: FocusStackModalState;
-  hdrModalState: HdrModalState;
+  hdrModalState: ImageMergeModalState;
   denoiseModalState: DenoiseModalState;
   cullingModalState: CullingModalState;
   collageModalState: CollageModalState;

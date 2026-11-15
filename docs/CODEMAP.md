@@ -135,7 +135,9 @@ optical numbers, a compatible maker, a high similarity score and a clear lead
 over the next candidate. Ambiguous or optically different candidates are rejected.
 Fixed-lens cameras use the camera's dedicated mount; Ricoh GR II shares the
 ricohGR profile. Explicitly identified converter profiles take precedence over
-the standard fixed lens. Failed matching clears automatic correction parameters.
+the standard fixed lens. Failed matching clears automatic correction parameters. Nikon distortion can
+remain usable when the embedded vignette curve is outside the valid gain range.
+The profile records when the curve was skipped so Crop and Transform can show a warning.
 The thumbnail renderer revision invalidates results from the previous matcher.
 
 `scripts/test-lens-metadata.mjs` checks camera ISO and frontend capabilities.
@@ -166,7 +168,7 @@ directory once, preserving existing destination files. SQLite catalogs are
 snapshotted with their committed WAL data. Portable builds keep their own data
 directory and `rapidraw.db` path. Desktop icons are generated from root `icon.png`.
 
-`logging.rs` sends native debug diagnostics to stderr. `RUST_LOG` selects a single
+`logging.rs` sends native debug diagnostics to stderr and ignores write errors. `RUST_LOG` selects a single
 log level. Release builds, including portable distributions, use
 `release_max_level_off` to compile out native log calls. `main.tsx` assigns silent
 console methods in the production frontend.
@@ -577,14 +579,13 @@ thumbnail size and spacing. It publishes that number as `libraryColumnCount`;
 for up/down within the loaded window. List mode uses one column. Persisted
 aspect preferences resolve to Cover or Contain on startup.
 
-`SettingsPanel.tsx` queues `catalog_build_thumbnail_cache` through the shared job
-queue. The command walks indexed paths in bounded batches and shares the
-editor's source decoder, EXIF cache and white-balance lookup. Decoded images
-use the configured in-memory LRU. The thumbnail generator reuses valid
-entries and publishes missing JPEGs through temporary files.
+Thumbnail workers reuse valid cached JPEGs and publish new thumbnails through
+temporary files. Decoded editor images use the configured in-memory LRU.
 
-Failed image loads return the current selection to the library. Cached
-previews and fresh image loads share this recovery path.
+The catalog supplies the camera, lens, focal length and aperture when opening
+a photo. The editor loads decoded pixels, saved edits and resolved lens data
+through a single request, including when the decoded source is cached. Failed
+loads return to the library.
 
 Settings also queues deletion of `.rrdata` sidecars after the user
 acknowledges the warning and confirms the listed folders. The native command
@@ -751,7 +752,9 @@ are composited during image rendering; the source image remains intact.
 | File | Responsibility |
 | --- | --- |
 | `scripts/build-portable.ps1` | Builds and packages a portable Windows ZIP in a fresh output folder. |
+| `scripts/export-source.mjs` | Packages project source, build files, bundled assets and documentation into a ZIP. |
 | `scripts/update-exiftool.mjs` | Stages the pinned official Windows or Unix distribution; verifies SHA-256/version and reuses complete local copies. |
+| `scripts/update-rawler.mjs` | Updates the pinned dnglab decoder with or without the Nikon patch. |
 | `scripts/update-rcd.mjs` | Updates the pinned upstream librtprocess revision used by the RCD adapter. |
 | `scripts/clean.mjs` | Removes explicit generated build paths; `--dependencies` also removes node_modules, with project-boundary and symlink checks. |
 | `scripts/test-desktop-workflow.mjs` | Zoom focus/scale, export-session persistence, metadata and branding regression checks. |
@@ -865,15 +868,13 @@ are composited during image rendering; the source image remains intact.
 | `components/modals/CollageModal.tsx` | Collage creation. |
 | `components/modals/ConfirmModal.tsx` | Shared confirmation dialog. |
 | `components/modals/CopyPasteSettingsModal.tsx` | Chooses adjustment types to copy/paste. |
-| `components/modals/CreateFolderModal.tsx` | Folder creation dialog. |
+| `components/modals/FolderNameModal.tsx` | Shared name dialog for creating and renaming albums and groups. |
 | `components/modals/CullingModal.tsx` | Culling workflow dialog. |
 | `components/modals/DenoiseModal.tsx` | Noise-reduction dialog. |
 | `components/modals/FocusStackModal.tsx` | Focus-stacking dialog. |
-| `components/modals/HdrModal.tsx` | HDR merge dialog. |
+| `components/modals/ImageMergeModal.tsx` | Shared HDR and panorama dialog for progress, preview and saving. |
 | `components/modals/ImportSettingsModal.tsx` | Import source/destination, copy/move, and folder structure choices. |
-| `components/modals/PanoramaModal.tsx` | Panorama stitching dialog. |
 | `components/modals/RenameFileModal.tsx` | File rename dialog. |
-| `components/modals/RenameFolderModal.tsx` | Folder rename dialog. |
 
 ### Reusable UI and frontend utilities
 
@@ -941,7 +942,7 @@ are composited during image rendering; the source image remains intact.
 | `app_settings.rs` | Persistent settings and workspace defaults. Loads and saves share a lock, and writes replace the JSON atomically. Catalog operations update folder membership under that lock. |
 | `app_state.rs` | Shared native application state and caches. |
 | `cache_utils.rs` | Image/render cache keys and cache containers. |
-| `catalog.rs` | SQLite index, catalog folders, facets, bounded queries and the thumbnail cache build job. Capture-date ordering uses a matching index, and shutter ordering compares numeric exposure seconds. |
+| `catalog.rs` | SQLite index, catalog folders, facets and bounded queries. Camera, lens, focal length and aperture come from indexed columns. Capture-date ordering uses a matching index, and shutter ordering compares numeric exposure seconds. |
 | `component_updates.rs` | Downloads Lensfun profile updates. |
 | `culling.rs` | Image culling analysis/actions. |
 | `denoising.rs` | Traditional noise reduction and standalone save/batch flows. |
@@ -1033,8 +1034,10 @@ Run these commands from the repository root. The npm scripts are defined in
 | `npm run i18n:extract` | Update extracted translation keys. |
 | `npm run i18n:check` / `npm run i18n:runtime-check` / `npm run i18n:lint` | Check extraction, runtime keys or translation usage. |
 | `npm run update:exiftool` | Stage the pinned ExifTool release. |
+| `npm run update:rawler` | Update Rawler. Pass `-- --remove-patch` to use upstream directly. |
 | `npm run update:rcd` | Update the pinned librtprocess revision. |
 | `npm run clean` / `npm run clean:deep` | Remove generated files. The deep clean also removes downloaded dependencies. Both accept `-- --dry-run`. |
+| `npm run export:source` | Create a source ZIP in `artifacts-source/`. |
 | `node scripts/test-<name>.mjs` | Run one of the regression scripts listed above. |
 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts` | Build a portable Windows ZIP. |
 
@@ -1049,6 +1052,12 @@ npm run clean
 npm run clean:deep -- --dry-run
 npm run clean:deep
 ```
+
+### Source ZIP
+
+Run `npm run export:source`. The script checks its list of source files and
+bundled assets, then writes a timestamped ZIP in `artifacts-source/`. It uses
+`tar` on Windows and macOS and `zip` on Linux.
 
 ### Updating common libraries
 
@@ -1070,30 +1079,24 @@ profiles update separately through Settings and do not require a RAW rebuild.
 
 ### Updating the RAW decoder
 
-This updates the upstream Rawler revision in src-tauri/Cargo.lock. Keep the
-lockfile and rebuild the application. Rawler API changes may require adapting
-raw_processing.rs and exif_processing.rs. RAW support is linked into the app.
-
-#### If the latest rawler does not support nikons HE and HE*
+#### If upstream Rawler still needs the Nikon HE and HE* patch
 
 ```powershell
 npm run update:rawler
 ```
 
-#### If the latest rawler support nikons HE and HE*
+The command checks that the patch applies to the new dnglab revision before
+updating the pin. If upstream changed the decoder or its dependencies, rebase
+`src-tauri/rawler/nikon-he.patch` and update the adapter manifest as needed.
+
+#### If upstream Rawler supports Nikon HE and HE*
 
 ```powershell
-npm run update:rawler:removepatch
+npm run update:rawler -- --remove-patch
 ```
 
-REPLACE THIS TO ONE COMMAND THING, "update:rawler:removepatch" does not exist yet. Then remove src-tauri/rawler/UPSTREAM.md. The text below is kept temporarely for refrence.
-
-- **Rawler.** Change the dnglab commit in `src-tauri/rawler/upstream-revision`,
-  rebase `nikon-he.patch` and update `src-tauri/rawler/Cargo.toml` if the
-  upstream dependencies changed. Rebuild and test both Nikon HE modes using
-  the sample command in the [Rawler update guide](../src-tauri/rawler/UPSTREAM.md).
-  The guide also covers switching to the official Git dependency once it
-  supports both modes.
+This switches Cargo to the official dnglab Git dependency and updates Cargo.lock.
+Rebuild and check both Nikon compression modes after updating.
 
 ### Update exiftool
 

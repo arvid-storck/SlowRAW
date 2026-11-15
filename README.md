@@ -180,6 +180,11 @@ npm run tauri build
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-portable.ps1 -OutputDirectory portable-artifacts
 ```
 
+### Source ZIP
+
+Run `npm run export:source` to create a source ZIP in `artifacts-source/`.
+Extract the ZIP and add its contents to your GitHub repository.
+
 ### Clean up tool
 
 ```powershell

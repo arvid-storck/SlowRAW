@@ -3,125 +3,79 @@ import { invoke } from '../utils/jobInvoke';
 import { useUIStore } from '../store/useUIStore';
 import { Invokes } from '../components/ui/AppProperties';
 
+const imageMergeCommands = {
+  panorama: {
+    stateKey: 'panoramaModalState',
+    start: Invokes.StitchPanorama,
+    save: Invokes.SavePanorama,
+    progress: 'Starting panorama process...',
+    name: 'panorama',
+  },
+  hdr: {
+    stateKey: 'hdrModalState',
+    start: Invokes.MergeHdr,
+    save: Invokes.SaveHdr,
+    progress: 'Starting HDR process...',
+    name: 'HDR',
+  },
+  focusStack: {
+    stateKey: 'focusStackModalState',
+    start: Invokes.StitchFocusStack,
+    save: Invokes.SaveFocusStack,
+    progress: 'Starting focus stacking process...',
+    name: 'focus stack',
+  },
+} as const;
+
+export type ImageMergeKind = keyof typeof imageMergeCommands;
+
 export function useProductivityActions(refreshImageList: () => Promise<void>) {
   const setUI = useUIStore((state) => state.setUI);
 
-  const handleStartPanorama = useCallback(
-    (paths: string[]) => {
+  const handleStartImageMerge = useCallback(
+    (kind: ImageMergeKind, paths: string[]) => {
+      const { stateKey, start, progress } = imageMergeCommands[kind];
       setUI((state) => ({
-        panoramaModalState: {
-          ...state.panoramaModalState,
+        [stateKey]: {
+          ...state[stateKey],
           isProcessing: true,
           error: null,
           finalImageBase64: null,
-          progressMessage: 'Starting panorama process...',
+          progressMessage: progress,
+          ...(kind === 'focusStack' ? { depthMapBase64: null } : {}),
         },
       }));
-      invoke(Invokes.StitchPanorama, { paths }).catch((err) => {
+      invoke(start, { paths }).catch((error) => {
         setUI((state) => ({
-          panoramaModalState: { ...state.panoramaModalState, isProcessing: false, error: String(err) },
+          [stateKey]: { ...state[stateKey], isProcessing: false, error: String(error) },
         }));
       });
     },
     [setUI],
   );
 
-  const handleSavePanorama = useCallback(async (): Promise<string> => {
-    const { panoramaModalState } = useUIStore.getState();
-    if (panoramaModalState.stitchingSourcePaths.length === 0) {
-      const err = 'Source paths for panorama not found.';
-      setUI((state) => ({ panoramaModalState: { ...state.panoramaModalState, error: err } }));
-      throw new Error(err);
-    }
-    try {
-      const savedPath: string = await invoke(Invokes.SavePanorama, {
-        firstPathStr: panoramaModalState.stitchingSourcePaths[0],
-      });
-      await refreshImageList();
-      return savedPath;
-    } catch (err) {
-      console.error('Failed to save panorama:', err);
-      setUI((state) => ({ panoramaModalState: { ...state.panoramaModalState, error: String(err) } }));
-      throw err;
-    }
-  }, [refreshImageList, setUI]);
-
-  const handleStartFocusStack = useCallback(
-    (paths: string[]) => {
-      setUI((state) => ({
-        focusStackModalState: {
-          ...state.focusStackModalState,
-          isProcessing: true,
-          error: null,
-          finalImageBase64: null,
-          depthMapBase64: null,
-          progressMessage: 'Starting focus stacking process...',
-        },
-      }));
-      invoke(Invokes.StitchFocusStack, { paths }).catch((err) => {
-        setUI((state) => ({
-          focusStackModalState: { ...state.focusStackModalState, isProcessing: false, error: String(err) },
-        }));
-      });
+  const handleSaveImageMerge = useCallback(
+    async (kind: ImageMergeKind): Promise<string> => {
+      const { stateKey, save, name } = imageMergeCommands[kind];
+      const modal = useUIStore.getState()[stateKey];
+      const paths = 'sourcePaths' in modal ? modal.sourcePaths : modal.stitchingSourcePaths;
+      if (paths.length === 0) {
+        const message = `Source paths for ${name} not found.`;
+        setUI((state) => ({ [stateKey]: { ...state[stateKey], error: message } }));
+        throw new Error(message);
+      }
+      try {
+        const savedPath = await invoke<string>(save, { firstPathStr: paths[0] });
+        await refreshImageList();
+        return savedPath;
+      } catch (error) {
+        console.error(`Failed to save ${kind === 'hdr' ? 'HDR image' : name}:`, error);
+        setUI((state) => ({ [stateKey]: { ...state[stateKey], error: String(error) } }));
+        throw error;
+      }
     },
-    [setUI],
+    [refreshImageList, setUI],
   );
-
-  const handleSaveFocusStack = useCallback(async (): Promise<string> => {
-    const { focusStackModalState } = useUIStore.getState();
-    if (focusStackModalState.sourcePaths.length === 0) {
-      const err = 'Source paths for focus stack not found.';
-      setUI((state) => ({ focusStackModalState: { ...state.focusStackModalState, error: err } }));
-      throw new Error(err);
-    }
-    try {
-      const savedPath: string = await invoke(Invokes.SaveFocusStack, {
-        firstPathStr: focusStackModalState.sourcePaths[0],
-      });
-      await refreshImageList();
-      return savedPath;
-    } catch (err) {
-      console.error('Failed to save focus stack:', err);
-      setUI((state) => ({ focusStackModalState: { ...state.focusStackModalState, error: String(err) } }));
-      throw err;
-    }
-  }, [refreshImageList, setUI]);
-
-  const handleStartHdr = useCallback(
-    (paths: string[]) => {
-      setUI((state) => ({
-        hdrModalState: {
-          ...state.hdrModalState,
-          isProcessing: true,
-          error: null,
-          finalImageBase64: null,
-          progressMessage: 'Starting HDR process...',
-        },
-      }));
-      invoke(Invokes.MergeHdr, { paths }).catch((err) => {
-        setUI((state) => ({ hdrModalState: { ...state.hdrModalState, isProcessing: false, error: String(err) } }));
-      });
-    },
-    [setUI],
-  );
-
-  const handleSaveHdr = useCallback(async (): Promise<string> => {
-    const { hdrModalState } = useUIStore.getState();
-    if (hdrModalState.stitchingSourcePaths.length === 0) {
-      const err = 'Source paths for HDR not found.';
-      setUI((state) => ({ hdrModalState: { ...state.hdrModalState, error: err } }));
-      throw new Error(err);
-    }
-    try {
-      const savedPath: string = await invoke(Invokes.SaveHdr, { firstPathStr: hdrModalState.stitchingSourcePaths[0] });
-      await refreshImageList();
-      return savedPath;
-    } catch (err) {
-      console.error('Failed to save HDR image:', err);
-      setUI((state) => ({ hdrModalState: { ...state.hdrModalState, error: String(err) } }));
-      throw err;
-    }
-  }, [refreshImageList, setUI]);
 
   const handleApplyDenoise = useCallback(
     async (intensity: number) => {
@@ -190,15 +144,11 @@ export function useProductivityActions(refreshImageList: () => Promise<void>) {
   );
 
   return {
-    handleStartPanorama,
-    handleSavePanorama,
-    handleStartHdr,
-    handleSaveHdr,
+    handleStartImageMerge,
+    handleSaveImageMerge,
     handleApplyDenoise,
     handleBatchDenoise,
     handleSaveDenoisedImage,
     handleSaveCollage,
-    handleStartFocusStack,
-    handleSaveFocusStack,
   };
 }

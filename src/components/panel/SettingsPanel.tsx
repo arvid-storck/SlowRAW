@@ -353,7 +353,6 @@ const PreviewModeSwitch = ({ mode, onModeChange }: PreviewModeSwitchProps) => {
 
 export default function SettingsPanel({ appSettings, onBack, onLibraryRefresh, onSettingsChange }: SettingsPanelProps) {
   const { t } = useTranslation();
-  const catalogHasImages = useLibraryStore((state) => (state.catalogStatus?.imageCount ?? 0) > 0);
   const rootPaths = useLibraryStore((state) => state.rootPaths);
   const sidecarFolders = [
     ...new Set<string>([...rootPaths, ...(appSettings.rootFolders ?? []), ...(appSettings.catalogFolders ?? [])]),
@@ -362,10 +361,6 @@ export default function SettingsPanel({ appSettings, onBack, onLibraryRefresh, o
     state.jobs.some((job) => job.kind === 'cleanup' && (job.status === 'queued' || job.status === 'running')),
   );
   const [sidecarCleanupMessage, setSidecarCleanupMessage] = useState('');
-  const isBuildingCache = useJobStore((state) =>
-    state.jobs.some((job) => job.kind === 'cache' && (job.status === 'queued' || job.status === 'running')),
-  );
-  const [cacheBuildMessage, setCacheBuildMessage] = useState('');
   const [isClearingCache, setIsClearingCache] = useState(false);
   const [cacheClearMessage, setCacheClearMessage] = useState('');
   const [confirmModalState, setConfirmModalState] = useState<ConfirmModalState>({
@@ -580,16 +575,6 @@ export default function SettingsPanel({ appSettings, onBack, onLibraryRefresh, o
     const newLenses = [...currentLenses];
     newLenses.splice(index, 1);
     onSettingsChange({ ...appSettings, myLenses: newLenses });
-  };
-
-  const buildCache = async () => {
-    setCacheBuildMessage('');
-    try {
-      await invoke(Invokes.BuildThumbnailCache);
-      setCacheBuildMessage(t('settings.data.statuses.cacheBuilt'));
-    } catch (error) {
-      setCacheBuildMessage(String(error));
-    }
   };
 
   const confirmSidecarCleanup = () => {
@@ -1495,17 +1480,6 @@ export default function SettingsPanel({ appSettings, onBack, onLibraryRefresh, o
                       )}
 
                       <DataActionItem
-                        buttonAction={buildCache}
-                        buttonText={t('settings.data.buildCache')}
-                        description={t('settings.data.buildCacheDesc')}
-                        disabled={!catalogHasImages || isClearingCache}
-                        icon={<ImageIcon size={16} className="mr-2" />}
-                        isProcessing={isBuildingCache}
-                        message={cacheBuildMessage}
-                        title={t('settings.data.thumbnailCache')}
-                      />
-
-                      <DataActionItem
                         buttonAction={confirmSidecarCleanup}
                         buttonText={t('settings.data.deleteEditSidecarsButton')}
                         description={t('settings.data.deleteEditSidecarsDesc')}
@@ -1530,7 +1504,6 @@ export default function SettingsPanel({ appSettings, onBack, onLibraryRefresh, o
                         buttonAction={handleClearCache}
                         buttonText={t('settings.data.clearThumbnailButton')}
                         description={t('settings.data.clearThumbnailDesc')}
-                        disabled={isBuildingCache}
                         icon={<Trash2 size={16} className="mr-2" />}
                         isProcessing={isClearingCache}
                         message={cacheClearMessage}

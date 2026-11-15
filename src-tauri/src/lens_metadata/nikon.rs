@@ -45,5 +45,14 @@ pub(super) fn decode(tags: &Tags) -> Option<RadialProfile> {
             table.gain.push(1.0 + r2 * (c + r2 * (b + r2 * a)));
         }
     }
+    if !table
+        .gain
+        .iter()
+        .all(|gain| gain.is_finite() && *gain > 0.0 && *gain < 64.0)
+    {
+        table.vignette_skipped = true;
+        table.gain.clear();
+        table.gain_knots.clear();
+    }
     Some(table)
 }

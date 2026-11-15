@@ -39,7 +39,6 @@ export enum Invokes {
   ApplyDenoising = 'apply_denoising',
   CalculateAutoAdjustments = 'calculate_auto_adjustments',
   CancelExport = 'cancel_export',
-  BuildThumbnailCache = 'catalog_build_thumbnail_cache',
   DeleteEditSidecars = 'delete_edit_sidecars',
   ClearThumbnailCache = 'clear_thumbnail_cache',
   CatalogStatus = 'catalog_status',
@@ -62,14 +61,11 @@ export enum Invokes {
   GenerateUncroppedPreview = 'generate_uncropped_preview',
   GetSupportedFileTypes = 'get_supported_file_types',
   ImportFiles = 'import_files',
-  ListImagesInDir = 'list_images_in_dir',
-  ListImagesRecursive = 'list_images_recursive',
   LoadImage = 'load_image',
   SampleWhiteBalance = 'sample_white_balance',
   LoadMetadata = 'load_metadata',
   LoadSettings = 'load_settings',
   MoveFiles = 'move_files',
-  ReadExifForPaths = 'read_exif_for_paths',
   RemoveTagForPaths = 'remove_tag_for_paths',
   RenameFiles = 'rename_files',
   ResetAdjustmentsForPaths = 'reset_adjustments_for_paths',
@@ -242,6 +238,10 @@ export interface FilterCriteria {
 }
 
 export interface ImageFile {
+  camera?: string | null;
+  lens?: string | null;
+  focal_length?: string | null;
+  f_number?: number | null;
   is_edited: boolean;
   modified: number;
   path: string;
@@ -278,6 +278,10 @@ export interface Progress {
 }
 
 export interface SelectedImage {
+  catalogCamera?: string;
+  catalogLens?: string;
+  catalogFocalLength?: string;
+  catalogFNumber?: number;
   asShotWhiteBalance?: import('../../utils/whiteBalance').WhiteBalance;
   exif: any;
   group_id?: string | null;

@@ -60,15 +60,7 @@ import { useProductivityActions } from './hooks/useProductivityActions';
 import { useAppInitialization } from './hooks/useAppInitialization';
 import './i18n';
 
-import {
-  Invokes,
-  ImageFile,
-  Panel,
-  PanelRegion,
-  Theme,
-  ThumbnailSize,
-  ThumbnailAspectRatio,
-} from './components/ui/AppProperties';
+import { Invokes, Panel, PanelRegion, Theme, ThumbnailSize, ThumbnailAspectRatio } from './components/ui/AppProperties';
 
 import ImageProcessingManager from './components/managers/ImageProcessingManager';
 import ImageLoaderManager from './components/managers/ImageLoaderManager';
@@ -186,16 +178,9 @@ function App() {
 
   const defaultThumbnailSize = ThumbnailSize.Medium;
 
-  const selectedImagePathRef = useRef<string | null>(null);
-  useEffect(() => {
-    selectedImagePathRef.current = selectedImage?.path ?? null;
-  }, [selectedImage?.path]);
-
   const prevAdjustmentsRef = useRef<any>(null);
 
-  const isBackendReadyRef = useRef(true);
   const previewJobIdRef = useRef<number>(0);
-  const latestRenderedJobIdRef = useRef<number>(0);
   const currentResRef = useRef<number>(1280);
   const cachedEditStateRef = useRef<any | null>(null);
 
@@ -206,15 +191,8 @@ function App() {
   const { requestThumbnails, clearThumbnailQueue, markGenerated } = useThumbnails();
 
   const transformWrapperRef = useRef<any>(null);
-  const preloadedDataRef = useRef<{
-    trees?: Promise<any>;
-    images?: Promise<ImageFile[]>;
-    rootPaths?: string[];
-    currentPath?: string;
-  }>({});
 
   useAppInitialization({
-    preloadedDataRef,
     thumbnailSize,
     setThumbnailSize,
     thumbnailAspectRatio,
@@ -226,12 +204,7 @@ function App() {
 
   const navigationRefs = {
     transformWrapperRef,
-    preloadedDataRef,
     cachedEditStateRef,
-    selectedImagePathRef,
-    isBackendReadyRef,
-    latestRenderedJobIdRef,
-    previewJobIdRef,
     currentResRef,
     prevAdjustmentsRef,
   };
@@ -307,16 +280,12 @@ function App() {
   );
 
   const {
-    handleStartPanorama,
-    handleSavePanorama,
-    handleStartHdr,
-    handleSaveHdr,
+    handleStartImageMerge,
+    handleSaveImageMerge,
     handleApplyDenoise,
     handleBatchDenoise,
     handleSaveDenoisedImage,
     handleSaveCollage,
-    handleStartFocusStack,
-    handleSaveFocusStack,
   } = useProductivityActions(handleLibraryRefresh);
 
   const {
@@ -587,7 +556,6 @@ function App() {
         transformWrapperRef={transformWrapperRef}
         prevAdjustmentsRef={prevAdjustmentsRef}
         previewJobIdRef={previewJobIdRef}
-        latestRenderedJobIdRef={latestRenderedJobIdRef}
         currentResRef={currentResRef}
       />
       <ImageLoaderManager cachedEditStateRef={cachedEditStateRef} />
@@ -750,12 +718,8 @@ function App() {
         </div>
         <AppModals
           handleImageSelect={handleImageSelect}
-          handleSavePanorama={handleSavePanorama}
-          handleStartPanorama={handleStartPanorama}
-          handleStartFocusStack={handleStartFocusStack}
-          handleSaveFocusStack={handleSaveFocusStack}
-          handleSaveHdr={handleSaveHdr}
-          handleStartHdr={handleStartHdr}
+          handleStartImageMerge={handleStartImageMerge}
+          handleSaveImageMerge={handleSaveImageMerge}
           refreshImageList={handleLibraryRefresh}
           handleApplyDenoise={handleApplyDenoise}
           handleBatchDenoise={handleBatchDenoise}

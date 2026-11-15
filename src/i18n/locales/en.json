@@ -757,7 +757,6 @@
     "empty": "No jobs",
     "kinds": {
       "auto": "Auto Adjust Levels",
-      "cache": "Build thumbnail cache",
       "catalog": "Catalog scan",
       "cleanup": "Delete edit sidecars",
       "copy": "Copy files",
@@ -1167,6 +1166,7 @@
       "maskWarning": "This changes the base geometry. Existing masks may shift.",
       "modeAuto": "Auto",
       "modeManual": "Manual",
+      "nikonVignetteSkipped": "Vignetting correction was skipped because the calculated values were invalid.",
       "notFound": "Not Found",
       "original": "Original",
       "profileSourceEmbedded": "Built-in profile ({{source}})",
@@ -1287,8 +1287,6 @@
       "zoomDesc": "Adjust how fast the canvas zooms in and out when using the scroll wheel or pinch gesture."
     },
     "data": {
-      "buildCache": "Build Cache",
-      "buildCacheDesc": "Prepare images with the editor's decoder and generate missing thumbnails. The most recently prepared images stay in memory up to the image cache limit.",
       "clearThumbnail": "Clear Thumbnail Cache",
       "clearThumbnailButton": "Clear",
       "clearThumbnailDesc": "This will delete all cached thumbnail images. They will be regenerated automatically as you browse your library.",
@@ -1317,7 +1315,6 @@
         "allSuccess": "{{count}} files updated. All non-color tags removed.",
         "allSuccess_one": "{{count}} file updated. All non-color tags removed.",
         "allSuccess_other": "{{count}} files updated. All non-color tags removed.",
-        "cacheBuilt": "Image cache is ready.",
         "cacheSuccess": "Thumbnail cache cleared successfully.",
         "clearingAll": "Clearing all tags from sidecar files...",
         "clearingCache": "Clearing thumbnail cache...",
@@ -1327,7 +1324,6 @@
         "processing": "Processing...",
         "resettingLayout": "Resetting workspace..."
       },
-      "thumbnailCache": "Thumbnail Cache",
       "title": "Data Management"
     },
     "general": {

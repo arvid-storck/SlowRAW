@@ -1,15 +1,12 @@
 ### Bugs
 
-- Varför används inte databasens info för att läsa in camera, lins, brännvidd, f värde? (lagra f värdet i databasen)
-- Låt lins och kamera namnet ta flera rader om det behövs
-- På kameras nikon z6iii och 24-120mm f4 s så hittar inte den inbyggda lins profilen ibland men ibland hittas den.
-- Fix Update rawler structure to be as simpel as it was. But with 2 ways, One way where they have support for HE and HE* or one where they dont, with one command.
+#### Nikon vignetting
 
-När automatic lens correction är på, när den är av så fixar det sig
-- Lens correctopn automatiskt satt på går aldrog från "Waiting for Auto-Detect" till "Lens profile not found" då ingen lins profil finns. Försvinner inte tills jag ändrar till "manual" manuellt
-- Texten från "Lens profile not found" uppdateras inte korrekt, måste manuellt uppdatera den
-- Den visar "No native gpu preview" fast det går men bara tar lite tid
-- Ibland så uppdaterar den inte preview (stannar på "Native GPU preview unavailable"), funkar dock så fort jag ändrar en enda inställning eller byter bild fram ock tillbacka
+- The current Nikon gain polynomial produces negative values for some
+  Z6 III frames with the NIKKOR Z 24-120mm f/4 S. SlowRAW skips the
+  affected vignette curve and can still use the built-in distortion
+  correction. Compare the gain against a Nikon reference rendering to
+  determine the correct interpretation.
 
 #### Code review findings (2026-11-12)
 
@@ -55,15 +52,51 @@ När automatic lens correction är på, när den är av så fixar det sig
 
 
 
+### Fixed
+
+- Varför används inte databasens info för att läsa in camera, lins, brännvidd, f värde? (lagra f värdet i databasen)
+  - 2026-11-15 fix for developer verification. Catalog rows supply camera, lens, focal length and aperture. Existing f-numbers are backfilled from catalog EXIF.
+- Låt lins och kamera namnet ta flera rader om det behövs i panelen till vänster efter man har öppnat en bild.
+  - 2026-11-15 fix for developer verification. Camera and lens names wrap in the metadata panel.
+- På kameras nikon z6iii och 24-120mm f4 s så hittar inte den inbyggda lins profilen ibland men ibland hittas den.
+  - 2026-11-15 fix for developer verification. Retained valid Nikon distortion when the embedded vignette curve fails validation.
+- Fix Update rawler structure to be as simpel as it was. But with 2 ways, One way where they have support for HE and HE* or one where they dont, with one command. I already have the strucutre prepared in codemap.md
+  - 2026-11-15 fix for developer verification. Added one update command with an option to switch to upstream Rawler.
+- Lens correctopn automatiskt satt på går aldrog från "Waiting for Auto-Detect" till "Lens profile not found" då ingen lins profil finns. Försvinner inte tills jag ändrar till "manual" manuellt
+  - 2026-11-15 fix for developer verification. The editor reports a missing profile once image loading and lens selection finish.
+- Texten från "Lens profile not found" uppdateras inte korrekt, måste manuellt uppdatera den
+  - 2026-11-15 fix for developer verification. Lens status follows the selected image and its current correction parameters.
+- Den visar "No native gpu preview" fast det går men bara tar lite tid
+  - 2026-11-15 fix for developer verification. Transient native surface errors are retried before showing an error.
+- Ibland så uppdaterar den inte preview (stannar på "Native GPU preview unavailable"), funkar dock så fort jag ändrar en enda inställning eller byter bild fram ock tillbacka
+  - 2026-11-15 fix for developer verification. Cached and uncached images share the same load and first-frame path.
+- Ta bort build cache knappen, den funkar inte
+  - 2026-11-15 fix for developer verification. Removed the Settings action and the dedicated batch job.
+
 ### Things to change
 
 Easy
 
-- Ta bort build cache, den funkar inte
 
 Hard and/or risky
 
 - Rename variables, fuctions and classes to to camel case, and upper camel case. But only to make it uniform, not when a langage has a recomended style already.
+
+### Remaining code reduction
+
+- Share thumbnail placeholder and layer-transition logic between the library
+  grid and list in `src/components/panel/library/LibraryItems.tsx` and the
+  filmstrip in `src/components/panel/Filmstrip.tsx`. Compare loading and
+  fade behavior when a cell is reused or its thumbnail is evicted.
+- Share the repeated per-pixel blend code in
+  `src-tauri/src/panorama_utils/stitching.rs`. Verify both stitching
+  directions and preserve overlap and seam ownership.
+- Review the repeated parametric-mask coordinate and sampling loops in
+  `src-tauri/src/mask_generation.rs`. Compare mask output with rotated
+  images and at different preview scales before consolidating them.
+- Compare the drag-and-drop handling for the two panel regions in
+  `src/components/panel/SidePanelArea.tsx`. Check drop targets and
+  panel ordering before sharing the common handlers.
 
 ### Things to consider (Do not implelent unless you need to or want to do and its benfits the program)
 
@@ -85,7 +118,6 @@ Hard and/or risky
     packaging configuration was found. Tauri's generated schemas and
     dependency lockfiles still list Android as an upstream platform.
     Shared desktop dependencies include `wgpu-core-deps-windows-linux-android`.
-  - `src-tauri/src/file_management.rs` still has a generic fallback for
-    platforms outside Windows, macOS and Linux in move-on-import. It is
-    unreachable on the supported targets and can be reviewed for removal.
-- Vad är det som tar tid vin inläsningen av metadatan när jag först öppnas en bild?
+  - 2026-11-15 fix for developer verification. Removed the unsupported-platform
+    fallbacks for opening videos, deleting files and moving files on import.
+- Vad är det som tar tid vid inläsningen av metadatan när jag först öppnas en bild?

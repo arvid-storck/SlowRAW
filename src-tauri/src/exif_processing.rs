@@ -50,7 +50,7 @@ impl ExifCacheState {
         let hash = blake3::hash(folder.to_string_lossy().as_bytes())
             .to_hex()
             .to_string();
-        Some(base_dir.join(format!("exiftool-v6-{}.json", hash)))
+        Some(base_dir.join(format!("exiftool-v8-{}.json", hash)))
     }
 }
 
@@ -416,7 +416,7 @@ mod metadata_reuse_tests {
         image
             .write_to(&mut Cursor::new(&mut tiff), image::ImageFormat::Tiff)
             .unwrap();
-        let mut metadata = Metadata::new();
+        let mut metadata = Metadata::new_from_vec(&tiff, FileExtension::TIFF).unwrap();
         metadata.set_tag(ExifTag::Artist("TIFF author".into()));
         metadata.set_tag(ExifTag::DateTimeOriginal("2025:06:07 08:09:10".into()));
         metadata

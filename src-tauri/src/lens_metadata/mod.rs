@@ -22,6 +22,8 @@ pub struct RadialProfile {
     pub blue: Vec<f64>,
     pub gain_knots: Vec<f64>,
     pub gain: Vec<f64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vignette_skipped: bool,
 }
 
 fn interpolate(knots: &[f64], values: &[f64], radius: f64) -> f64 {

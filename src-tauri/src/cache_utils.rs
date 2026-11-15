@@ -262,10 +262,3 @@ pub fn clear_image_caches(state: tauri::State<AppState>) {
         *warped_cache = None;
     }
 }
-
-#[tauri::command]
-pub fn clear_session_caches(state: tauri::State<AppState>) {
-    if let Ok(mut mask_cache) = state.mask_cache.lock() {
-        mask_cache.clear();
-    }
-}

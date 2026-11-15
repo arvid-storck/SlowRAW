@@ -222,7 +222,13 @@ export interface Adjustments {
       source?: string;
       warp?: { fisheye?: boolean; coefficients: number[][] } | null;
       vignette?: { coefficients: number[] } | null;
-      radial?: { distortion: number[]; red: number[]; blue: number[]; gain: number[] } | null;
+      radial?: {
+        distortion: number[];
+        red: number[];
+        blue: number[];
+        gain: number[];
+        vignette_skipped?: boolean;
+      } | null;
     } | null;
     k1: number;
     k2: number;

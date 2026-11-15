@@ -279,118 +279,62 @@ export function useTauriListeners({ refreshImageList, markGenerated }: TauriList
       }),
       listen('wgpu-frame-ready', (event: any) => {
         if (isEffectActive && event.payload?.path === useEditorStore.getState().selectedImage?.path) {
-          useEditorStore.getState().setEditor({ hasRenderedFirstFrame: true });
+          useEditorStore.getState().setEditor({ hasRenderedFirstFrame: true, previewError: null });
         }
       }),
-      listen('panorama-progress', (event: any) => {
-        if (isEffectActive) {
+      ...(
+        [
+          ['panorama', 'panoramaModalState'],
+          ['hdr', 'hdrModalState'],
+          ['focus-stack', 'focusStackModalState'],
+        ] as const
+      ).flatMap(([event, stateKey]) => [
+        listen<string>(`${event}-progress`, ({ payload }) => {
+          if (!isEffectActive) return;
           useUIStore.getState().setUI((state) => {
-            if (state.panoramaModalState.finalImageBase64 || state.panoramaModalState.error) return state;
-            return { panoramaModalState: { ...state.panoramaModalState, progressMessage: event.payload } };
+            const modal = state[stateKey];
+            if (event === 'hdr') {
+              return {
+                hdrModalState: {
+                  ...state.hdrModalState,
+                  error: null,
+                  finalImageBase64: null,
+                  isOpen: true,
+                  progressMessage: payload,
+                },
+              };
+            }
+            if (modal.finalImageBase64 || modal.error) return state;
+            return { [stateKey]: { ...modal, progressMessage: payload } };
           });
-        }
-      }),
-      listen('panorama-complete', (event: any) => {
-        if (isEffectActive) {
+        }),
+        listen<{ base64: string; depthMap?: string | null }>(`${event}-complete`, ({ payload }) => {
+          if (!isEffectActive) return;
           useUIStore.getState().setUI((state) => ({
-            panoramaModalState: {
-              ...state.panoramaModalState,
+            [stateKey]: {
+              ...state[stateKey],
               error: null,
-              finalImageBase64: event.payload.base64,
+              finalImageBase64: payload.base64,
               isProcessing: false,
-              progressMessage: null,
+              progressMessage: event === 'hdr' ? 'Hdr Ready' : null,
+              ...(event === 'focus-stack' ? { depthMapBase64: payload.depthMap } : {}),
             },
           }));
-        }
-      }),
-      listen('panorama-error', (event: any) => {
-        if (isEffectActive) {
+        }),
+        listen(`${event}-error`, ({ payload }) => {
+          if (!isEffectActive) return;
           useUIStore.getState().setUI((state) => ({
-            panoramaModalState: {
-              ...state.panoramaModalState,
-              error: String(event.payload),
+            [stateKey]: {
+              ...state[stateKey],
+              error: String(payload),
               finalImageBase64: null,
               isProcessing: false,
-              progressMessage: null,
+              progressMessage: event === 'hdr' ? 'An error occurred.' : null,
+              ...(event === 'focus-stack' ? { depthMapBase64: null } : {}),
             },
           }));
-        }
-      }),
-      listen('hdr-progress', (event: any) => {
-        if (isEffectActive) {
-          useUIStore.getState().setUI((state) => ({
-            hdrModalState: {
-              ...state.hdrModalState,
-              error: null,
-              finalImageBase64: null,
-              isOpen: true,
-              progressMessage: event.payload,
-            },
-          }));
-        }
-      }),
-      listen('hdr-complete', (event: any) => {
-        if (isEffectActive) {
-          useUIStore.getState().setUI((state) => ({
-            hdrModalState: {
-              ...state.hdrModalState,
-              error: null,
-              finalImageBase64: event.payload.base64,
-              isProcessing: false,
-              progressMessage: 'Hdr Ready',
-            },
-          }));
-        }
-      }),
-      listen('hdr-error', (event: any) => {
-        if (isEffectActive) {
-          useUIStore.getState().setUI((state) => ({
-            hdrModalState: {
-              ...state.hdrModalState,
-              error: String(event.payload),
-              finalImageBase64: null,
-              isProcessing: false,
-              progressMessage: 'An error occurred.',
-            },
-          }));
-        }
-      }),
-      listen('focus-stack-progress', (event: any) => {
-        if (isEffectActive) {
-          useUIStore.getState().setUI((state) => {
-            if (state.focusStackModalState.finalImageBase64 || state.focusStackModalState.error) return state;
-            return { focusStackModalState: { ...state.focusStackModalState, progressMessage: event.payload } };
-          });
-        }
-      }),
-      listen('focus-stack-complete', (event: any) => {
-        if (isEffectActive) {
-          useUIStore.getState().setUI((state) => ({
-            focusStackModalState: {
-              ...state.focusStackModalState,
-              error: null,
-              finalImageBase64: event.payload.base64,
-              depthMapBase64: event.payload.depthMap,
-              isProcessing: false,
-              progressMessage: null,
-            },
-          }));
-        }
-      }),
-      listen('focus-stack-error', (event: any) => {
-        if (isEffectActive) {
-          useUIStore.getState().setUI((state) => ({
-            focusStackModalState: {
-              ...state.focusStackModalState,
-              error: String(event.payload),
-              finalImageBase64: null,
-              depthMapBase64: null,
-              isProcessing: false,
-              progressMessage: null,
-            },
-          }));
-        }
-      }),
+        }),
+      ]),
       listen('culling-start', (event: any) => {
         if (isEffectActive) {
           useUIStore.getState().setUI((state) => ({

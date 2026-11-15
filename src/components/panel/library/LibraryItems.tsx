@@ -24,6 +24,22 @@ import { IconAperture, IconFocalLength, IconIso, IconShutter } from '../editor/E
 import { isVideoPath } from '../../../utils/mediaTypes';
 import { getImageFlag } from '../../../utils/imageFlags';
 
+function libraryImageDetails(path: string, exif: ImageFile['exif']) {
+  const fullFileName = path.split(/[\\/]/).pop() || '';
+  const parts = fullFileName.split('?vc=');
+  const e = exif || {};
+  let fNumber = e.FNumber ? String(e.FNumber) : '';
+  if (fNumber && !fNumber.toLowerCase().startsWith('f')) fNumber = `f/${fNumber}`;
+  return {
+    baseName: parts[0],
+    isVirtualCopy: parts.length > 1,
+    shutter: e.ExposureTime || '',
+    fNumber,
+    iso: cameraIso(e) || '',
+    focal: e.FocalLengthIn35mmFilm || e.FocalLength || '',
+  };
+}
+
 interface ImageLayer {
   id: string;
   url: string;
@@ -75,26 +91,10 @@ const ThumbnailComponent = ({
     data: { type: 'library-image', path },
   });
 
-  const { baseName, isVirtualCopy } = useMemo(() => {
-    const fullFileName = path.split(/[\\/]/).pop() || '';
-    const parts = fullFileName.split('?vc=');
-    return {
-      baseName: parts[0],
-      isVirtualCopy: parts.length > 1,
-    };
-  }, [path]);
-
-  const { shutter, fNumber, iso, focal } = useMemo(() => {
-    const e = exif || {};
-    let fNum = e.FNumber ? String(e.FNumber) : '';
-    if (fNum && !fNum.toLowerCase().startsWith('f')) fNum = `f/${fNum}`;
-    return {
-      shutter: e.ExposureTime || '',
-      fNumber: fNum,
-      iso: cameraIso(e) || '',
-      focal: e.FocalLengthIn35mmFilm || e.FocalLength || '',
-    };
-  }, [exif]);
+  const { baseName, isVirtualCopy, shutter, fNumber, iso, focal } = useMemo(
+    () => libraryImageDetails(path, exif),
+    [path, exif],
+  );
 
   useEffect(() => {
     if (data) {
@@ -522,26 +522,10 @@ const ListItemComponent = ({
     data: { type: 'library-image', path },
   });
 
-  const { baseName, isVirtualCopy } = useMemo(() => {
-    const fullFileName = path.split(/[\\/]/).pop() || '';
-    const parts = fullFileName.split('?vc=');
-    return {
-      baseName: parts[0],
-      isVirtualCopy: parts.length > 1,
-    };
-  }, [path]);
-
-  const { shutter, fNumber, iso, focal } = useMemo(() => {
-    const e = exif || {};
-    let fNum = e.FNumber ? String(e.FNumber) : '';
-    if (fNum && !fNum.toLowerCase().startsWith('f')) fNum = `f/${fNum}`;
-    return {
-      shutter: e.ExposureTime || '',
-      fNumber: fNum,
-      iso: cameraIso(e) || '',
-      focal: e.FocalLengthIn35mmFilm || e.FocalLength || '',
-    };
-  }, [exif]);
+  const { baseName, isVirtualCopy, shutter, fNumber, iso, focal } = useMemo(
+    () => libraryImageDetails(path, exif),
+    [path, exif],
+  );
 
   const showExifCols = exifOverlay !== ExifOverlay.Off;
   const totalBase =

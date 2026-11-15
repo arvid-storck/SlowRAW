@@ -8,37 +8,23 @@ import { useEditorStore } from '../store/useEditorStore';
 import { useUIStore } from '../store/useUIStore';
 import { useProcessStore } from '../store/useProcessStore';
 import { Invokes, ImageFile } from '../components/ui/AppProperties';
-import { INITIAL_ADJUSTMENTS, normalizeLoadedAdjustments } from '../utils/adjustments';
+import { INITIAL_ADJUSTMENTS } from '../utils/adjustments';
 import { globalImageCache } from '../utils/ImageLRUCache';
 import { debouncedSave, debouncedSetHistory } from './useEditorActions';
 import { isVideoPath } from '../utils/mediaTypes';
-import { handleImageLoadFailure } from './useImageLoader';
 
 export interface AppNavigationProps {
   clearThumbnailQueue: () => void;
   refs: {
     transformWrapperRef: React.RefObject<any>;
     cachedEditStateRef: React.RefObject<any>;
-    selectedImagePathRef: React.RefObject<string | null>;
-    isBackendReadyRef: React.RefObject<boolean>;
-    latestRenderedJobIdRef: React.RefObject<number>;
-    previewJobIdRef: React.RefObject<number>;
     currentResRef: React.RefObject<number>;
     prevAdjustmentsRef: React.RefObject<any>;
   };
 }
 
 export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationProps) {
-  const {
-    transformWrapperRef,
-    cachedEditStateRef,
-    selectedImagePathRef,
-    isBackendReadyRef,
-    latestRenderedJobIdRef,
-    previewJobIdRef,
-    currentResRef,
-    prevAdjustmentsRef,
-  } = refs;
+  const { transformWrapperRef, cachedEditStateRef, currentResRef, prevAdjustmentsRef } = refs;
 
   const handleGoHome = useCallback(() => {
     showAllCatalog();
@@ -83,7 +69,7 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
         }
         return;
       }
-      const { selectedImage, isSliderDragging, resetHistory, setEditor } = useEditorStore.getState();
+      const { selectedImage, setEditor } = useEditorStore.getState();
       const { setLibrary, multiSelectedPaths } = useLibraryStore.getState();
       const { setUI } = useUIStore.getState();
 
@@ -104,22 +90,6 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
       const cachedMedium = useProcessStore.getState().mediumThumbnails[path] || cachedThumb;
 
       const cached = globalImageCache.get(path);
-      const isFrontendCached = Boolean(cached?.selectedImage?.isReady);
-      const isCachedInBackend = isFrontendCached
-        ? await invoke<boolean>('is_image_cached', { path }).catch(() => false)
-        : false;
-
-      const hasDifferentResolution =
-        cached &&
-        (useEditorStore.getState().originalSize.width !== cached.originalSize.width ||
-          useEditorStore.getState().originalSize.height !== cached.originalSize.height);
-
-      if (!isCachedInBackend || hasDifferentResolution) {
-        setEditor({ hasRenderedFirstFrame: false });
-      }
-
-      selectedImagePathRef.current = path;
-
       const newMultiSelectedPaths = multiSelectedPaths.includes(path) ? multiSelectedPaths : [path];
 
       setLibrary({
@@ -140,84 +110,33 @@ export function useAppNavigation({ clearThumbnailQueue, refs }: AppNavigationPro
         isLibraryExportPanelVisible: false,
       });
 
-      if (cached?.selectedImage?.isReady) {
-        setEditor({
-          selectedImage: {
-            ...cached.selectedImage,
-            thumbnailUrl: cachedMedium || cached.selectedImage.thumbnailUrl,
-          },
-          originalSize: cached.originalSize,
-          previewSize: cached.previewSize,
-          histogram: cached.histogram,
-          waveform: cached.waveform,
-          finalPreviewUrl: cached.finalPreviewUrl,
-          uncroppedAdjustedPreviewUrl: cached.uncroppedPreviewUrl,
-        });
-
-        setEditor({ adjustments: cached.adjustments });
-        resetHistory(cached.adjustments);
-        prevAdjustmentsRef.current = { path, adjustments: cached.adjustments };
-
-        setLibrary({ isViewLoading: false });
-
-        latestRenderedJobIdRef.current = previewJobIdRef.current;
-        isBackendReadyRef.current = false;
-        currentResRef.current = Infinity;
-
-        invoke(Invokes.LoadImage, { path })
-          .then((_result: any) => {
-            if (selectedImagePathRef.current !== path) return;
-            isBackendReadyRef.current = true;
-            currentResRef.current = 0;
-            setEditor({ originalSize: { width: _result.width, height: _result.height } });
-          })
-          .catch((err: any) => {
-            if (selectedImagePathRef.current !== path || String(err).includes('cancelled')) return;
-            isBackendReadyRef.current = false;
-            handleImageLoadFailure(path, err);
-          });
-
-        invoke(Invokes.LoadMetadata, { path, forEditor: true })
-          .then((metadata: any) => {
-            if (selectedImagePathRef.current !== path) return;
-            let freshAdjustments: any;
-            if (metadata.adjustments && !metadata.adjustments.is_null) {
-              freshAdjustments = normalizeLoadedAdjustments(metadata.adjustments);
-            } else {
-              freshAdjustments = { ...INITIAL_ADJUSTMENTS };
-            }
-            if (!isSliderDragging && JSON.stringify(cached.adjustments) !== JSON.stringify(freshAdjustments)) {
-              setEditor({ adjustments: freshAdjustments });
-              resetHistory(freshAdjustments);
-              prevAdjustmentsRef.current = { path, adjustments: freshAdjustments };
-              globalImageCache.set(path, { ...cached, adjustments: freshAdjustments });
-            }
-          })
-          .catch((err) => console.error('Failed background metadata sync on cache hit:', err));
-
-        return;
-      }
-
-      isBackendReadyRef.current = true;
-
+      currentResRef.current = 0;
+      prevAdjustmentsRef.current = null;
       const imageFile = useLibraryStore.getState().imageList.find((img) => img.path === path);
       setEditor({
         selectedImage: {
-          exif: null,
+          exif: imageFile?.exif ?? cached?.selectedImage?.exif ?? null,
+          catalogCamera: imageFile?.camera ?? cached?.selectedImage?.catalogCamera,
+          catalogLens: imageFile?.lens ?? cached?.selectedImage?.catalogLens,
+          catalogFocalLength: imageFile?.focal_length ?? cached?.selectedImage?.catalogFocalLength,
+          catalogFNumber: imageFile?.f_number ?? cached?.selectedImage?.catalogFNumber,
           group_id: imageFile?.group_id ?? null,
-          height: 0,
-          isRaw: false,
+          height: cached?.originalSize.height ?? 0,
+          isRaw: imageFile?.is_raw ?? cached?.selectedImage?.isRaw ?? false,
           isReady: false,
           metadata: null,
           path,
-          thumbnailUrl: cachedMedium,
-          width: 0,
+          thumbnailUrl: cachedMedium || cached?.selectedImage?.thumbnailUrl,
+          width: cached?.originalSize.width ?? 0,
         },
-        originalSize: { width: 0, height: 0 },
-        previewSize: { width: 0, height: 0 },
-        histogram: null,
-        waveform: null,
+        adjustments: cached?.adjustments ?? { ...INITIAL_ADJUSTMENTS },
+        originalSize: cached?.originalSize ?? { width: 0, height: 0 },
+        previewSize: cached?.previewSize ?? { width: 0, height: 0 },
+        histogram: cached?.histogram ?? null,
+        waveform: cached?.waveform ?? null,
         uncroppedAdjustedPreviewUrl: null,
+        hasRenderedFirstFrame: false,
+        previewError: null,
       });
 
       setLibrary({ isViewLoading: true });

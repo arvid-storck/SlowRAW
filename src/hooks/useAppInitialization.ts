@@ -20,7 +20,6 @@ import {
 import { useTranslation } from 'react-i18next';
 
 interface UseAppInitializationProps {
-  preloadedDataRef: React.RefObject<any>;
   thumbnailSize: ThumbnailSize;
   setThumbnailSize: (size: ThumbnailSize) => void;
   thumbnailAspectRatio: ThumbnailAspectRatio;
@@ -44,7 +43,6 @@ const getDefaultLanguage = (i18nInstance: any): string => {
 };
 
 export const useAppInitialization = ({
-  preloadedDataRef,
   thumbnailSize,
   setThumbnailSize,
   thumbnailAspectRatio,
@@ -240,7 +238,6 @@ export const useAppInitialization = ({
     setFilterCriteria,
     setEditor,
     setLibrary,
-    preloadedDataRef,
     setThumbnailSize,
     setThumbnailAspectRatio,
   ]);

@@ -1,13 +1,14 @@
 import IndeterminateProgress from '../ui/IndeterminateProgress';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CheckCircle, XCircle, Loader2, Save, RefreshCw, Layers } from 'lucide-react';
+import { CheckCircle, XCircle, Loader2, Save, RefreshCw, Images, Layers } from 'lucide-react';
 import { motion } from 'framer-motion';
 import Button from '../ui/Button';
 import Text from '../ui/Text';
 import { TextColors, TextVariants } from '../../types/typography';
 
-interface PanoramaModalProps {
+interface ImageMergeModalProps {
+  kind: 'hdr' | 'panorama';
   error: string | null;
   finalImageBase64: string | null;
   imageCount?: number;
@@ -17,11 +18,12 @@ interface PanoramaModalProps {
   onClose(): void;
   onOpenFile(path: string): void;
   onSave(): Promise<string>;
-  onStitch(): void;
+  onStart(): void;
   progressMessage: string | null;
 }
 
-export default function PanoramaModal({
+export default function ImageMergeModal({
+  kind,
   error,
   finalImageBase64,
   imageCount,
@@ -31,10 +33,12 @@ export default function PanoramaModal({
   onClose,
   onOpenFile,
   onSave,
-  onStitch,
+  onStart,
   progressMessage,
-}: PanoramaModalProps) {
+}: ImageMergeModalProps) {
   const { t } = useTranslation();
+  const isHdr = kind === 'hdr';
+  const Icon = isHdr ? Images : Layers;
   const [isMounted, setIsMounted] = useState(false);
   const [show, setShow] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -101,7 +105,7 @@ export default function PanoramaModal({
             <XCircle className="w-12 h-12 text-red-500" />
           </div>
           <Text variant={TextVariants.title} className="mb-2 text-center">
-            {t('modals.panorama.failed')}
+            {isHdr ? t('modals.hdr.failed') : t('modals.panorama.failed')}
           </Text>
           <Text className="text-center p-4 rounded-lg bg-bg-primary max-w-md mt-2 leading-relaxed">
             {String(error)}
@@ -116,7 +120,7 @@ export default function PanoramaModal({
           <div className="w-full max-h-[500px] bg-[#111] rounded-lg overflow-hidden border border-surface flex items-center justify-center">
             <img
               src={finalImageBase64}
-              alt={t('uiText.PanoramaModal.stitched_panorama')}
+              alt={isHdr ? t('uiText.HdrModal.merged_hdr') : t('uiText.PanoramaModal.stitched_panorama')}
               className="w-full h-full object-contain max-h-[500px]"
             />
           </div>
@@ -129,7 +133,7 @@ export default function PanoramaModal({
                 className="flex items-center justify-center gap-2 mt-4"
               >
                 <CheckCircle className="w-5 h-5" />
-                <span>{t('modals.panorama.savedSuccess')}</span>
+                <span>{isHdr ? t('modals.hdr.savedSuccess') : t('modals.panorama.savedSuccess')}</span>
               </Text>
             </motion.div>
           )}
@@ -144,7 +148,7 @@ export default function PanoramaModal({
             {loadingImageUrl ? (
               <img
                 src={loadingImageUrl}
-                alt={t('uiText.PanoramaModal.source_preview')}
+                alt={isHdr ? t('uiText.HdrModal.source_preview') : t('uiText.PanoramaModal.source_preview')}
                 className="w-full h-full object-cover"
               />
             ) : (
@@ -159,16 +163,16 @@ export default function PanoramaModal({
               className="flex flex-col items-center w-full"
             >
               <Text variant={TextVariants.title} className="mb-2 text-center">
-                {t('modals.panorama.stitchingProgress')}
+                {isHdr ? t('modals.hdr.merging') : t('modals.panorama.stitchingProgress')}
               </Text>
               <Text className="text-center font-mono h-6 flex justify-center items-center">
-                {progressMessage || t('modals.panorama.initializing')}
+                {progressMessage || (isHdr ? t('modals.hdr.initializing') : t('modals.panorama.initializing'))}
               </Text>
 
               <IndeterminateProgress />
 
               <Text variant={TextVariants.small} className="mt-6 text-center max-w-xs opacity-60">
-                {t('modals.panorama.speedNotice')}
+                {isHdr ? t('modals.hdr.speedNotice') : t('modals.panorama.speedNotice')}
               </Text>
             </motion.div>
           </div>
@@ -179,13 +183,19 @@ export default function PanoramaModal({
     return (
       <div className="flex flex-col items-center justify-center h-[460px]">
         <div className="flex items-center justify-center mb-6">
-          <Layers className="w-12 h-12 text-accent" />
+          <Icon className="w-12 h-12 text-accent" />
         </div>
         <Text variant={TextVariants.title} className="mb-3 text-center">
-          {t('modals.panorama.title')}
+          {isHdr ? t('modals.hdr.title') : t('modals.panorama.title')}
         </Text>
-        <Text className="text-center max-w-md leading-relaxed text-text-secondary">
-          {imageCount ? t('modals.panorama.descCount', { count: imageCount }) : t('modals.panorama.descGeneric')}
+        <Text className={`text-center max-w-md leading-relaxed ${isHdr ? '' : 'text-text-secondary'}`}>
+          {imageCount
+            ? isHdr
+              ? t('modals.hdr.descriptionWithCount', { count: imageCount })
+              : t('modals.panorama.descCount', { count: imageCount })
+            : isHdr
+              ? t('modals.hdr.description')
+              : t('modals.panorama.descGeneric')}
         </Text>
       </div>
     );
@@ -195,7 +205,7 @@ export default function PanoramaModal({
     if (error) {
       return (
         <Button onClick={handleClose} className="w-full">
-          {t('modals.panorama.close')}
+          {isHdr ? t('modals.hdr.close') : t('modals.panorama.close')}
         </Button>
       );
     }
@@ -207,9 +217,11 @@ export default function PanoramaModal({
             onClick={handleClose}
             className="px-4 py-2 rounded-md text-text-secondary hover:bg-card-active transition-colors"
           >
-            {t('modals.panorama.close')}
+            {isHdr ? t('modals.hdr.close') : t('modals.panorama.close')}
           </button>
-          <Button onClick={handleOpen}>{t('modals.panorama.openInEditor')}</Button>
+          <Button onClick={handleOpen}>
+            {isHdr ? t('modals.hdr.openInEditor') : t('modals.panorama.openInEditor')}
+          </Button>
         </>
       );
     }
@@ -222,24 +234,36 @@ export default function PanoramaModal({
           onClick={handleClose}
           className="px-4 py-2 rounded-md text-text-secondary hover:bg-card-active transition-colors text-sm"
         >
-          {finalImageBase64 ? t('modals.panorama.close') : t('modals.panorama.cancel')}
+          {finalImageBase64
+            ? isHdr
+              ? t('modals.hdr.close')
+              : t('modals.panorama.close')
+            : isHdr
+              ? t('modals.hdr.cancel')
+              : t('modals.panorama.cancel')}
         </button>
 
-        <Button onClick={onStitch} disabled={isProcessing} variant={finalImageBase64 ? 'secondary' : 'primary'}>
+        <Button onClick={onStart} disabled={isProcessing} variant={finalImageBase64 ? 'secondary' : 'primary'}>
           {isProcessing ? (
             <Loader2 className="animate-spin mr-2" size={16} />
           ) : finalImageBase64 ? (
             <RefreshCw className="mr-2" size={16} />
           ) : (
-            <Layers className="mr-2" size={16} />
+            <Icon className="mr-2" size={16} />
           )}
-          {finalImageBase64 ? t('modals.panorama.retry') : t('modals.panorama.start')}
+          {finalImageBase64
+            ? isHdr
+              ? t('modals.hdr.retry')
+              : t('modals.panorama.retry')
+            : isHdr
+              ? t('modals.hdr.start')
+              : t('modals.panorama.start')}
         </Button>
 
         {finalImageBase64 && (
           <Button onClick={handleSave} disabled={isSaving || isProcessing}>
             {isSaving ? <Loader2 className="animate-spin mr-2" size={16} /> : <Save className="mr-2" size={16} />}
-            {t('modals.panorama.save')}
+            {isHdr ? t('modals.hdr.save') : t('modals.panorama.save')}
           </Button>
         )}
       </div>

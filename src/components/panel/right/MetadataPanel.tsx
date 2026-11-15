@@ -13,7 +13,6 @@ import { IconAperture, IconShutter, IconIso, IconFocalLength, IconLens } from '.
 import { useEditorStore } from '../../../store/useEditorStore';
 import { useLibraryStore } from '../../../store/useLibraryStore';
 import { useSettingsStore } from '../../../store/useSettingsStore';
-import { useProcessStore } from '../../../store/useProcessStore';
 import { useLibraryActions } from '../../../hooks/useLibraryActions';
 import { expandGroupedPaths } from '../../../utils/imageGrouping';
 
@@ -32,6 +31,7 @@ interface CameraSettings {
 }
 
 interface MetaDataItemProps {
+  wrap?: boolean;
   label: string;
   value: any;
 }
@@ -52,7 +52,7 @@ const CAMERA_ICONS: Record<string, React.FC> = {
   LensModel: IconLens,
 };
 
-function MetadataItem({ label, value }: MetaDataItemProps) {
+function MetadataItem({ label, value, wrap }: MetaDataItemProps) {
   const strValue = String(value);
 
   return (
@@ -68,7 +68,7 @@ function MetadataItem({ label, value }: MetaDataItemProps) {
       <Text
         variant={TextVariants.small}
         color={TextColors.primary}
-        className="break-words min-w-0 text-right line-clamp-3 select-text"
+        className={clsx('break-words min-w-0 text-right select-text', !wrap && 'line-clamp-3')}
         data-tooltip={strValue.length > 500 ? strValue.slice(0, 500) + '...' : strValue}
       >
         {strValue}
@@ -191,7 +191,6 @@ export default function MetadataPanel() {
   const multiSelectedPaths = useLibraryStore((s) => s.multiSelectedPaths);
   const imageRatings = useLibraryStore((s) => s.imageRatings);
   const appSettings = useSettingsStore((s) => s.appSettings);
-  const thumbnails = useProcessStore((s) => s.thumbnails);
 
   const { handleRate, handleSetColorLabel, handleTagsChanged, handleUpdateExif } = useLibraryActions();
 
@@ -200,7 +199,6 @@ export default function MetadataPanel() {
     if (!selectedImage) return EMPTY_TAGS;
     return state.imageList.find((img) => img.path === selectedImage.path)?.tags ?? EMPTY_TAGS;
   });
-  const liveThumbnailUrl = selectedImage ? thumbnails[selectedImage.path] : undefined;
 
   const targetPaths = multiSelectedPaths?.length > 0 ? multiSelectedPaths : selectedImage ? [selectedImage.path] : [];
   const getPathsToUpdate = () => {
@@ -217,7 +215,11 @@ export default function MetadataPanel() {
       const value =
         key === 'PhotographicSensitivity'
           ? cameraIso(exif)
-          : (exif[key] ?? (key === 'FocalLengthIn35mmFilm' ? exif.FocalLength : undefined));
+          : key === 'FNumber'
+            ? (selectedImage?.catalogFNumber ?? exif.FNumber)
+            : key === 'FocalLengthIn35mmFilm'
+              ? (selectedImage?.catalogFocalLength ?? exif.FocalLength ?? exif.FocalLengthIn35mmFilm)
+              : exif[key];
       const hasValue = value !== undefined && value !== null && value !== '';
 
       const translatedLabel =
@@ -243,7 +245,7 @@ export default function MetadataPanel() {
       };
     });
 
-    const lensValue = exif['LensModel'];
+    const lensValue = selectedImage?.catalogLens ?? exif.LensModel;
     const hasLensValue = lensValue !== undefined && lensValue !== null && lensValue !== '';
     const lensSetting = {
       key: 'LensModel',
@@ -274,7 +276,13 @@ export default function MetadataPanel() {
       .sort(([keyA], [keyB]) => keyA.localeCompare(keyB));
 
     return { cameraGridSettings, lensSetting, otherExifEntries };
-  }, [selectedImage?.exif, t]);
+  }, [
+    selectedImage?.exif,
+    selectedImage?.catalogFNumber,
+    selectedImage?.catalogFocalLength,
+    selectedImage?.catalogLens,
+    t,
+  ]);
 
   const currentColor = useMemo(() => {
     return tags.find((tag: string) => tag.startsWith('color:'))?.substring(6) || null;
@@ -352,23 +360,9 @@ export default function MetadataPanel() {
               <Text variant={TextVariants.heading} className="mb-3">
                 {t('editor.metadata.fileInfo.title')}
               </Text>
-              <div className="bg-surface border border-surface rounded-xl p-3.5 flex flex-col gap-2 cursor-default relative min-h-[5.5rem] overflow-hidden">
-                {(liveThumbnailUrl || selectedImage?.thumbnailUrl) && (
-                  <div
-                    className="absolute inset-y-0 right-0 w-2/3 pointer-events-none opacity-20"
-                    style={{
-                      backgroundImage: `url(${liveThumbnailUrl || selectedImage.thumbnailUrl})`,
-                      backgroundPosition: 'right center',
-                      backgroundSize: 'cover',
-                      filter: 'grayscale(100%)',
-                      maskImage: 'linear-gradient(to right, transparent 5%, black 80%)',
-                      WebkitMaskImage: 'linear-gradient(to right, transparent 5%, black 80%)',
-                    }}
-                  />
-                )}
-
-                <div className="flex justify-between items-start gap-4 relative z-10">
-                  <Text weight={TextWeights.semibold} color={TextColors.primary} className="truncate drop-shadow-sm">
+              <div className="bg-surface border border-surface rounded-xl p-3.5 flex flex-col gap-2 cursor-default min-h-[5.5rem] overflow-hidden">
+                <div className="flex justify-between items-start gap-4">
+                  <Text weight={TextWeights.semibold} color={TextColors.primary} className="truncate">
                     {fileName || '-'}
                   </Text>
                   <div className="flex items-center gap-1.5 shrink-0">
@@ -386,8 +380,8 @@ export default function MetadataPanel() {
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-0.5 relative z-10">
-                  <Text variant={TextVariants.small} color={TextColors.secondary} className="truncate drop-shadow-sm">
+                <div className="flex flex-col gap-0.5">
+                  <Text variant={TextVariants.small} color={TextColors.secondary} className="truncate">
                     {selectedImage.width && selectedImage.height
                       ? t('editor.metadata.fileInfo.dimensions', {
                           width: selectedImage.width,
@@ -396,7 +390,7 @@ export default function MetadataPanel() {
                         })
                       : t('editor.metadata.fileInfo.emptyDimensions')}
                   </Text>
-                  <Text variant={TextVariants.small} color={TextColors.secondary} className="truncate drop-shadow-sm">
+                  <Text variant={TextVariants.small} color={TextColors.secondary} className="truncate">
                     {selectedImage.exif?.DateTimeOriginal || '-'}
                   </Text>
                 </div>
@@ -409,8 +403,13 @@ export default function MetadataPanel() {
               </Text>
               <div className="flex flex-col gap-2">
                 <MetadataItem
+                  wrap
                   label={t('editor.metadata.camera.model')}
-                  value={[selectedImage.exif?.Make, selectedImage.exif?.Model].filter(Boolean).join(' ') || '-'}
+                  value={
+                    selectedImage.catalogCamera ||
+                    [selectedImage.exif?.Make, selectedImage.exif?.Model].filter(Boolean).join(' ') ||
+                    '-'
+                  }
                 />
                 <div className="grid grid-cols-2 gap-2">
                   {cameraGridSettings.map((item: any) => {
@@ -454,7 +453,7 @@ export default function MetadataPanel() {
                     variant={TextVariants.small}
                     weight={TextWeights.medium}
                     color={TextColors.primary}
-                    className="truncate"
+                    className="min-w-0 whitespace-normal break-words"
                   >
                     {lensSetting.value}
                   </Text>

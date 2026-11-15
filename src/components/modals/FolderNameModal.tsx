@@ -3,7 +3,8 @@ import { useTranslation } from 'react-i18next';
 import Text from '../ui/Text';
 import { TextVariants } from '../../types/typography';
 
-interface FolderModalProps {
+interface FolderNameModalProps {
+  currentName?: string;
   isOpen: boolean;
   onClose(): void;
   onSave(name: string): void;
@@ -12,21 +13,24 @@ interface FolderModalProps {
   buttonText?: string;
 }
 
-export default function CreateFolderModal({
+export default function FolderNameModal({
+  currentName,
   isOpen,
   onClose,
   onSave,
   title,
   placeholder,
   buttonText,
-}: FolderModalProps) {
+}: FolderNameModalProps) {
   const { t } = useTranslation();
+  const isRename = currentName !== undefined;
   const [name, setName] = useState('');
   const [isMounted, setIsMounted] = useState(false);
   const [show, setShow] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
+      if (currentName !== undefined) setName(currentName);
       setIsMounted(true);
       const timer = setTimeout(() => setShow(true), 10);
       return () => clearTimeout(timer);
@@ -38,15 +42,15 @@ export default function CreateFolderModal({
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [isOpen]);
+  }, [isOpen, currentName]);
 
   const handleSave = useCallback(() => {
     const trimmed = name.trim();
-    if (trimmed) {
+    if (trimmed && trimmed !== currentName) {
       onSave(trimmed);
-      onClose();
     }
-  }, [name, onSave, onClose]);
+    if (isRename || trimmed) onClose();
+  }, [name, currentName, isRename, onSave, onClose]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -88,14 +92,17 @@ export default function CreateFolderModal({
         onClick={(e: any) => e.stopPropagation()}
       >
         <Text variant={TextVariants.title} className="mb-4">
-          {title || t('modals.createFolder.title')}
+          {title || (isRename ? t('modals.renameFolder.title') : t('modals.createFolder.title'))}
         </Text>
         <input
           autoFocus
           className="w-full bg-bg-primary text-text-primary border border-border rounded-md px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-accent"
           onChange={(e: any) => setName(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder || t('modals.createFolder.placeholder')}
+          onFocus={isRename ? (e) => e.target.select() : undefined}
+          placeholder={
+            placeholder || (isRename ? t('modals.renameFolder.placeholder') : t('modals.createFolder.placeholder'))
+          }
           type="text"
           value={name}
         />
@@ -104,14 +111,14 @@ export default function CreateFolderModal({
             className="px-4 py-2 rounded-md text-text-secondary hover:bg-surface transition-colors"
             onClick={onClose}
           >
-            {t('modals.createFolder.cancel')}
+            {isRename ? t('modals.renameFolder.cancel') : t('modals.createFolder.cancel')}
           </button>
           <button
             className="px-4 py-2 rounded-md bg-accent text-button-text font-semibold hover:bg-accent-hover disabled:bg-gray-500 disabled:text-white disabled:cursor-not-allowed transition-colors"
-            disabled={!name.trim()}
+            disabled={!name.trim() || name.trim() === currentName}
             onClick={handleSave}
           >
-            {buttonText || t('modals.createFolder.create')}
+            {buttonText || (isRename ? t('modals.renameFolder.save') : t('modals.createFolder.create'))}
           </button>
         </div>
       </div>

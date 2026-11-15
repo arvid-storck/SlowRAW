@@ -33,6 +33,31 @@ fn neutral_camera_tables_are_not_builtin_corrections() {
 }
 
 #[test]
+fn nikon_invalid_vignette_preserves_distortion() {
+    let p = profile(
+        "NIKON",
+        json!({
+            "Nikon:DistortionCorrectionVersion": "0100",
+            "Nikon:RadialDistortionCoefficient1": 0.10,
+            "Nikon:RadialDistortionCoefficient2": -0.06,
+            "Nikon:RadialDistortionCoefficient3": -0.10,
+            "Nikon:VignetteCorrectionVersion": "0100",
+            "Nikon:VignetteCoefficient1": -7.5,
+            "Nikon:VignetteCoefficient2": 2.1,
+            "Nikon:VignetteCoefficient3": 0.5,
+        }),
+    );
+    let table = p.radial.unwrap();
+    assert!(!table.distortion.is_empty());
+    assert!(table.gain.is_empty());
+    assert!(table.vignette_skipped);
+    assert_eq!(
+        serde_json::to_value(table).unwrap()["vignette_skipped"],
+        true
+    );
+}
+
+#[test]
 fn sony_preserves_precision_and_independent_strengths() {
     let mut d = vec![16.0];
     d.extend([1638.4123456789; 16]);

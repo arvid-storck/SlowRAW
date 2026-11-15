@@ -85,7 +85,7 @@ const EditorToolbar = memo(
 
       const exif = selectedImage.exif || {};
 
-      let fNum = exif.FNumber;
+      let fNum = selectedImage.catalogFNumber ?? exif.FNumber;
       if (fNum) {
         const fStr = String(fNum);
         fNum = fStr.toLowerCase().startsWith('f') ? fStr : `f/${fStr}`;
@@ -107,7 +107,7 @@ const EditorToolbar = memo(
         iso: cameraIso(exif),
         fNumber: fNum,
         shutter: exif.ExposureTime,
-        focal: exif.FocalLengthIn35mmFilm,
+        focal: selectedImage.catalogFocalLength ?? exif.FocalLength ?? exif.FocalLengthIn35mmFilm,
         captureDate: captureDate,
         captureTime: captureTime,
       };
@@ -121,7 +121,7 @@ const EditorToolbar = memo(
         exifData: data,
         hasExif: hasData,
       };
-    }, [selectedImage.path, selectedImage.exif]);
+    }, [selectedImage.path, selectedImage.exif, selectedImage.catalogFNumber, selectedImage.catalogFocalLength]);
 
     useEffect(() => {
       if (showResolution) {

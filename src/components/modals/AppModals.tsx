@@ -6,12 +6,11 @@ import { useSettingsStore } from '../../store/useSettingsStore';
 import { useProcessStore } from '../../store/useProcessStore';
 import { useEditorStore } from '../../store/useEditorStore';
 import CopyPasteSettingsModal from './CopyPasteSettingsModal';
-import PanoramaModal from './PanoramaModal';
-import HdrModal from './HdrModal';
+import ImageMergeModal from './ImageMergeModal';
+import type { ImageMergeKind } from '../../hooks/useProductivityActions';
 import FocusStackModal from './FocusStackModal';
 import DenoiseModal from './DenoiseModal';
-import CreateFolderModal from './CreateFolderModal';
-import RenameFolderModal from './RenameFolderModal';
+import FolderNameModal from './FolderNameModal';
 import RenameFileModal from './RenameFileModal';
 import ConfirmModal from './ConfirmModal';
 import ImportSettingsModal from './ImportSettingsModal';
@@ -22,12 +21,8 @@ import { CopyPasteSettings } from '../../utils/adjustments';
 
 export interface AppModalsProps {
   handleImageSelect: (path: string) => void;
-  handleSavePanorama: () => Promise<string>;
-  handleStartPanorama: (paths: string[]) => void;
-  handleSaveHdr: () => Promise<string>;
-  handleStartHdr: (paths: string[]) => void;
-  handleStartFocusStack: (paths: string[]) => void;
-  handleSaveFocusStack: () => Promise<string>;
+  handleStartImageMerge: (kind: ImageMergeKind, paths: string[]) => void;
+  handleSaveImageMerge: (kind: ImageMergeKind) => Promise<string>;
   refreshImageList: () => Promise<void>;
   handleApplyDenoise: (intensity: number) => Promise<void>;
   handleBatchDenoise: (intensity: number, paths: string[]) => Promise<string[]>;
@@ -137,66 +132,42 @@ export default function AppModals(props: AppModalsProps) {
           handleSettingsChange({ ...appSettings, copyPasteSettings: newSettings } as AppSettings)
         }
       />
-      <PanoramaModal
-        error={panoramaModalState.error}
-        finalImageBase64={panoramaModalState.finalImageBase64}
-        imageCount={panoramaModalState.stitchingSourcePaths.length}
-        isOpen={panoramaModalState.isOpen}
-        isProcessing={panoramaModalState.isProcessing}
-        loadingImageUrl={
-          panoramaModalState.stitchingSourcePaths.length > 0
-            ? thumbnails[
-                panoramaModalState.stitchingSourcePaths[Math.floor(panoramaModalState.stitchingSourcePaths.length / 2)]
-              ] || null
-            : null
-        }
-        onClose={() =>
-          setUI({
-            panoramaModalState: {
-              isOpen: false,
-              isProcessing: false,
-              progressMessage: '',
-              finalImageBase64: null,
-              error: null,
-              stitchingSourcePaths: [],
-            },
-          })
-        }
-        onOpenFile={(path: string) => props.handleImageSelect(path)}
-        onSave={props.handleSavePanorama}
-        onStitch={() => props.handleStartPanorama(panoramaModalState.stitchingSourcePaths)}
-        progressMessage={panoramaModalState.progressMessage}
-      />
-      <HdrModal
-        error={hdrModalState.error}
-        finalImageBase64={hdrModalState.finalImageBase64}
-        imageCount={hdrModalState.stitchingSourcePaths.length}
-        isOpen={hdrModalState.isOpen}
-        isProcessing={hdrModalState.isProcessing}
-        loadingImageUrl={
-          hdrModalState.stitchingSourcePaths.length > 0
-            ? thumbnails[
-                hdrModalState.stitchingSourcePaths[Math.floor(hdrModalState.stitchingSourcePaths.length / 2)]
-              ] || null
-            : null
-        }
-        onClose={() =>
-          setUI({
-            hdrModalState: {
-              isOpen: false,
-              isProcessing: false,
-              progressMessage: '',
-              finalImageBase64: null,
-              error: null,
-              stitchingSourcePaths: [],
-            },
-          })
-        }
-        onOpenFile={(path: string) => props.handleImageSelect(path)}
-        onSave={props.handleSaveHdr}
-        onMerge={() => props.handleStartHdr(hdrModalState.stitchingSourcePaths)}
-        progressMessage={hdrModalState.progressMessage}
-      />
+      {(
+        [
+          ['panorama', 'panoramaModalState', panoramaModalState],
+          ['hdr', 'hdrModalState', hdrModalState],
+        ] as const
+      ).map(([kind, stateKey, state]) => {
+        const paths = state.stitchingSourcePaths;
+        return (
+          <ImageMergeModal
+            key={kind}
+            kind={kind}
+            error={state.error}
+            finalImageBase64={state.finalImageBase64}
+            imageCount={paths.length}
+            isOpen={state.isOpen}
+            isProcessing={state.isProcessing}
+            loadingImageUrl={paths.length ? thumbnails[paths[Math.floor(paths.length / 2)]] || null : null}
+            onClose={() =>
+              setUI({
+                [stateKey]: {
+                  isOpen: false,
+                  isProcessing: false,
+                  progressMessage: '',
+                  finalImageBase64: null,
+                  error: null,
+                  stitchingSourcePaths: [],
+                },
+              })
+            }
+            onOpenFile={(path) => props.handleImageSelect(path)}
+            onSave={() => props.handleSaveImageMerge(kind)}
+            onStart={() => props.handleStartImageMerge(kind, paths)}
+            progressMessage={state.progressMessage}
+          />
+        );
+      })}
       <FocusStackModal
         error={focusStackModalState.error}
         finalImageBase64={focusStackModalState.finalImageBase64}
@@ -224,8 +195,8 @@ export default function AppModals(props: AppModalsProps) {
           })
         }
         onOpenFile={(path: string) => props.handleImageSelect(path)}
-        onSave={props.handleSaveFocusStack}
-        onMerge={() => props.handleStartFocusStack(focusStackModalState.sourcePaths)}
+        onSave={() => props.handleSaveImageMerge('focusStack')}
+        onMerge={() => props.handleStartImageMerge('focusStack', focusStackModalState.sourcePaths)}
         progressMessage={focusStackModalState.progressMessage}
       />
       <DenoiseModal
@@ -248,7 +219,7 @@ export default function AppModals(props: AppModalsProps) {
             : null
         }
       />
-      <CreateFolderModal
+      <FolderNameModal
         isOpen={isCreateAlbumModalOpen}
         onClose={() => setUI({ isCreateAlbumModalOpen: false })}
         onSave={(name) => props.handleCreateAlbumItem(name, 'album')}
@@ -256,7 +227,7 @@ export default function AppModals(props: AppModalsProps) {
         placeholder={t('modals.createAlbum.placeholder')}
         buttonText={t('modals.createFolder.create')}
       />
-      <CreateFolderModal
+      <FolderNameModal
         isOpen={isCreateAlbumGroupModalOpen}
         onClose={() => setUI({ isCreateAlbumGroupModalOpen: false })}
         onSave={(name) => props.handleCreateAlbumItem(name, 'group')}
@@ -264,7 +235,7 @@ export default function AppModals(props: AppModalsProps) {
         placeholder={t('modals.createGroup.placeholder')}
         buttonText={t('modals.createFolder.create')}
       />
-      <RenameFolderModal
+      <FolderNameModal
         currentName={currentAlbumName}
         isOpen={isRenameAlbumModalOpen}
         onClose={() => setUI({ isRenameAlbumModalOpen: false })}

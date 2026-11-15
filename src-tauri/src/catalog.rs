@@ -8,14 +8,14 @@ use rusqlite::{
     Connection, OptionalExtension, ToSql, TransactionBehavior, params, params_from_iter,
 };
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 use walkdir::WalkDir;
 
 use crate::app_settings::{load_settings, update_catalog_folders};
 use crate::exif_processing::{get_primary_sidecar_path, read_exif_data};
 use crate::formats::{is_raw_file, is_supported_media_file, is_supported_video_file};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +33,10 @@ pub struct CatalogImage {
     pub rating: u8,
     pub tags: Option<Vec<String>>,
     pub exif: Option<HashMap<String, String>>,
+    pub camera: Option<String>,
+    pub lens: Option<String>,
+    pub focal_length: Option<String>,
+    pub f_number: Option<f64>,
     pub is_virtual_copy: bool,
     pub is_cloud_placeholder: bool,
     pub is_raw: bool,
@@ -97,14 +101,7 @@ pub fn open_video_in_system(path: String) -> Result<(), String> {
             path.display()
         ));
     }
-    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
-    {
-        open::that(path).map_err(|e| e.to_string())
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        Err("Opening videos in the system player is not supported on this platform.".into())
-    }
+    open::that(path).map_err(|e| e.to_string())
 }
 
 fn unix_seconds(time: SystemTime) -> i64 {
@@ -128,9 +125,9 @@ static CHECKED_DATABASES: std::sync::LazyLock<std::sync::Mutex<HashSet<PathBuf>>
 // Serialize folder scans; ordinary readers and short metadata writes remain concurrent.
 static CATALOG_SCAN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const INDEX_BATCH_SIZE: usize = 256;
-const UPSERT_IMAGE: &str = "INSERT INTO catalog_images(path,folder_path,filename,extension,modified,sidecar_modified,date_taken,camera,lens,focal_length,rating,color,flag,tags_json,exif_json,is_raw,is_edited,indexed_at)
- VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
- ON CONFLICT(path) DO UPDATE SET folder_path=excluded.folder_path,filename=excluded.filename,extension=excluded.extension,modified=excluded.modified,sidecar_modified=excluded.sidecar_modified,date_taken=excluded.date_taken,camera=excluded.camera,lens=excluded.lens,focal_length=excluded.focal_length,rating=excluded.rating,color=excluded.color,flag=excluded.flag,tags_json=excluded.tags_json,exif_json=excluded.exif_json,is_raw=excluded.is_raw,is_edited=excluded.is_edited,indexed_at=excluded.indexed_at";
+const UPSERT_IMAGE: &str = "INSERT INTO catalog_images(path,folder_path,filename,extension,modified,sidecar_modified,date_taken,camera,lens,focal_length,rating,color,flag,tags_json,exif_json,is_raw,is_edited,indexed_at,f_number)
+ VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+ ON CONFLICT(path) DO UPDATE SET folder_path=excluded.folder_path,filename=excluded.filename,extension=excluded.extension,modified=excluded.modified,sidecar_modified=excluded.sidecar_modified,date_taken=excluded.date_taken,camera=excluded.camera,lens=excluded.lens,focal_length=excluded.focal_length,rating=excluded.rating,color=excluded.color,flag=excluded.flag,tags_json=excluded.tags_json,exif_json=excluded.exif_json,is_raw=excluded.is_raw,is_edited=excluded.is_edited,indexed_at=excluded.indexed_at,f_number=excluded.f_number";
 
 fn migrate_catalog_schema(conn: &Connection) -> rusqlite::Result<()> {
     let version: Option<String> = conn
@@ -140,7 +137,7 @@ fn migrate_catalog_schema(conn: &Connection) -> rusqlite::Result<()> {
             |row| row.get(0),
         )
         .optional()?;
-    if version.as_deref() == Some("2") {
+    if version.as_deref() == Some("3") {
         return Ok(());
     }
     let tx = conn.unchecked_transaction()?;
@@ -162,7 +159,15 @@ fn migrate_catalog_schema(conn: &Connection) -> rusqlite::Result<()> {
          WHEN NEW.is_raw IS NULL OR NEW.is_raw NOT IN (0,1) OR NEW.is_edited IS NULL OR NEW.is_edited NOT IN (0,1)
          BEGIN SELECT RAISE(ABORT,'Catalog flags must be 0 or 1'); END;"
     )?;
-    {
+    if !columns.iter().any(|name| name == "f_number") {
+        tx.execute_batch("ALTER TABLE catalog_images ADD COLUMN f_number REAL;")?;
+    }
+    tx.execute_batch(
+        "UPDATE catalog_images
+        SET f_number=NULLIF(CAST(replace(lower(json_extract(exif_json, '$.FNumber')), 'f/', '') AS REAL), 0)
+        WHERE f_number IS NULL AND json_valid(exif_json);",
+    )?;
+    if version.as_deref() != Some("2") {
         let mut query = tx.prepare("SELECT path,exif_json FROM catalog_images")?;
         let mut rows = query.query([])?;
         let mut update = tx.prepare("UPDATE catalog_images SET exif_json=?1 WHERE path=?2")?;
@@ -218,6 +223,7 @@ fn open_db_path(path: &Path) -> Result<Connection, String> {
                 is_raw INTEGER NOT NULL DEFAULT 0 CHECK(is_raw IN (0,1)),
                 is_edited INTEGER NOT NULL DEFAULT 0 CHECK(is_edited IN (0,1)),
                 indexed_at INTEGER NOT NULL,
+                f_number REAL,
                 FOREIGN KEY(folder_path) REFERENCES catalog_folders(path) ON DELETE CASCADE
              );
              CREATE INDEX IF NOT EXISTS idx_catalog_images_folder ON catalog_images(folder_path);
@@ -479,12 +485,7 @@ fn prepare_catalog_rows(
                     .iter()
                     .find_map(|tag| tag.strip_prefix("flag:"))
                     .map(str::to_owned);
-                let camera = {
-                    let make = metadata_value(&exif, &["Make"]).unwrap_or("");
-                    let model = metadata_value(&exif, &["Model", "CameraModelName"]).unwrap_or("");
-                    let value = format!("{} {}", make, model).trim().to_string();
-                    (!value.is_empty()).then_some(value)
-                };
+                let camera = catalog_camera(&exif);
                 let lens =
                     metadata_value(&exif, &["LensModel", "Lens", "LensInfo"]).map(str::to_owned);
                 let date_taken =
@@ -534,10 +535,28 @@ fn prepare_catalog_rows(
                     ))
                     .into(),
                     unix_seconds(SystemTime::now()).into(),
+                    catalog_f_number(&exif).into(),
                 ])
             })
             .collect()
     })
+}
+
+fn catalog_camera(exif: &HashMap<String, String>) -> Option<String> {
+    let make = metadata_value(exif, &["Make"]).unwrap_or("");
+    let model = metadata_value(exif, &["Model", "CameraModelName"]).unwrap_or("");
+    let value = format!("{} {}", make, model).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn catalog_f_number(exif: &HashMap<String, String>) -> Option<f64> {
+    let value = metadata_value(exif, &["FNumber"])?.trim();
+    let number = value
+        .strip_prefix("f/")
+        .or_else(|| value.strip_prefix("F/"))
+        .unwrap_or(value);
+    let number = number.parse::<f64>().ok()?;
+    (number.is_finite() && number > 0.0).then_some(number)
 }
 
 fn write_catalog_batch(
@@ -602,83 +621,6 @@ fn status_from(conn: &Connection, app: &AppHandle) -> Result<CatalogStatus, Stri
 pub fn catalog_status(app_handle: AppHandle) -> Result<CatalogStatus, String> {
     let conn = open_db(&app_handle)?;
     status_from(&conn, &app_handle)
-}
-
-#[tauri::command]
-pub async fn catalog_build_thumbnail_cache(app_handle: AppHandle) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let conn = open_db(&app_handle)?;
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM catalog_images", [], |row| row.get(0))
-            .map_err(|e| e.to_string())?;
-        let mut query = conn
-            .prepare("SELECT path FROM catalog_images WHERE path > ? ORDER BY path LIMIT 64")
-            .map_err(|e| e.to_string())?;
-        let cache_dir = crate::file_management::get_thumb_cache_dir(&app_handle)?;
-        let settings = load_settings(app_handle.clone()).unwrap_or_default();
-        let state = app_handle.state::<crate::AppState>();
-        let gpu = crate::gpu_processing::get_or_init_gpu_context(&state, &app_handle).ok();
-        let mut after = String::new();
-        let mut current = 0;
-        let mut failed = 0;
-        let emit_progress = |current| {
-            let _ = app_handle.emit(
-                "thumbnail-cache-build-progress",
-                serde_json::json!({ "current": current, "total": total.max(current) }),
-            );
-        };
-        emit_progress(current);
-        loop {
-            let paths = query
-                .query_map([&after], |row| row.get::<_, String>(0))
-                .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>())
-                .map_err(|e| e.to_string())?;
-            if paths.is_empty() {
-                break;
-            }
-            for path in paths {
-                let source = Path::new(&path);
-                if !is_supported_video_file(source) {
-                    match crate::image_loader::load_cached_source(source, &settings, &state, None) {
-                        Ok((image, _)) => {
-                            crate::white_balance::as_shot_white_balance(&path);
-                            if crate::file_management::generate_single_thumbnail_and_cache(
-                                &path,
-                                &cache_dir,
-                                gpu.as_ref(),
-                                Some(image.as_ref()),
-                                false,
-                                &app_handle,
-                                &settings,
-                            )
-                            .is_none()
-                            {
-                                failed += 1;
-                            }
-                        }
-                        Err(error) => {
-                            log::warn!("Could not cache {path}: {error}");
-                            failed += 1;
-                        }
-                    }
-                }
-                after = path;
-                current += 1;
-                if current % 8 == 0 {
-                    emit_progress(current);
-                }
-            }
-        }
-        emit_progress(current);
-        if failed > 0 {
-            return Err(format!(
-                "Could not prepare the cache for {failed} catalog images."
-            ));
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -818,7 +760,11 @@ pub fn catalog_refresh_paths(
 ) -> Result<u64, String> {
     let mut conn = open_db(&app_handle)?;
     let mut pending = Vec::with_capacity(INDEX_BATCH_SIZE);
-    let sql = "UPDATE catalog_images SET rating=?1,color=?2,flag=?3,tags_json=?4,sidecar_modified=?5,is_edited=?6,indexed_at=?7,exif_json=COALESCE(?9,exif_json) WHERE path=?8";
+    let sql = "UPDATE catalog_images SET rating=?1,color=?2,flag=?3,tags_json=?4,sidecar_modified=?5,is_edited=?6,indexed_at=?7,exif_json=COALESCE(?9,exif_json),
+        camera=CASE WHEN ?9 IS NULL THEN camera ELSE ?10 END,
+        lens=CASE WHEN ?9 IS NULL THEN lens ELSE ?11 END,
+        focal_length=CASE WHEN ?9 IS NULL THEN focal_length ELSE ?12 END,
+        f_number=CASE WHEN ?9 IS NULL THEN f_number ELSE ?13 END WHERE path=?8";
     let mut updated = 0u64;
     for virtual_path in paths {
         let (path, _) = crate::file_management::parse_virtual_path(&virtual_path);
@@ -836,10 +782,11 @@ pub fn catalog_refresh_paths(
             .map(str::to_owned);
         let sidecar_modified = sidecar_stamp(&path, &sidecar);
         use rusqlite::types::Value;
-        let exif = if refresh_exif.unwrap_or(false) {
-            let mut exif = read_exif_data(&path_text, &[]);
+        let mut exif = HashMap::new();
+        let exif_json = if refresh_exif.unwrap_or(false) {
+            exif = read_exif_data(&path_text, &[]);
             exif.extend(sidecar_data.exif.unwrap_or_default());
-            let ordered: BTreeMap<_, _> = exif.into_iter().collect();
+            let ordered: BTreeMap<_, _> = exif.iter().collect();
             serde_json::to_string(&ordered)
                 .map_err(|error| error.to_string())?
                 .into()
@@ -862,7 +809,15 @@ pub fn catalog_refresh_paths(
             .into(),
             unix_seconds(SystemTime::now()).into(),
             path_text.into(),
-            exif,
+            exif_json,
+            catalog_camera(&exif).into(),
+            metadata_value(&exif, &["LensModel", "Lens", "LensInfo"])
+                .map(str::to_owned)
+                .into(),
+            metadata_value(&exif, &["FocalLength", "FocalLengthIn35mmFilm"])
+                .map(str::to_owned)
+                .into(),
+            catalog_f_number(&exif).into(),
         ]);
         if pending.len() == INDEX_BATCH_SIZE {
             updated += write_catalog_batch(&mut conn, &mut pending, sql)?;
@@ -940,7 +895,7 @@ fn filtered_query(
     let mut sql = String::from(if count_only {
         "SELECT COUNT(*) FROM catalog_images WHERE 1=1"
     } else {
-        "SELECT path,modified,rating,tags_json,exif_json,is_raw,is_edited FROM catalog_images WHERE 1=1"
+        "SELECT path,modified,rating,tags_json,exif_json,is_raw,is_edited,camera,lens,focal_length,f_number FROM catalog_images WHERE 1=1"
     });
     let mut values: Vec<Box<dyn ToSql>> = Vec::new();
     if let Some(v) = filter.text.filter(|v| !v.trim().is_empty()) {
@@ -1033,7 +988,7 @@ fn filtered_query(
                   ELSE CAST(json_extract(exif_json, '$.ExposureTime') AS REAL) END, 0)"
         }
         Some("focal_length") => "CAST(focal_length AS REAL)",
-        Some("aperture") => "CAST(json_extract(exif_json, '$.FNumber') AS REAL)",
+        Some("aperture") => "f_number",
         _ => "date_taken",
     };
     let direction = if filter.sort_descending.unwrap_or(true) {
@@ -1068,6 +1023,10 @@ fn read_query(
                 exif: serde_json::from_str(&exif_json).ok(),
                 is_raw: row.get(5)?,
                 is_edited: row.get(6)?,
+                camera: row.get(7)?,
+                lens: row.get(8)?,
+                focal_length: row.get(9)?,
+                f_number: row.get(10)?,
                 is_virtual_copy: false,
                 is_cloud_placeholder: false,
                 group_id: None,
@@ -1249,8 +1208,8 @@ mod tests {
         conn.execute_batch("CREATE TABLE catalog_images(
           path TEXT, filename TEXT, extension TEXT, modified INTEGER, date_taken TEXT,
           camera TEXT, lens TEXT, focal_length TEXT, rating INTEGER, color TEXT, flag TEXT,
-          tags_json TEXT, exif_json TEXT, is_raw INTEGER, is_edited INTEGER);
-          INSERT INTO catalog_images VALUES
+          tags_json TEXT, exif_json TEXT, is_raw INTEGER, is_edited INTEGER, f_number REAL);
+          INSERT INTO catalog_images(path,filename,extension,modified,date_taken,camera,lens,focal_length,rating,color,flag,tags_json,exif_json,is_raw,is_edited) VALUES
           ('a','a','nef',0,'2008:06:21 12:00:00','Nikon','Zoom','50',0,'red',NULL,'[\"user:Landscape\"]','{}',1,0),
           ('b','b','jpg',0,'2008-06-21','Canon','Prime','35',5,'blue',NULL,'[\"user:Family\"]','{}',0,0),
           ('c','c','nef',0,'2009-01-01','Nikon','Prime','35',4,'red',NULL,'[\"user:Landscape_extra\"]','{}',1,0),
@@ -1463,7 +1422,7 @@ mod tests {
         conn.execute_batch("CREATE TABLE catalog_meta(key TEXT PRIMARY KEY,value TEXT);
             INSERT INTO catalog_meta VALUES('schema_version','1');
             CREATE TABLE catalog_images(path TEXT PRIMARY KEY,exif_json TEXT,is_raw INTEGER,is_edited INTEGER,thumbnail_status INTEGER);
-            INSERT INTO catalog_images VALUES('photo','{\"Z\":\"last\",\"A\":\"first\"}',0,1,0);").unwrap();
+            INSERT INTO catalog_images VALUES('photo','{\"Z\":\"last\",\"FNumber\":\"f/2.8\",\"A\":\"first\"}',0,1,0);").unwrap();
         migrate_catalog_schema(&conn).unwrap();
         let exif: String = conn
             .query_row(
@@ -1472,7 +1431,15 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(exif, r#"{"A":"first","Z":"last"}"#);
+        assert_eq!(exif, r#"{"A":"first","FNumber":"f/2.8","Z":"last"}"#);
+        let aperture: f64 = conn
+            .query_row(
+                "SELECT f_number FROM catalog_images WHERE path='photo'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(aperture, 2.8);
         assert!(
             conn.prepare("SELECT thumbnail_status FROM catalog_images")
                 .is_err()
@@ -1486,8 +1453,10 @@ mod tests {
             }
         }
         assert!(
-            conn.execute_batch("INSERT INTO catalog_images VALUES('bad','{}',2,0)")
-                .is_err()
+            conn.execute_batch(
+                "INSERT INTO catalog_images(path,exif_json,is_raw,is_edited) VALUES('bad','{}',2,0)"
+            )
+            .is_err()
         );
         conn.execute_batch("UPDATE catalog_images SET is_raw=1,is_edited=0")
             .unwrap();

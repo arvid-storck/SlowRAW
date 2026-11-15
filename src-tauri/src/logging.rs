@@ -1,5 +1,7 @@
 //! Development-only console diagnostics. This module is absent from release builds.
 
+use std::io::{self, Write};
+
 struct ConsoleLogger;
 
 impl log::Log for ConsoleLogger {
@@ -9,7 +11,12 @@ impl log::Log for ConsoleLogger {
 
     fn log(&self, record: &log::Record<'_>) {
         if self.enabled(record.metadata()) {
-            eprintln!("[{}] {}", record.level(), record.args());
+            let _ = writeln!(
+                io::stderr().lock(),
+                "[{}] {}",
+                record.level(),
+                record.args()
+            );
         }
     }
 

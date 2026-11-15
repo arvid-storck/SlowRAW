@@ -29,8 +29,8 @@ window. Ordinary albums load their own members.
 Catalog initialization and query loading live in `useCatalog.ts`, mounted by App,
 so hiding the filter panel does not stop loading. Search is debounced. Late
 replies are ignored after a window or query change. Thumbnail maps are pruned
-when the window moves, preserving the currently edited image. The Build Cache
-job in Settings warms thumbnail files for the full indexed catalog.
+when the window moves, preserving the currently edited image. Thumbnails are
+generated on demand for the current window.
 Database queries and facet aggregation run on blocking workers rather than the
 UI thread. Integrity checking is performed once per database per process, not
 for each filter request. Tag deduplication happens inside SQLite.
