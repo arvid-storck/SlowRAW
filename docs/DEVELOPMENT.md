@@ -10,6 +10,8 @@
 
 ## Contributor workflow
 
+Supported OS: Windows (10 and 11), macOS (Metal API support) and Linux (Wayland support).
+
 ### Documents
 
 Respect the current document responsabilites and writing style. There should be no need for any other documents. Do not add any loose documents randomly in the code.
