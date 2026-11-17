@@ -1,5 +1,14 @@
 ### Bugs
 
+- Filter baserat på nyckelord borde vara AND
+- Smart grupper borde kunna ha mer komplexa filter (filter 1 och filter 2 och ...)
+- Gör det möljligt att flytta smarta grupper som andra grupper in i mappar(grupp)
+- Vissa filer visar brännvidd som "700/10" och öppning som "30/10"
+- Jag saknar vissa bilder vid import
+- Vid import ska den lista hur många bilder som kommer importeras och sen visa när den importerar "Importing in progress\n x images of y imported"
+- Ta bort standad taggar
+- Vid misslycket import av bild, skriv i en fil: namnet, position, varför den misslyckades 
+
 #### Nikon vignetting
 
 - The current Nikon gain polynomial produces negative values for some
@@ -49,29 +58,9 @@
   AI provenance and the existing compressed-XMP fallbacks.
   See `required_xmp` in `src-tauri/src/export_metadata.rs`.
 
+#### Fixed
 
 
-
-### Fixed
-
-- Varför används inte databasens info för att läsa in camera, lins, brännvidd, f värde? (lagra f värdet i databasen)
-  - 2026-11-15 fix for developer verification. Catalog rows supply camera, lens, focal length and aperture. Existing f-numbers are backfilled from catalog EXIF.
-- Låt lins och kamera namnet ta flera rader om det behövs i panelen till vänster efter man har öppnat en bild.
-  - 2026-11-15 fix for developer verification. Camera and lens names wrap in the metadata panel.
-- På kameras nikon z6iii och 24-120mm f4 s så hittar inte den inbyggda lins profilen ibland men ibland hittas den.
-  - 2026-11-15 fix for developer verification. Retained valid Nikon distortion when the embedded vignette curve fails validation.
-- Fix Update rawler structure to be as simpel as it was. But with 2 ways, One way where they have support for HE and HE* or one where they dont, with one command. I already have the strucutre prepared in codemap.md
-  - 2026-11-15 fix for developer verification. Added one update command with an option to switch to upstream Rawler.
-- Lens correctopn automatiskt satt på går aldrog från "Waiting for Auto-Detect" till "Lens profile not found" då ingen lins profil finns. Försvinner inte tills jag ändrar till "manual" manuellt
-  - 2026-11-15 fix for developer verification. The editor reports a missing profile once image loading and lens selection finish.
-- Texten från "Lens profile not found" uppdateras inte korrekt, måste manuellt uppdatera den
-  - 2026-11-15 fix for developer verification. Lens status follows the selected image and its current correction parameters.
-- Den visar "No native gpu preview" fast det går men bara tar lite tid
-  - 2026-11-15 fix for developer verification. Transient native surface errors are retried before showing an error.
-- Ibland så uppdaterar den inte preview (stannar på "Native GPU preview unavailable"), funkar dock så fort jag ändrar en enda inställning eller byter bild fram ock tillbacka
-  - 2026-11-15 fix for developer verification. Cached and uncached images share the same load and first-frame path.
-- Ta bort build cache knappen, den funkar inte
-  - 2026-11-15 fix for developer verification. Removed the Settings action and the dedicated batch job.
 
 ### Things to change
 
@@ -113,11 +102,4 @@ Hard and/or risky
 ### Questions about the code
 
 - How does the queue part work?
-- Is there still android code left?
-  - 2026-11-12 review. No Android-specific application code, target, or
-    packaging configuration was found. Tauri's generated schemas and
-    dependency lockfiles still list Android as an upstream platform.
-    Shared desktop dependencies include `wgpu-core-deps-windows-linux-android`.
-  - 2026-11-15 fix for developer verification. Removed the unsupported-platform
-    fallbacks for opening videos, deleting files and moving files on import.
 - Vad är det som tar tid vid inläsningen av metadatan när jag först öppnas en bild?
