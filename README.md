@@ -121,9 +121,9 @@ See [System Requirements](#system-requirements) for supported desktop platforms.
 | --- | --- | --- |
 | Windows | Windows 10 or Windows 11, 64-bit; Microsoft Edge WebView2 runtime | Vulkan |
 | macOS | macOS with Metal API support; Metal-capable GPU | Vulkan through bundled MoltenVK |
-| Linux | Modern 64-bit distribution with Wayland, Vulkan drivers, GTK 3 and WebKitGTK 4.1 | Vulkan |
+| Linux | 64-bit distribution with Wayland, Vulkan drivers, GTK 3 and WebKitGTK 4.1 | Vulkan |
 
-If it's not listed above, it might work anyways. There is no code that specifically stops it working artificially.
+This is what I designed it to work for, I can't guarantee that it will work for your machine. I develop and test this on Windows 11 with a x86-64 CPU, for GPU I know it works on nvidia and intel.
 
 ## Maintainer Documentation
 
