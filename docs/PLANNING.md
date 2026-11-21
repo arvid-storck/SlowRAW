@@ -3,7 +3,7 @@
 - Filter baserat på nyckelord borde vara AND
 - Smart grupper borde kunna ha mer komplexa filter (filter 1 och filter 2 och ...)
 - Gör det möljligt att flytta smarta grupper som andra grupper in i mappar(grupp)
-- Vissa filer visar brännvidd som "700/10" och öppning som "30/10"
+- Vissa filer visar brännvidd som "700/10" och öppning som "30/10" (troligtvist "Sigma 17-50mm F2.8 EX DC OS HSM" med nikon 7200)
 - Jag saknar vissa bilder vid import
 - Vid import ska den lista hur många bilder som kommer importeras och sen visa när den importerar "Importing in progress\n x images of y imported"
 - Ta bort standad taggar
