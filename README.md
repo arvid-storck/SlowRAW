@@ -119,8 +119,8 @@ See [System Requirements](#system-requirements) for supported desktop platforms.
 
 | Platform | Requirements | Graphics backend |
 | --- | --- | --- |
-| Windows | Windows 10 22H2 or Windows 11, 64-bit; Microsoft Edge WebView2 runtime | Vulkan |
-| macOS | macOS; Metal-capable GPU | Vulkan through bundled MoltenVK |
+| Windows | Windows 10 or Windows 11, 64-bit; Microsoft Edge WebView2 runtime | Vulkan |
+| macOS | macOS with Metal API support; Metal-capable GPU | Vulkan through bundled MoltenVK |
 | Linux | Modern 64-bit distribution with Wayland, Vulkan drivers, GTK 3 and WebKitGTK 4.1 | Vulkan |
 
 If it's not listed above, it might work anyways. There is no code that specifically stops it working artificially.
