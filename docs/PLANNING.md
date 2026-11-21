@@ -7,7 +7,11 @@
 - Jag saknar vissa bilder vid import
 - Vid import ska den lista hur många bilder som kommer importeras och sen visa när den importerar "Importing in progress\n x images of y imported"
 - Ta bort standad taggar
-- Vid misslycket import av bild, skriv i en fil: namnet, position, varför den misslyckades 
+- Vid misslycket import av bild, skriv i en fil: namnet, position, varför den misslyckades
+- Borde inte använda "DNG Lens Info" men den borde används "Lens Spec" för lightroom dng bilder.
+  
+  Om jpeg prioritera "Lens ID" över "Lens"
+- Att hämta f värde, brännvid, slutar tid korrekt från "nikon d7200" med "Sigma 17-50mm F2.8 EX DC OS HSM" funkar på min laptop men inte min stationära dator. blit typ "50/1", "500/20" osv...
 
 #### Nikon vignetting
 
